@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file alias="eye.svg">eye.svg</file>
+        <file alias="eye-off.svg">eye-off.svg</file>
+    </qresource>
+</RCC>

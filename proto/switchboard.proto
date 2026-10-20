@@ -1,0 +1,36 @@
+syntax = "proto3";
+package yiuk.switchboard.v1;
+option go_package = "yiuk-switchboard/internal/protocol";
+
+// Each TCP control message is prefixed by its protobuf varint byte length.
+// After a `data` message pairs a session, the socket carries raw Minecraft TCP.
+message Message {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    AUTH = 1; DATA = 2; OK = 3; ERR = 4; PING = 5; PONG = 6;
+    LIST = 7; ROOMS = 8; CREATE = 9; CREATED = 10; ROOM_MODS = 11;
+    MODS = 12; CLOSE = 13; RESUME = 14; NEW_SESSION = 15;
+  }
+  Type type = 1;
+  string password = 2;
+  string name = 3;
+  uint32 protocol_version = 4;
+  uint32 max_players = 5;
+  string minecraft_version = 6;
+  string loader = 7;
+  repeated Mod mods = 8;
+  string room_id = 9;
+  string session_id = 10;
+  string token = 11;
+  uint32 port = 12;
+  uint32 local_port = 13;
+  string error_code = 14;
+  string message = 15;
+  repeated RoomSummary rooms = 16;
+}
+message Mod { string id = 1; string version = 2; }
+message RoomSummary {
+  string id = 1; string name = 2; string host = 3; uint32 port = 4;
+  uint32 players = 5; uint32 max_players = 6; string minecraft_version = 7;
+  string loader = 8; uint32 mod_count = 9;
+}

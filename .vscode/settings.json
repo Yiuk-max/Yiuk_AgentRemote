@@ -1,0 +1,13 @@
+{
+  "editor.formatOnSave": true,
+  "[go]": {
+    "editor.defaultFormatter": "golang.go",
+    "editor.insertSpaces": false,
+    "editor.tabSize": 4
+  },
+  "gopls": {
+    "ui.semanticTokens": true
+  },
+  "go.useLanguageServer": true,
+  "cmake.sourceDirectory": "E:/Yiuk_AgentRemote/qt-client"
+}

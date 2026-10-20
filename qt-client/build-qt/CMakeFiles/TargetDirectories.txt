@@ -1,0 +1,5 @@
+E:/Yiuk_AgentRemote/qt-client/build-qt/CMakeFiles/yiuk-device-assist.dir
+E:/Yiuk_AgentRemote/qt-client/build-qt/CMakeFiles/edit_cache.dir
+E:/Yiuk_AgentRemote/qt-client/build-qt/CMakeFiles/rebuild_cache.dir
+E:/Yiuk_AgentRemote/qt-client/build-qt/CMakeFiles/yiuk-device-assist_autogen_timestamp_deps.dir
+E:/Yiuk_AgentRemote/qt-client/build-qt/CMakeFiles/yiuk-device-assist_autogen.dir

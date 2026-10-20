@@ -1,0 +1,7 @@
+# 独立运维代理示例配置。仅授权运维人员可读写此文件。
+listen: ":29564"
+tls_cert: "/etc/yiuk-ops/server.crt"
+tls_key: "/etc/yiuk-ops/server.key"
+relay_binary: "/opt/yiuk/relay"
+relay_config: "/opt/yiuk/config.yaml"
+relay_working_dir: "/opt/yiuk"

@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"E:/Yiuk_AgentRemote/qt-client/build-qt/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

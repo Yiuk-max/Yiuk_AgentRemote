@@ -1,0 +1,23 @@
+# Go build outputs
+/bin/
+/dist/
+build/
+relay
+ops-agent
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Local configuration, credentials, and logs
+/config.yaml
+*.log
+*.pem
+*.key
+*.crt
+
+# IDE files
+.idea/
+.vscode/*.local.json

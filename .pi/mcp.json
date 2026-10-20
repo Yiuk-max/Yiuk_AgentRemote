@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "yiuk-switchboard": {
+      "command": "go",
+      "args": ["run", "./cmd/yiuk-mcp"],
+      "cwd": ".",
+      "exposure": "direct",
+      "description": "Unified remote device and session tools for Yiuk Switchboard. The platform backend is not configured yet."
+    }
+  }
+}
