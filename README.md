@@ -2,7 +2,7 @@
 
 ## 项目状态
 
-本项目的主产品是面向 AI Agent 的远程设备协作与执行平台，正式需求见 [`docs/product-requirements.md`](docs/product-requirements.md)。Windows Qt 设备客户端将重新设计和实现；旧 Qt 运维客户端与旧 Minecraft MOD 已移除。
+本项目的主产品是面向 AI Agent 的远程设备协作与执行平台，正式需求见 [`docs/product-requirements.md`](docs/product-requirements.md)。Windows Qt 客户端当前已具备本机协助界面、本机设备信息、设备码收藏和本地会话管理；跨设备平台连接、设备注册和远程路由仍在实现中。旧 Qt 运维客户端与旧 Minecraft MOD 已移除。
 
 Minecraft 联机是必须保留的既有能力，但不要求保留当前后端架构、协议或 MOD 实现。可以重构或重写 Go 后端，并在需要时调整 MOD 以适配新的后端。改造前后都应验证 Minecraft 联机功能仍可用。
 
@@ -19,6 +19,26 @@ Minecraft 联机是必须保留的既有能力，但不要求保留当前后端�
 - `docs/implementation.md`：模块边界、协议、会话/任务状态和实现顺序。
 - `docs/product-requirements.md`：唯一正式产品需求基线。
 - `docs/schedule.md`：MVP 工期、人力假设、阶段和风险。
+- `docs/server-refactor-plan.md`：完全内存化服务器改造计划、密码授权模型和实施阶段。
+
+## Windows Qt 客户端
+
+Qt 客户端位于 [`qt-client`](qt-client) 目录，使用 Qt 6 Widgets、C++17 和 CMake。当前界面包含：
+
+- `主页`：显示本机设备码、连接密码、设备码输入和协助请求入口。
+- 设备码输入行：输入框、添加设备按钮和申请连接按钮保持在同一行；添加设备后保存到本机设备列表。
+- `设备列表`：显示本机设备和已添加设备，支持复制本机设备码、刷新列表和滚动查看设备。
+- `会话记录`：显示本机会话与任务记录。
+- `设置`：控制本机接收协助请求和本地记录。
+
+当前客户端的设备列表和会话数据保存在当前 Windows 用户配置目录。设备码用于识别设备，不能单独认证。平台未连接时，添加的远程设备不能发起真实连接。
+
+构建 Qt 客户端：
+
+```sh
+cmake -S qt-client -B qt-client/build-qt -G Ninja
+cmake --build qt-client/build-qt
+```
 
 ## Agent 工具适配（当前 P0）
 
@@ -76,4 +96,4 @@ relay 使用 `configs/config.yaml` 作为配置模板。部署前应复制到受
 
 ## 后续方向
 
-以 `111.md` 为产品范围依据推进主产品。先评估现有 relay、运维代理和 Protobuf 协议哪些值得复用，以及重构或替换它们的成本；技术实现服从产品边界，不为保持旧架构而限制设计。新 Qt 客户端、设备身份/会话协议和 MCP 工具层均尚未实现。Minecraft 联机能力必须保留，但其 Go 后端和 MOD 可以协同调整。
+以 `111.md` 为产品范围依据推进主产品。下一步重点是设备注册、凭证保护、平台在线连接、跨设备请求/批准、会话撤销和远程任务路由。现有 Qt 客户端已经提供本机 UI 和本地 MCP 桥接，但不能替代真实平台服务。Minecraft 联机能力必须保留，但其 Go 后端和 MOD 可以协同调整。

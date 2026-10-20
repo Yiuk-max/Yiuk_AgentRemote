@@ -280,6 +280,7 @@ public:
         bodyLayout->setContentsMargins(0, 0, 0, 0);
         bodyLayout->setSpacing(0);
         bodyLayout->addWidget(createSidebar());
+        savedDevices = QSettings().value("savedDevices").toStringList();
         loadSessionState();
         pages = new QStackedWidget;
         pages->addWidget(createHomePage());
@@ -314,6 +315,8 @@ private:
     QLabel *deviceStatusValue = nullptr;
     QLabel *sessionSummaryValue = nullptr;
     QLabel *settingsStatusValue = nullptr;
+    QVBoxLayout *deviceListLayout = nullptr;
+    QStringList savedDevices;
     QLabel *sessionsHistory = nullptr;
     QWidget *homePage = nullptr;
     QWidget *devicesPage = nullptr;
@@ -583,15 +586,17 @@ private:
         auto *connectRow = new QHBoxLayout;
         auto *field = new QFrame;
         field->setObjectName("field");
-        field->setMaximumWidth(420);
         auto *fieldLayout = new QHBoxLayout(field);
         fieldLayout->setContentsMargins(14, 1, 12, 1);
         remoteCode = new QLineEdit;
         remoteCode->setPlaceholderText("例如 123 456 789");
         remoteCode->setMaxLength(11);
-        fieldLayout->addWidget(remoteCode);
-        connectRow->addWidget(field, 0);
-        connectRow->addStretch();
+        fieldLayout->addWidget(remoteCode, 1);
+        auto *favoriteButton = iconButton(Glyph::Star, "添加设备");
+        favoriteButton->setFixedSize(38, 38);
+        favoriteButton->setIconSize(QSize(22, 22));
+        fieldLayout->addWidget(favoriteButton);
+        connectRow->addWidget(field, 1);
         auto *connectButton = makeButton("申请连接");
         connectButton->setObjectName("primary");
         connectButton->setMinimumWidth(145);
@@ -621,6 +626,23 @@ private:
                 if (digitsBeforeCursor > 6) ++newCursor;
                 remoteCode->setCursorPosition(qMin(newCursor, formatted.size()));
                 remoteCode->blockSignals(false);
+            }
+        });
+        connect(favoriteButton, &QPushButton::clicked, this, [this] {
+            QString digits;
+            for (const QChar ch : remoteCode->text()) if (ch.isDigit()) digits += ch;
+            if (digits.size() != 9) {
+                QMessageBox::warning(this, "设备码无效", "请输入完整的 9 位设备码后添加。");
+                return;
+            }
+            const QString formatted = spacedCode(digits);
+            if (!savedDevices.contains(formatted)) {
+                savedDevices.append(formatted);
+                QSettings().setValue("savedDevices", savedDevices);
+                refreshDevicesPage();
+                statusBar()->showMessage("设备已添加", 1800);
+            } else {
+                statusBar()->showMessage("设备已在列表中", 1800);
             }
         });
         connect(connectButton, &QPushButton::clicked, this, [this] {
@@ -685,14 +707,44 @@ private:
         return page;
     }
 
+    QWidget *deviceRow(const QString &code, const QString &name, bool local) {
+        auto *row = new QFrame;
+        row->setObjectName("identityPanel");
+        auto *layout = new QHBoxLayout(row);
+        layout->setContentsMargins(16, 12, 16, 12);
+        layout->setSpacing(14);
+        auto *state = makeLabel(local ? "● 在线" : "● 未连接", local ? "font-size: 12px; color: #16825d;" : "font-size: 12px; color: #687588;");
+        state->setFixedWidth(65);
+        layout->addWidget(state);
+        auto *details = new QVBoxLayout;
+        details->setSpacing(3);
+        details->addWidget(makeLabel(name, "font-size: 14px; font-weight: 650; color: #263446;"));
+        details->addWidget(makeLabel(code + (local ? "  ·  Windows · 当前用户" : "  ·  等待平台连接"), "font-size: 12px; color: #687588;"));
+        layout->addLayout(details, 1);
+        auto *action = makeButton(local ? "复制" : "发起协助");
+        action->setToolTip(local ? "复制设备码" : "发起协助");
+        action->setEnabled(local || platformState->text() == "平台：已连接");
+        layout->addWidget(action);
+        if (local) {
+            connect(action, &QPushButton::clicked, this, [this] { copyToClipboard(deviceCode, "设备码已复制"); });
+        } else {
+            connect(action, &QPushButton::clicked, this, [this, code] {
+                remoteCode->setText(code);
+                showPage(0);
+                remoteCode->setFocus();
+            });
+        }
+        return row;
+    }
+
     QWidget *createDevicesPage() {
         QVBoxLayout *layout = nullptr;
-        devicesPage = pageShell("我的设备", "设备身份保存在此 Windows 用户的配置目录。", &layout);
+        devicesPage = pageShell("设备列表", "管理本机和已添加的设备。", &layout);
         auto *identity = new QFrame;
         identity->setObjectName("identityPanel");
         auto *card = new QVBoxLayout(identity);
-        card->setContentsMargins(20, 18, 20, 18);
-        card->setSpacing(12);
+        card->setContentsMargins(16, 12, 16, 12);
+        card->setSpacing(8);
         card->addWidget(makeLabel("本机设备", "font-size: 15px; font-weight: 650; color: #263446;"));
         deviceIdValue = makeLabel(deviceCode, "font-size: 24px; color: #172435;");
         deviceStatusValue = makeLabel("平台未连接", "font-size: 12px; color: #a45f13;");
@@ -714,7 +766,29 @@ private:
             refreshDevicesPage();
         });
         layout->addWidget(identity);
-        layout->addStretch();
+        layout->addSpacing(18);
+
+        auto *listHeader = new QHBoxLayout;
+        listHeader->addStretch();
+        auto *refresh = iconButton(Glyph::Refresh, "刷新设备列表");
+        listHeader->addWidget(refresh);
+        layout->addLayout(listHeader);
+        auto *deviceListContainer = new QWidget;
+        deviceListLayout = new QVBoxLayout(deviceListContainer);
+        deviceListLayout->setContentsMargins(0, 0, 0, 0);
+        deviceListLayout->setSpacing(8);
+        auto *deviceScroll = new QScrollArea;
+        deviceScroll->setWidget(deviceListContainer);
+        deviceScroll->setWidgetResizable(true);
+        deviceScroll->setFrameShape(QFrame::NoFrame);
+        deviceScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        deviceScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
+        deviceScroll->setMinimumHeight(0);
+        deviceScroll->setMaximumHeight(260);
+        layout->addWidget(deviceScroll, 0);
+        layout->addStretch(1);
+        connect(refresh, &QPushButton::clicked, this, [this] { refreshDevicesPage(); statusBar()->showMessage("设备列表已刷新", 1800); });
+        refreshDevicesPage();
         return devicesPage;
     }
 
@@ -799,6 +873,16 @@ private:
     void refreshDevicesPage() {
         if (deviceIdValue) deviceIdValue->setText(deviceCode);
         if (deviceStatusValue) deviceStatusValue->setText("平台未连接");
+        savedDevices = QSettings().value("savedDevices").toStringList();
+        if (!deviceListLayout) return;
+        while (QLayoutItem *item = deviceListLayout->takeAt(0)) {
+            if (item->widget()) item->widget()->deleteLater();
+            delete item;
+        }
+        deviceListLayout->addWidget(deviceRow(deviceCode, "本机设备", true));
+        for (const QString &code : savedDevices)
+            deviceListLayout->addWidget(deviceRow(code, "已添加设备", false));
+
     }
 
     void refreshSessionsPage() {
