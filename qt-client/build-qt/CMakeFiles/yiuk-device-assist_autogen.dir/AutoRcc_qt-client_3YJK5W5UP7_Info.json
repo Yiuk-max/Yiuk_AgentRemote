@@ -7,11 +7,7 @@
 	"CROSS_CONFIG" : false,
 	"GENERATOR" : "Ninja",
 	"INCLUDE_DIR" : "E:/Yiuk_AgentRemote/qt-client/build-qt/yiuk-device-assist_autogen/include",
-	"INPUTS" : 
-	[
-		"E:/Yiuk_AgentRemote/qt-client/resources/eye.svg",
-		"E:/Yiuk_AgentRemote/qt-client/resources/eye-off.svg"
-	],
+	"INPUTS" : [],
 	"LOCK_FILE" : "E:/Yiuk_AgentRemote/qt-client/build-qt/CMakeFiles/yiuk-device-assist_autogen.dir/AutoRcc_qt-client_3YJK5W5UP7_Lock.lock",
 	"MULTI_CONFIG" : false,
 	"OPTIONS" : [ "--no-zstd", "-name", "qt_client" ],

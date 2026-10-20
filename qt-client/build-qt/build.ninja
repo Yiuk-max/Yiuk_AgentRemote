@@ -151,7 +151,7 @@ build yiuk-device-assist_autogen/timestamp yiuk-device-assist_autogen/mocs_compi
 #############################################
 # Custom command for yiuk-device-assist_autogen\3YJK5W5UP7\qrc_qt-client.cpp
 
-build yiuk-device-assist_autogen/3YJK5W5UP7/qrc_qt-client.cpp | ${cmake_ninja_workdir}yiuk-device-assist_autogen/3YJK5W5UP7/qrc_qt-client.cpp: CUSTOM_COMMAND E$:/Yiuk_AgentRemote/qt-client/resources/qt-client.qrc CMakeFiles/yiuk-device-assist_autogen.dir/AutoRcc_qt-client_3YJK5W5UP7_Info.json E$:/Yiuk_AgentRemote/qt-client/resources/eye.svg E$:/Yiuk_AgentRemote/qt-client/resources/eye-off.svg D$:/QT/6.11.1/mingw_64/bin/rcc.exe D$:/QT/6.11.1/mingw_64/bin/rcc.exe || yiuk-device-assist_autogen yiuk-device-assist_autogen_timestamp_deps
+build yiuk-device-assist_autogen/3YJK5W5UP7/qrc_qt-client.cpp | ${cmake_ninja_workdir}yiuk-device-assist_autogen/3YJK5W5UP7/qrc_qt-client.cpp: CUSTOM_COMMAND E$:/Yiuk_AgentRemote/qt-client/resources/qt-client.qrc CMakeFiles/yiuk-device-assist_autogen.dir/AutoRcc_qt-client_3YJK5W5UP7_Info.json D$:/QT/6.11.1/mingw_64/bin/rcc.exe D$:/QT/6.11.1/mingw_64/bin/rcc.exe || yiuk-device-assist_autogen yiuk-device-assist_autogen_timestamp_deps
   COMMAND = C:\Windows\system32\cmd.exe /C "cd /D E:\Yiuk_AgentRemote\qt-client\build-qt && "C:\Program Files\CMake\bin\cmake.exe" -E cmake_autorcc E:/Yiuk_AgentRemote/qt-client/build-qt/CMakeFiles/yiuk-device-assist_autogen.dir/AutoRcc_qt-client_3YJK5W5UP7_Info.json "
   DESC = Automatic RCC for resources/qt-client.qrc
   restat = 1
