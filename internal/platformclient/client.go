@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -27,14 +28,22 @@ import (
 
 const configFileName = "platform-client.json"
 
+// minPlayerPasswordLen mirrors the server-side configuration floor so a
+// password the platform accepts is never rejected here.
+const minPlayerPasswordLen = 8
+
 // Config configures an operator connection to the platform.
 type Config struct {
 	Address            string `json:"address"`
 	PlayerPassword     string `json:"player_password"`
 	TLSCAFile          string `json:"tls_ca,omitempty"`
 	InsecureSkipVerify bool   `json:"insecure_skip_verify,omitempty"`
-	AllowPlaintext     bool   `json:"allow_plaintext,omitempty"`
-	TimeoutSeconds     int    `json:"timeout_seconds,omitempty"`
+	// PinnedCertSHA256 is the lowercase hex SHA-256 of the server certificate
+	// DER bytes. When set, only that exact certificate is accepted, which keeps
+	// self-signed deployments usable without trusting arbitrary certificates.
+	PinnedCertSHA256 string `json:"pinned_cert_sha256,omitempty"`
+	AllowPlaintext   bool   `json:"allow_plaintext,omitempty"`
+	TimeoutSeconds   int    `json:"timeout_seconds,omitempty"`
 }
 
 // ConfigPath returns the per-user platform client configuration path.
@@ -72,8 +81,8 @@ func New(cfg Config) (*Client, error) {
 	if cfg.Address == "" {
 		return nil, errors.New("platform client address is required")
 	}
-	if len(cfg.PlayerPassword) < 16 {
-		return nil, errors.New("platform client player_password must be at least 16 characters")
+	if len(cfg.PlayerPassword) < minPlayerPasswordLen {
+		return nil, fmt.Errorf("platform client player_password must be at least %d characters", minPlayerPasswordLen)
 	}
 	if cfg.TimeoutSeconds <= 0 {
 		cfg.TimeoutSeconds = 30
@@ -632,7 +641,9 @@ func (c *Client) ensureConnectedLocked() error {
 func (c *Client) handshake() (net.Conn, *bufio.Reader, string, error) {
 	conn, err := c.dial()
 	if err != nil {
-		return nil, nil, "", &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not reach platform"}
+		// Keep the underlying cause: it distinguishes an unreachable host from
+		// a rejected certificate fingerprint.
+		return nil, nil, "", &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not reach platform: " + err.Error()}
 	}
 	reader := bufio.NewReaderSize(conn, c.codec.MaxFrameBytes+4)
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
@@ -662,6 +673,23 @@ func (c *Client) handshake() (net.Conn, *bufio.Reader, string, error) {
 	}
 }
 
+// certPinVerifier returns a tls.Config.VerifyPeerCertificate callback that
+// accepts exactly the certificate whose DER bytes hash to pin (lowercase hex
+// SHA-256). An empty pin is never valid here; callers only install the
+// callback when pinning is configured.
+func certPinVerifier(pin string) func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return errors.New("server presented no certificate")
+		}
+		sum := sha256.Sum256(rawCerts[0])
+		if got := hex.EncodeToString(sum[:]); got != pin {
+			return fmt.Errorf("server certificate fingerprint mismatch: got %s", got)
+		}
+		return nil
+	}
+}
+
 func (c *Client) dial() (net.Conn, error) {
 	address := c.cfg.Address
 	address = strings.TrimPrefix(address, "tls://")
@@ -671,6 +699,11 @@ func (c *Client) dial() (net.Conn, error) {
 	cfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: hostOnly(address)}
 	if c.cfg.InsecureSkipVerify {
 		cfg.InsecureSkipVerify = true
+	}
+	if pin := strings.ToLower(strings.TrimSpace(c.cfg.PinnedCertSHA256)); pin != "" {
+		// Verification is replaced by an exact certificate fingerprint check.
+		cfg.InsecureSkipVerify = true
+		cfg.VerifyPeerCertificate = certPinVerifier(pin)
 	}
 	if c.cfg.TLSCAFile != "" {
 		pool, err := loadCertPool(c.cfg.TLSCAFile)

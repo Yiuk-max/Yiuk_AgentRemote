@@ -1118,7 +1118,19 @@ private:
             else platform->disconnectFromPlatform();
             updatePlatformState(platform->state());
         });
-        connect(platformAddress, &QLineEdit::editingFinished, this, [this] { savePlatformConfig(); });
+        connect(platformAddress, &QLineEdit::editingFinished, this, [this] {
+            if (platform && platformAddress) {
+                PlatformClient::Config cfg = platform->config();
+                const QString address = platformAddress->text().trimmed();
+                if (cfg.address.trimmed() != address) {
+                    // A different server is a different identity; never reuse
+                    // the previous certificate trust for it.
+                    cfg.pinnedFingerprint.clear();
+                    platform->setConfig(cfg);
+                }
+            }
+            savePlatformConfig();
+        });
         connect(platformPassword, &QLineEdit::editingFinished, this, [this] { savePlatformConfig(); });
         connect(platformTls, &QCheckBox::toggled, this, [this] { savePlatformConfig(); });
         connect(platformAllowInsecure, &QCheckBox::toggled, this, [this] { savePlatformConfig(); });
@@ -1286,6 +1298,7 @@ private:
             cfg.tls = object.value("tls").toBool(true);
             cfg.allowInsecure = object.value("allow_insecure").toBool(false);
             cfg.caFile = object.value("ca_file").toString();
+            cfg.pinnedFingerprint = object.value("certificate_fingerprint").toString();
             cfg.mode = object.value("mode").toString("approval");
             cfg.passwordVersion = object.value("password_version").toInt(1);
             cfg.playerPassword = SecureStore::unprotect(object.value("player_password").toString());
@@ -1295,6 +1308,12 @@ private:
         temporaryPassword = cfg.temporaryPassword;
         passwordVersion = cfg.passwordVersion;
         platform->setConfig(cfg);
+        const QSignalBlocker blockAddress(platformAddress);
+        const QSignalBlocker blockPassword(platformPassword);
+        const QSignalBlocker blockTls(platformTls);
+        const QSignalBlocker blockAllowInsecure(platformAllowInsecure);
+        const QSignalBlocker blockEnabled(platformEnabled);
+        const QSignalBlocker blockMode(platformMode);
         if (platformAddress) platformAddress->setText(cfg.address);
         if (platformPassword) platformPassword->setText(cfg.playerPassword);
         if (platformTls) platformTls->setChecked(cfg.tls);
@@ -1329,6 +1348,7 @@ private:
             {"tls", cfg.tls},
             {"allow_insecure", cfg.allowInsecure},
             {"ca_file", cfg.caFile},
+            {"certificate_fingerprint", cfg.pinnedFingerprint},
             {"mode", cfg.mode},
             {"password_version", cfg.passwordVersion},
             {"player_password", SecureStore::protect(cfg.playerPassword)},
@@ -1361,6 +1381,7 @@ private:
         };
         if (cfg.tls) {
             if (!cfg.caFile.trimmed().isEmpty()) object.insert("tls_ca", cfg.caFile.trimmed());
+            if (!cfg.pinnedFingerprint.trimmed().isEmpty()) object.insert("pinned_cert_sha256", cfg.pinnedFingerprint.trimmed());
             object.insert("insecure_skip_verify", cfg.allowInsecure);
         } else {
             object.insert("allow_plaintext", true);
@@ -1408,6 +1429,29 @@ private:
         connect(platform, &PlatformClient::connectionError, this, [this](const QString &message) {
             statusBar()->showMessage("平台连接：" + message, 4000);
             serviceFooter->setText("● 平台连接异常");
+        });
+        connect(platform, &PlatformClient::certificateUntrusted, this,
+                [this](const QString &fingerprint, const QString &subject, const QString &details, bool changed) {
+            QMessageBox box(this);
+            box.setWindowTitle(changed ? "服务器证书已变更" : "服务器证书不受信任");
+            box.setIcon(QMessageBox::Warning);
+            box.setText(changed ? "服务器证书与之前记录的不一致，可能存在中间人攻击。"
+                                : "服务器使用了自签名证书，系统无法验证其身份。");
+            box.setInformativeText(QString("证书名称：%1\nSHA-256 指纹：%2\n\n%3\n\n仅当你能确认这是自己的服务器时，才选择“信任此证书”。")
+                .arg(subject, fingerprint, details));
+            auto *trust = box.addButton("信任此证书", QMessageBox::AcceptRole);
+            auto *cancel = box.addButton("取消", QMessageBox::RejectRole);
+            box.setDefaultButton(changed ? cancel : trust);
+            box.exec();
+            if (box.clickedButton() != trust) {
+                statusBar()->showMessage("已取消连接：服务器证书未被信任", 5000);
+                return;
+            }
+            PlatformClient::Config cfg = platform->config();
+            cfg.pinnedFingerprint = fingerprint;
+            platform->setConfig(cfg);
+            savePlatformConfig();
+            platform->connectToPlatform();
         });
         loadPlatformConfig();
         if (platform->config().enabled && !platform->config().address.isEmpty())

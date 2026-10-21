@@ -61,7 +61,10 @@ func main() {
 	}
 	defer conn.Close()
 
-	deviceID := "100000001"
+	// Use a random device id so repeated smoke runs do not collide with a
+	// device that a previous run already registered (re-registration requires
+	// the current temporary password).
+	deviceID := "9" + randomHex(4)
 	devicePassword := randomHex(20) // 40 chars, >= 32 required
 	operatorID := "200000002"
 	operatorPassword := randomHex(20)

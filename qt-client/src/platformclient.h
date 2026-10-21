@@ -29,6 +29,11 @@ public:
         bool tls = true;
         bool allowInsecure = false; // dev only: skip certificate verification
         QString caFile;
+        // SHA-256 fingerprint of the server certificate, hex encoded. When set,
+        // the client accepts exactly this certificate instead of relying on a
+        // public CA. This keeps self-signed deployments usable without
+        // disabling certificate verification for arbitrary certificates.
+        QString pinnedFingerprint;
         bool enabled = false;
     };
 
@@ -78,6 +83,10 @@ signals:
     void temporaryPasswordUpdated(int version, qint64 expiresAt);
     void platformError(const QString &code, const QString &message);
     void connectionError(const QString &message);
+    // Emitted when the server certificate cannot be verified. The user must
+    // explicitly trust the fingerprint before the client will connect.
+    void certificateUntrusted(const QString &fingerprint, const QString &subject,
+                              const QString &details, bool changed);
 
 private slots:
     void onConnected();

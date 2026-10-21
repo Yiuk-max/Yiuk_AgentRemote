@@ -18,14 +18,18 @@ func main() {
 	defer stop()
 
 	var backend agenttools.Backend
-	if platform, err := platformclient.NewFromUserConfig(); err == nil {
+	platform, platformErr := platformclient.NewFromUserConfig()
+	if platformErr == nil {
 		slog.Info("MCP backend: remote platform")
 		backend = platform
 	} else if local, err := localbridge.NewFromUserConfig(); err == nil {
 		slog.Info("MCP backend: local Qt bridge")
 		backend = local
 	} else {
-		slog.Warn("MCP backend is not configured; tools will return NOT_CONFIGURED")
+		// Surface why the platform configuration was rejected instead of only
+		// reporting an unconfigured backend.
+		slog.Warn("MCP backend is not configured; tools will return NOT_CONFIGURED",
+			"platform_config_error", platformErr)
 	}
 
 	if err := mcpadapter.Run(ctx, agenttools.NewCore(backend)); err != nil {

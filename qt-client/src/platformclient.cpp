@@ -1,5 +1,6 @@
 #include "platformclient.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -7,6 +8,7 @@
 #include <QSslCertificate>
 #include <QSslConfiguration>
 #include <QSslSocket>
+#include <QSignalBlocker>
 #include <QtEndian>
 
 namespace {
@@ -30,8 +32,9 @@ void PlatformClient::setConfig(const Config &config) {
 void PlatformClient::connectToPlatform() {
     manualDisconnect_ = false;
     reconnectTimer_.stop();
+    if (socket_ && socket_->state() != QAbstractSocket::UnconnectedState)
+        return;
     if (socket_) {
-        socket_->abort();
         socket_->deleteLater();
         socket_ = nullptr;
     }
@@ -72,9 +75,24 @@ void PlatformClient::connectToPlatform() {
             socket->ignoreSslErrors();
             return;
         }
+        const QSslCertificate certificate = socket->peerCertificate();
+        const QString fingerprint = QString::fromLatin1(certificate.digest(QCryptographicHash::Sha256).toHex());
+        if (!config_.pinnedFingerprint.isEmpty() && !fingerprint.isEmpty() &&
+            fingerprint.compare(config_.pinnedFingerprint, Qt::CaseInsensitive) == 0) {
+            socket->ignoreSslErrors();
+            return;
+        }
         QStringList messages;
         for (const QSslError &error : errors) messages.append(error.errorString());
-        emit connectionError(QStringLiteral("TLS 校验失败：%1").arg(messages.join(QStringLiteral("; "))));
+        manualDisconnect_ = true;
+        reconnectTimer_.stop();
+        heartbeatTimer_.stop();
+        const QString detail = messages.join(QStringLiteral("; "));
+        emit connectionError(QStringLiteral("TLS 校验失败：%1").arg(detail));
+        if (!fingerprint.isEmpty()) {
+            const bool changed = !config_.pinnedFingerprint.isEmpty();
+            emit certificateUntrusted(fingerprint, certificate.subjectDisplayName(), detail, changed);
+        }
     });
 
     setState(QStringLiteral("connecting"));
@@ -100,7 +118,12 @@ void PlatformClient::disconnectFromPlatform() {
     manualDisconnect_ = true;
     reconnectTimer_.stop();
     heartbeatTimer_.stop();
-    if (socket_) socket_->abort();
+    QTcpSocket *socket = socket_;
+    socket_ = nullptr;
+    if (socket) {
+        socket->abort();
+        socket->deleteLater();
+    }
     authenticated_ = false;
     registered_ = false;
     setState(QStringLiteral("disconnected"));
@@ -111,7 +134,8 @@ bool PlatformClient::isConnected() const {
 }
 
 void PlatformClient::onConnected() {
-    reconnectAttempts_ = 0;
+    auto *socket = qobject_cast<QTcpSocket *>(sender());
+    if (!socket || socket != socket_) return;
     QJsonObject auth{
         {QStringLiteral("version"), kProtocolVersion},
         {QStringLiteral("business_type"), QStringLiteral("agent_assist")},
@@ -123,8 +147,9 @@ void PlatformClient::onConnected() {
 }
 
 void PlatformClient::onReadyRead() {
-    if (!socket_) return;
-    buffer_ += socket_->readAll();
+    auto *socket = qobject_cast<QTcpSocket *>(sender());
+    if (!socket || socket != socket_) return;
+    buffer_ += socket->readAll();
     while (buffer_.size() >= 4) {
         const quint32 length = qFromBigEndian<quint32>(reinterpret_cast<const uchar *>(buffer_.constData()));
         if (length == 0 || length > static_cast<quint32>(kMaxFrameBytes)) {
@@ -146,6 +171,10 @@ void PlatformClient::onReadyRead() {
 }
 
 void PlatformClient::onDisconnected() {
+    auto *socket = qobject_cast<QSslSocket *>(sender());
+    if (!socket || socket != socket_) return;
+    socket_ = nullptr;
+    socket->deleteLater();
     heartbeatTimer_.stop();
     authenticated_ = false;
     registered_ = false;
@@ -155,8 +184,9 @@ void PlatformClient::onDisconnected() {
 
 void PlatformClient::onSocketError(QAbstractSocket::SocketError error) {
     Q_UNUSED(error);
-    if (!socket_) return;
-    const QString message = socket_->errorString();
+    auto *socket = qobject_cast<QSslSocket *>(sender());
+    if (!socket || socket != socket_) return;
+    const QString message = socket->errorString();
     if (!message.isEmpty()) emit connectionError(message);
 }
 
@@ -169,7 +199,7 @@ void PlatformClient::onHeartbeat() {
 }
 
 void PlatformClient::onReconnect() {
-    if (manualDisconnect_) return;
+    if (manualDisconnect_ || socket_) return;
     connectToPlatform();
 }
 
@@ -227,6 +257,7 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
             config_.mode = message.value(QStringLiteral("mode")).toString();
         if (message.value(QStringLiteral("password_version")).isDouble())
             config_.passwordVersion = message.value(QStringLiteral("password_version")).toInt();
+        reconnectAttempts_ = 0;
         setState(QStringLiteral("connected"));
         heartbeatTimer_.start();
         emit registered(message.value(QStringLiteral("device")).toObject());
@@ -291,7 +322,13 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
         const QString text = message.value(QStringLiteral("message")).toString();
         emit platformError(code, text);
         if (code == QLatin1String("BAD_PASSWORD") || code == QLatin1String("BAD_IDENTITY") ||
-            code == QLatin1String("BUSINESS_TYPE_NOT_SUPPORTED") || code == QLatin1String("RATE_LIMITED")) {
+            code == QLatin1String("BUSINESS_TYPE_NOT_SUPPORTED") || code == QLatin1String("BAD_VERSION") ||
+            code == QLatin1String("RATE_LIMITED") || code == QLatin1String("DEVICE_ALREADY_ONLINE") ||
+            code == QLatin1String("BAD_TEMPORARY_PASSWORD") || code == QLatin1String("TEMPORARY_PASSWORD_EXPIRED") ||
+            code == QLatin1String("TEMPORARY_PASSWORD_REVOKED") || code == QLatin1String("STALE_PASSWORD_VERSION") ||
+            code == QLatin1String("DEVICE_NOT_FOUND") || code == QLatin1String("DEVICE_LIMIT")) {
+            // These errors will not be fixed by reconnecting. Stop the retry
+            // loop and wait for the user to correct the setting or reconnect.
             manualDisconnect_ = true;
             heartbeatTimer_.stop();
             if (socket_) socket_->abort();
