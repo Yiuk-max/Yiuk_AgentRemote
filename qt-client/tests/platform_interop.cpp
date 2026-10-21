@@ -5,9 +5,14 @@
 // Environment:
 //   YIUK_PLATFORM_ADDRESS   default 127.0.0.1:25664
 //   YIUK_PLATFORM_PASSWORD  platform player password
+//   YIUK_PLATFORM_TLS       "1" to use TLS (default: plaintext)
+//   YIUK_PLATFORM_PIN       pinned server certificate SHA-256 (hex)
+//   YIUK_PLATFORM_CA        CA bundle path for TLS
+//   YIUK_PLATFORM_INSECURE  "1" to skip certificate verification
 #include "platformclient.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDebug>
 #include <QJsonObject>
 #include <QTimer>
@@ -21,6 +26,10 @@ int main(int argc, char *argv[]) {
     QCoreApplication app(argc, argv);
     const QString address = qEnvironmentVariable("YIUK_PLATFORM_ADDRESS", "127.0.0.1:25664");
     const QString playerPassword = qEnvironmentVariable("YIUK_PLATFORM_PASSWORD", "interop-player-password-123456");
+    const bool useTls = qEnvironmentVariable("YIUK_PLATFORM_TLS") == QLatin1String("1");
+    const bool insecure = qEnvironmentVariable("YIUK_PLATFORM_INSECURE") == QLatin1String("1");
+    const QString pin = qEnvironmentVariable("YIUK_PLATFORM_PIN");
+    const QString caFile = qEnvironmentVariable("YIUK_PLATFORM_CA");
 
     auto *device = new PlatformClient(&app);
     PlatformClient::Config deviceConfig;
@@ -30,7 +39,10 @@ int main(int argc, char *argv[]) {
     deviceConfig.deviceName = QStringLiteral("qt-device");
     deviceConfig.mode = QStringLiteral("approval");
     deviceConfig.temporaryPassword = QString::fromLatin1(kDevicePassword);
-    deviceConfig.tls = false;
+    deviceConfig.tls = useTls;
+    deviceConfig.allowInsecure = insecure;
+    deviceConfig.pinnedFingerprint = pin;
+    deviceConfig.caFile = caFile;
     deviceConfig.enabled = true;
     device->setConfig(deviceConfig);
 
@@ -42,7 +54,13 @@ int main(int argc, char *argv[]) {
     operatorConfig.deviceName = QStringLiteral("qt-operator");
     operatorConfig.mode = QStringLiteral("approval");
     operatorConfig.temporaryPassword = QString::fromLatin1(kOperatorPassword);
-    operatorConfig.tls = false;
+    operatorConfig.tls = useTls;
+    operatorConfig.allowInsecure = insecure;
+    operatorConfig.pinnedFingerprint = pin;
+    operatorConfig.caFile = caFile;
+    const bool tls12 = qEnvironmentVariable("YIUK_PLATFORM_TLS12") == QLatin1String("1");
+    deviceConfig.forceTls12 = tls12;
+    operatorConfig.forceTls12 = tls12;
     operatorConfig.enabled = true;
     operation->setConfig(operatorConfig);
 
@@ -116,6 +134,16 @@ int main(int argc, char *argv[]) {
     QObject::connect(operation, &PlatformClient::platformError, &app, [&](const QString &code, const QString &message) {
         qWarning() << "platform error" << code << message;
         ++failures;
+    });
+    QObject::connect(operation, &PlatformClient::connectionError, &app, [&](const QString &message) {
+        qWarning() << "operator connection error" << message;
+    });
+    QObject::connect(device, &PlatformClient::connectionError, &app, [&](const QString &message) {
+        qWarning() << "device connection error" << message;
+    });
+    QObject::connect(device, &PlatformClient::certificateUntrusted, &app,
+                     [&](const QString &fingerprint, const QString &subject, const QString &details, bool changed) {
+        qInfo() << "device cert" << subject << "sha256" << fingerprint << "changed" << changed << details;
     });
     QObject::connect(device, &PlatformClient::platformError, &app, [&](const QString &code, const QString &message) {
         qWarning() << "device platform error" << code << message;

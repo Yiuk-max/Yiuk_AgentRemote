@@ -1,0 +1,60 @@
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            03:7f:d7:8e:0a:77:cc:85:63:8a:ff:7c:6a:fe:a5:cd:4a:73:ee:59
+        Signature Algorithm: sha256WithRSAEncryption
+        Issuer: CN=103.185.248.64, O=Yiuk Switchboard
+        Validity
+            Not Before: Oct 18 03:44:59 2026 GMT
+            Not After : Jan 20 03:44:59 2029 GMT
+        Subject: CN=103.185.248.64, O=Yiuk Switchboard
+        Subject Public Key Info:
+            Public Key Algorithm: rsaEncryption
+                Public-Key: (2048 bit)
+                Modulus:
+                    00:ac:ef:79:9e:7c:1c:be:78:fd:0e:dd:87:6b:9d:
+                    8a:7e:5d:c3:f6:c1:31:a4:5e:3f:b6:9f:5a:55:4f:
+                    75:8c:c4:26:7d:2b:25:bc:88:3c:1c:b1:f2:fe:fa:
+                    73:2e:a2:a2:90:e2:41:f1:59:21:a6:b0:56:9d:36:
+                    e4:b9:3b:b3:21:c1:59:19:7c:86:03:cb:13:89:c2:
+                    61:6e:e2:4f:0d:cb:80:6f:16:db:2c:d3:d2:69:e2:
+                    97:7d:c3:b6:bf:11:06:ac:5c:ac:67:8e:6d:4e:27:
+                    df:22:57:32:d3:ea:ad:21:b1:59:2e:67:1f:ea:65:
+                    cc:8b:c5:e5:11:f6:3e:2b:7d:f6:cf:eb:7a:43:8b:
+                    2f:63:04:c1:14:2b:83:df:90:7b:1f:ec:c5:1f:a0:
+                    b3:cf:b5:03:83:21:b2:55:2b:c1:01:7a:86:51:96:
+                    88:1d:c9:69:b9:f7:47:63:54:30:86:32:e6:d8:3a:
+                    4d:d8:bb:d2:22:f3:48:87:32:00:2a:da:1d:96:8e:
+                    26:82:2d:35:55:57:eb:b8:a8:31:37:46:6a:8e:80:
+                    c9:85:48:b9:6e:a1:a8:a4:fc:3c:98:0e:10:1c:a2:
+                    a4:c7:16:89:22:ef:8b:e8:ab:0a:0f:e8:26:08:55:
+                    4f:b7:74:f5:86:71:b6:4a:d4:7b:22:d5:8d:0c:3d:
+                    19:61
+                Exponent: 65537 (0x10001)
+        X509v3 extensions:
+            X509v3 Subject Key Identifier: 
+                92:58:63:FB:B8:C0:DD:6D:44:B5:2E:18:DA:FC:E2:2D:BB:20:3F:F0
+            X509v3 Authority Key Identifier: 
+                92:58:63:FB:B8:C0:DD:6D:44:B5:2E:18:DA:FC:E2:2D:BB:20:3F:F0
+            X509v3 Basic Constraints: critical
+                CA:TRUE
+            X509v3 Subject Alternative Name: 
+                IP Address:103.185.248.64, IP Address:127.0.0.1, IP Address:10.0.163.2, DNS:localhost, DNS:bakacomm.world
+    Signature Algorithm: sha256WithRSAEncryption
+    Signature Value:
+        1e:63:32:bd:a4:e2:35:96:4a:16:e2:1d:9a:d9:25:10:e1:e9:
+        c5:1e:2b:e1:95:66:53:37:52:e3:54:30:08:2c:bb:ff:aa:21:
+        52:6d:e8:7a:6e:5d:7e:6b:39:c5:e5:78:7f:3c:3b:1a:50:2c:
+        b2:7f:1c:3d:dc:d8:b7:4e:c5:7f:70:ed:04:0e:ec:e8:88:77:
+        c6:a2:86:e2:aa:51:46:97:78:e0:e4:40:18:4c:81:4e:0e:3c:
+        c1:01:8b:e8:51:01:c0:fc:e2:23:06:4c:f9:44:85:d1:cd:1a:
+        06:ab:b9:0d:3a:82:be:7f:14:97:61:0f:f2:45:d7:0a:52:3c:
+        11:7c:f1:bd:f0:f1:f7:d6:7d:ae:51:ca:6b:aa:78:0c:90:3c:
+        a0:fb:4c:1d:d6:4f:26:86:b9:b1:61:56:3f:53:60:a8:78:6e:
+        05:6a:94:d2:6f:d4:4e:1a:5d:c3:24:f7:2c:bc:11:30:43:e8:
+        9c:ab:54:aa:88:b1:9b:0f:f5:f8:b4:c2:af:7a:05:17:6e:62:
+        f7:1c:bf:8e:39:af:80:1c:22:2f:53:d9:4b:d8:6e:e0:74:17:
+        99:e1:ca:b7:1e:34:f6:a2:dc:04:1e:cf:02:d4:09:e6:80:b5:
+        c0:bb:bc:32:2f:21:4f:f3:ae:56:b1:41:00:76:da:eb:63:4d:
+        ea:3c:77:51

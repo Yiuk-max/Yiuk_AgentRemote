@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(YiukDeviceAssist VERSION 0.1.0 LANGUAGES CXX)
+project(YiukDeviceAssist VERSION 0.1.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -25,6 +25,10 @@ if(WIN32)
 endif()
 
 target_link_libraries(yiuk-device-assist PRIVATE Qt6::Widgets Qt6::Network)
+
+# Expose the CMake project version to the UI so a support report always states
+# which client build is running.
+target_compile_definitions(yiuk-device-assist PRIVATE YIUK_CLIENT_VERSION="${PROJECT_VERSION}")
 
 # Ship the Agent MCP adapter beside the Qt client so users do not need to
 # install Go or download a second repository.
@@ -65,6 +69,9 @@ if(YIUK_BUILD_TESTS)
         src/securestore.h
     )
     target_include_directories(yiuk-platform-interop PRIVATE src)
+    # The harness is a headless diagnostic tool: keep it on the console
+    # subsystem so qInfo/qWarning output is visible in CI and terminals.
+    set_target_properties(yiuk-platform-interop PROPERTIES WIN32_EXECUTABLE FALSE)
     target_link_libraries(yiuk-platform-interop PRIVATE Qt6::Core Qt6::Network)
     if(WIN32)
         target_link_libraries(yiuk-platform-interop PRIVATE crypt32)

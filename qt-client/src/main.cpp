@@ -48,6 +48,10 @@
 #include <QScrollArea>
 #include <QTimer>
 
+#ifndef YIUK_CLIENT_VERSION
+#define YIUK_CLIENT_VERSION "dev"
+#endif
+
 namespace {
 
 QLabel *makeLabel(const QString &text, const QString &style = {}) {
@@ -272,7 +276,7 @@ private:
 class MainWindow final : public QMainWindow {
 public:
     MainWindow() {
-        setWindowTitle("Yiuk Device Assist");
+        setWindowTitle(QStringLiteral("Yiuk Device Assist ") + QStringLiteral(YIUK_CLIENT_VERSION));
         setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
         resize(960, 600);
         setMinimumSize(960, 600);

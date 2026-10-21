@@ -1,0 +1,7 @@
+platform:
+  listen: "127.0.0.1:29575"
+  tls_cert: "E:/Yiuk_AgentRemote/tmp-tls/server.crt"
+  tls_key: "E:/Yiuk_AgentRemote/tmp-tls/server.key"
+  allow_insecure: false
+  player_password: "local-tls-password-123456"
+  log_file: "E:/Yiuk_AgentRemote/tmp-tls/platform-29575.log"

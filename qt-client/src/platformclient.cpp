@@ -42,6 +42,8 @@ void PlatformClient::connectToPlatform() {
     connectionId_.clear();
     authenticated_ = false;
     registered_ = false;
+    sslErrorsSeen_ = false;
+    tlsErrorReported_ = false;
 
     if (config_.address.trimmed().isEmpty()) {
         emit connectionError(QStringLiteral("未配置平台服务器地址"));
@@ -67,6 +69,7 @@ void PlatformClient::connectToPlatform() {
     auto *socket = new QSslSocket(this);
     socket_ = socket;
     connect(socket, &QTcpSocket::connected, this, &PlatformClient::onConnected);
+    connect(socket, &QSslSocket::encrypted, this, &PlatformClient::onEncrypted);
     connect(socket, &QTcpSocket::readyRead, this, &PlatformClient::onReadyRead);
     connect(socket, &QTcpSocket::disconnected, this, &PlatformClient::onDisconnected);
     connect(socket, &QAbstractSocket::errorOccurred, this, &PlatformClient::onSocketError);
@@ -79,25 +82,32 @@ void PlatformClient::connectToPlatform() {
         const QString fingerprint = QString::fromLatin1(certificate.digest(QCryptographicHash::Sha256).toHex());
         if (!config_.pinnedFingerprint.isEmpty() && !fingerprint.isEmpty() &&
             fingerprint.compare(config_.pinnedFingerprint, Qt::CaseInsensitive) == 0) {
+            // QueryPeer still requires the matching certificate errors to be
+            // explicitly ignored; otherwise Qt aborts before encrypted().
             socket->ignoreSslErrors();
             return;
         }
-        QStringList messages;
-        for (const QSslError &error : errors) messages.append(error.errorString());
-        manualDisconnect_ = true;
-        reconnectTimer_.stop();
-        heartbeatTimer_.stop();
-        const QString detail = messages.join(QStringLiteral("; "));
-        emit connectionError(QStringLiteral("TLS 校验失败：%1").arg(detail));
-        if (!fingerprint.isEmpty()) {
-            const bool changed = !config_.pinnedFingerprint.isEmpty();
-            emit certificateUntrusted(fingerprint, certificate.subjectDisplayName(), detail, changed);
-        }
+        // Let the handshake finish so onEncrypted() can make the same
+        // certificate decision on Schannel and OpenSSL backends.
+        Q_UNUSED(errors);
+        sslErrorsSeen_ = true;
     });
 
     setState(QStringLiteral("connecting"));
     if (config_.tls) {
-        if (config_.allowInsecure) socket->setPeerVerifyMode(QSslSocket::VerifyNone);
+        // A pinned certificate is verified after the TLS handshake using its
+        // exact DER fingerprint. Avoid backend-specific CA validation here:
+        // Schannel can abort a self-signed handshake before encrypted() and
+        // surface only the misleading "remote host closed" error.
+        if (config_.allowInsecure || !config_.pinnedFingerprint.trimmed().isEmpty())
+            socket->setPeerVerifyMode(QSslSocket::VerifyNone);
+        else
+            socket->setPeerVerifyMode(QSslSocket::QueryPeer);
+        if (config_.forceTls12) {
+            QSslConfiguration sslConfiguration = socket->sslConfiguration();
+            sslConfiguration.setProtocol(QSsl::TlsV1_2);
+            socket->setSslConfiguration(sslConfiguration);
+        }
         if (!config_.caFile.trimmed().isEmpty()) {
             const QList<QSslCertificate> certificates = QSslCertificate::fromPath(config_.caFile.trimmed());
             if (certificates.isEmpty()) {
@@ -136,6 +146,49 @@ bool PlatformClient::isConnected() const {
 void PlatformClient::onConnected() {
     auto *socket = qobject_cast<QTcpSocket *>(sender());
     if (!socket || socket != socket_) return;
+    // TLS sessions start only after onEncrypted() has accepted the certificate.
+    if (config_.tls) return;
+    beginSession();
+}
+
+void PlatformClient::onEncrypted() {
+    auto *socket = qobject_cast<QSslSocket *>(sender());
+    if (!socket || socket != socket_) return;
+    const QSslCertificate certificate = socket->peerCertificate();
+    const QString fingerprint = QString::fromLatin1(certificate.digest(QCryptographicHash::Sha256).toHex());
+    if (config_.allowInsecure) {
+        beginSession();
+        return;
+    }
+    if (!config_.pinnedFingerprint.isEmpty() && !fingerprint.isEmpty() &&
+        fingerprint.compare(config_.pinnedFingerprint, Qt::CaseInsensitive) == 0) {
+        beginSession();
+        return;
+    }
+    if (!sslErrorsSeen_ && config_.pinnedFingerprint.isEmpty()) {
+        // Certificate verified against the platform CA store.
+        beginSession();
+        return;
+    }
+    rejectCertificate(fingerprint, certificate.subjectDisplayName(),
+                      QStringLiteral("系统证书库无法验证该服务器证书"),
+                      !config_.pinnedFingerprint.isEmpty());
+}
+
+void PlatformClient::rejectCertificate(const QString &fingerprint, const QString &subject,
+                                       const QString &details, bool changed) {
+    manualDisconnect_ = true;
+    tlsErrorReported_ = true;
+    reconnectTimer_.stop();
+    heartbeatTimer_.stop();
+    if (socket_) socket_->abort();
+    setState(QStringLiteral("disconnected"));
+    emit connectionError(QStringLiteral("服务器证书未被信任：%1").arg(subject));
+    if (!fingerprint.isEmpty())
+        emit certificateUntrusted(fingerprint, subject, details, changed);
+}
+
+void PlatformClient::beginSession() {
     QJsonObject auth{
         {QStringLiteral("version"), kProtocolVersion},
         {QStringLiteral("business_type"), QStringLiteral("agent_assist")},
@@ -183,11 +236,42 @@ void PlatformClient::onDisconnected() {
 }
 
 void PlatformClient::onSocketError(QAbstractSocket::SocketError error) {
-    Q_UNUSED(error);
     auto *socket = qobject_cast<QSslSocket *>(sender());
     if (!socket || socket != socket_) return;
-    const QString message = socket->errorString();
-    if (!message.isEmpty()) emit connectionError(message);
+    if (tlsErrorReported_) {
+        // The TLS dialog and message already explain the failure; the aborted
+        // handshake typically surfaces here as RemoteHostClosedError.
+        return;
+    }
+    QString hint;
+    const bool tlsHandshakeClosed = config_.tls && !socket->isEncrypted() &&
+                                    (error == QAbstractSocket::RemoteHostClosedError ||
+                                     error == QAbstractSocket::SslHandshakeFailedError);
+    if (tlsHandshakeClosed) {
+        hint = QStringLiteral("TLS 握手失败：服务器在加密连接建立前关闭了连接，请检查服务端 TLS 配置或中间防火墙");
+    } else {
+        switch (error) {
+        case QAbstractSocket::ConnectionRefusedError:
+            hint = QStringLiteral("服务器拒绝连接：端口未开放，或平台服务未启动");
+            break;
+        case QAbstractSocket::HostNotFoundError:
+            hint = QStringLiteral("找不到服务器地址，请检查域名或 IP");
+            break;
+        case QAbstractSocket::SocketTimeoutError:
+            hint = QStringLiteral("连接超时，请检查网络或防火墙");
+            break;
+        case QAbstractSocket::RemoteHostClosedError:
+            hint = QStringLiteral("服务器断开了连接（证书或协议可能不匹配）");
+            break;
+        case QAbstractSocket::SslHandshakeFailedError:
+            hint = QStringLiteral("TLS 握手失败，请检查端口是否为平台服务端口");
+            break;
+        default:
+            hint = socket->errorString();
+            break;
+        }
+    }
+    if (!hint.isEmpty()) emit connectionError(hint);
 }
 
 void PlatformClient::onHeartbeat() {

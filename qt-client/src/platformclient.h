@@ -34,6 +34,10 @@ public:
         // public CA. This keeps self-signed deployments usable without
         // disabling certificate verification for arbitrary certificates.
         QString pinnedFingerprint;
+        // Some Windows Schannel builds fail the TLS 1.3 handshake against
+        // certain Go server configurations while TLS 1.2 succeeds. Setting this
+        // pins the connection to TLS 1.2.
+        bool forceTls12 = false;
         bool enabled = false;
     };
 
@@ -90,6 +94,7 @@ signals:
 
 private slots:
     void onConnected();
+    void onEncrypted();
     void onReadyRead();
     void onDisconnected();
     void onSocketError(QAbstractSocket::SocketError error);
@@ -101,6 +106,8 @@ private:
     void handleMessage(const QJsonObject &message);
     void setState(const QString &state);
     void scheduleReconnect();
+    void beginSession();
+    void rejectCertificate(const QString &fingerprint, const QString &subject, const QString &details, bool changed);
 
     QTcpSocket *socket_ = nullptr;
     QTimer heartbeatTimer_;
@@ -112,5 +119,13 @@ private:
     bool manualDisconnect_ = false;
     bool authenticated_ = false;
     bool registered_ = false;
+    // Set when a TLS verification failure has already been reported for the
+    // current connection, so the peer's abort does not replace the real cause
+    // with the generic "remote host closed" message.
+    // Set when the peer certificate could not be verified by the platform CA
+    // store. The decision is made once the handshake completes so the result is
+    // identical for the Schannel and OpenSSL backends.
+    bool sslErrorsSeen_ = false;
+    bool tlsErrorReported_ = false;
     int reconnectAttempts_ = 0;
 };
