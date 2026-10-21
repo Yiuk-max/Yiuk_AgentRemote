@@ -161,9 +161,11 @@ func (s *Server) handleRegisterDevice(c *conn, m protocol.Message) error {
 		TTL:             ttl,
 	})
 	if err != nil {
+		s.audit.Warn("device_registration_failed", "device", audit.RedactID(m.DeviceID), "code", errorCode(err))
 		return s.deviceError(err)
 	}
 	if _, err := s.devices.SetOnline(info.ID, c.id); err != nil {
+		s.audit.Warn("device_registration_failed", "device", audit.RedactID(info.ID), "code", errorCode(err))
 		return s.deviceError(err)
 	}
 	c.role = roleDevice
