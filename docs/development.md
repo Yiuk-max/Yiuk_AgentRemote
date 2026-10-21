@@ -89,35 +89,26 @@ YIUK_PLATFORM_PASSWORD=your-platform-player-password \
 
 ## Agent MCP 配置
 
-将 `command` 改为本机 `yiuk-mcp` 可执行文件的绝对路径：
+Qt 客户端发布目录会同时包含 `yiuk-device-assist.exe` 和 `yiuk-mcp.exe`，不会把 MCP 文件复制到用户目录，也不会创建额外的安装目录。
+
+在 Qt 客户端的 **设置 → Agent 集成** 中点击 **复制 Agent 配置**，客户端会自动使用当前发布目录中的 `yiuk-mcp.exe`，并把适用于 Agent 的 MCP 配置复制到剪贴板。
+
+用户只需要把剪贴板内容粘贴到所使用 Agent 的 MCP 设置中。通用配置形态如下：
 
 ```json
 {
   "mcpServers": {
     "yiuk-switchboard": {
-      "command": "C:/path/to/yiuk-mcp",
+      "command": "C:/path/to/YiukDeviceAssist/yiuk-mcp.exe",
       "args": []
     }
   }
 }
 ```
 
-`yiuk-mcp` 优先读取平台客户端配置
-`%APPDATA%/Yiuk/DeviceAssist/platform-client.json`，否则回退到本机 Qt HTTP bridge；
-两者都不可用时工具返回 `NOT_CONFIGURED`。
+MCP 平台配置保存在当前用户的 `%LOCALAPPDATA%/Yiuk/DeviceAssist/platform-client.json`，由 Qt 客户端自动生成。旧版本的 `%APPDATA%/Yiuk/DeviceAssist` 配置会兼容读取。
 
-平台客户端配置示例：
-
-```json
-{
-  "address": "switchboard.example.com:25664",
-  "player_password": "REPLACE_WITH_THE_PLATFORM_PLAYER_PASSWORD",
-  "tls_ca": "C:/certs/platform-ca.pem",
-  "timeout_seconds": 30
-}
-```
-
-本地开发可使用 `"allow_plaintext": true`；生产环境必须使用 TLS 并校验证书。
+生产环境必须使用 TLS 并校验证书；`allow_plaintext` 只用于本机开发测试。
 
 ## 配置与安全约定
 

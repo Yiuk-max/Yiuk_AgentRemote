@@ -63,9 +63,45 @@ QPushButton *makeButton(const QString &text, const QString &style = {}) {
     return button;
 }
 
+QString yiukConfigRoot() {
+    QString root = qEnvironmentVariable("LOCALAPPDATA");
+    if (root.isEmpty()) root = qEnvironmentVariable("APPDATA");
+    if (root.isEmpty()) root = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    return QDir(root).filePath("Yiuk/DeviceAssist");
+}
+
+QString legacyYiukConfigRoot() {
+    const QString root = qEnvironmentVariable("APPDATA");
+    return root.isEmpty() ? QString() : QDir(root).filePath("Yiuk/DeviceAssist");
+}
+
+QString yiukConfigPath(const QString &name) {
+    return QDir(yiukConfigRoot()).filePath(name);
+}
+
+QString findYiukConfigPath(const QString &name) {
+    const QString current = yiukConfigPath(name);
+    if (QFileInfo::exists(current)) return current;
+    const QString legacyRoot = legacyYiukConfigRoot();
+    const QString legacy = legacyRoot.isEmpty() ? QString() : QDir(legacyRoot).filePath(name);
+    return !legacy.isEmpty() && QFileInfo::exists(legacy) ? legacy : current;
+}
+
+QString defaultCommandWorkingDirectory() {
+    const QString home = QDir::homePath();
+    return home.isEmpty() ? QDir::currentPath() : home;
+}
+
 QString spacedCode(const QString &digits) {
     if (digits.size() != 9) return digits;
     return digits.left(3) + " " + digits.mid(3, 3) + " " + digits.right(3);
+}
+
+QString groupedPassword(const QString &password) {
+    QStringList groups;
+    for (int offset = 0; offset < password.size(); offset += 8)
+        groups.append(password.mid(offset, 8));
+    return groups.join(" ");
 }
 
 QString randomDigits(int count) {
@@ -376,6 +412,7 @@ private:
     QComboBox *platformMode = nullptr;
     QLabel *platformStatusValue = nullptr;
     QPushButton *platformConnectButton = nullptr;
+    QLabel *mcpInstallStatus = nullptr;
     QHash<QString, quint64> platformOutputSequence;
     QHash<QString, QString> platformTaskSession;
     QHash<QString, QJsonObject> sessions;
@@ -416,9 +453,9 @@ private:
     }
 
     static QString loadOrCreateDeviceCode() {
-        const QString configRoot = QDir(qEnvironmentVariable("APPDATA")).filePath("Yiuk/DeviceAssist");
+        const QString configRoot = yiukConfigRoot();
         QDir().mkpath(configRoot);
-        const QString path = QDir(configRoot).filePath("device.json");
+        const QString path = findYiukConfigPath("device.json");
         QFile file(path);
         if (file.open(QIODevice::ReadOnly)) {
             const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
@@ -501,7 +538,7 @@ private:
     }
 
     QString sessionStatePath() const {
-        return QDir(qEnvironmentVariable("APPDATA")).filePath("Yiuk/DeviceAssist/sessions.json");
+        return yiukConfigPath("sessions.json");
     }
 
     void loadSessionState() {
@@ -599,27 +636,31 @@ private:
         passwordColumn->setSpacing(9);
         passwordColumn->addWidget(makeLabel("连接密码", "color: #758297; font-size: 13px;"));
         auto *passwordRow = new QHBoxLayout;
-        passwordValue = makeLabel("********", "font-size: 24px; letter-spacing: 3px; color: #172435;");
-        passwordValue->setFixedWidth(150);
+        passwordRow->setContentsMargins(0, 0, 0, 0);
+        passwordValue = makeLabel("********", "font-family: Consolas, monospace; font-size: 13px; color: #172435;");
+        passwordValue->setMinimumHeight(32);
         passwordValue->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        passwordRow->addWidget(passwordValue);
+        passwordRow->addWidget(passwordValue, 1);
+        passwordColumn->addLayout(passwordRow);
+        auto *passwordActions = new QHBoxLayout;
+        passwordActions->setContentsMargins(0, 0, 0, 0);
+        passwordActions->addStretch();
         auto *copyPassword = iconButton(Glyph::Copy, "复制密码");
         togglePassword = iconButton(Glyph::Eye, "显示密码");
         togglePassword->setObjectName("passwordEye");
         togglePassword->setCheckable(true);
-        passwordRow->addWidget(copyPassword);
-        passwordRow->addWidget(togglePassword);
-        passwordRow->addStretch();
         auto *refreshPassword = iconButton(Glyph::Refresh, "重新生成密码");
-        passwordRow->addWidget(refreshPassword);
-        passwordColumn->addLayout(passwordRow);
+        passwordActions->addWidget(copyPassword);
+        passwordActions->addWidget(togglePassword);
+        passwordActions->addWidget(refreshPassword);
+        passwordColumn->addLayout(passwordActions);
         identityLayout->addLayout(passwordColumn, 1);
         layout->addWidget(identity);
 
         connect(copyCode, &QPushButton::clicked, this, [this] { copyToClipboard(deviceCode, "设备码已复制"); });
         connect(togglePassword, &QPushButton::toggled, this, [this](bool visible) {
             passwordVisible = visible;
-            passwordValue->setText(passwordVisible ? temporaryPassword : "********");
+            passwordValue->setText(passwordVisible ? groupedPassword(temporaryPassword) : "********");
             togglePassword->setIcon(glyphIcon(passwordVisible ? Glyph::EyeOff : Glyph::Eye));
             togglePassword->setToolTip(passwordVisible ? "隐藏密码" : "显示密码");
         });
@@ -627,7 +668,7 @@ private:
         connect(refreshPassword, &QPushButton::clicked, this, [this] {
             temporaryPassword = randomPassword(32);
             ++passwordVersion;
-            passwordValue->setText(passwordVisible ? temporaryPassword : "********");
+            passwordValue->setText(passwordVisible ? groupedPassword(temporaryPassword) : "********");
             savePlatformConfig();
             if (platform && platform->isConnected()) {
                 const QString mode = platformMode ? platformMode->currentData().toString() : QStringLiteral("approval");
@@ -838,7 +879,7 @@ private:
         connect(copy, &QPushButton::clicked, this, [this] { copyToClipboard(deviceCode, "设备码已复制"); });
         connect(forget, &QPushButton::clicked, this, [this] {
             if (QMessageBox::question(this, "更换设备码", "更换后将生成新的设备码。") != QMessageBox::Yes) return;
-            const QString path = QDir(qEnvironmentVariable("APPDATA")).filePath("Yiuk/DeviceAssist/device.json");
+            const QString path = yiukConfigPath("device.json");
             QFile::remove(path);
             deviceCode = loadOrCreateDeviceCode();
             refreshDevicesPage();
@@ -1019,6 +1060,23 @@ private:
         platformLayout->addLayout(platformActionRow);
         settingsContentLayout->addWidget(platformSection);
 
+        auto agentParts = makeSettingsCard();
+        QFrame *agentSection = agentParts.first;
+        QVBoxLayout *agentLayout = agentParts.second;
+        addSectionHeader(agentLayout, "Agent 集成", "MCP 工具与客户端位于同一发布目录，不会复制到其他目录。把整个发布目录交给 Agent 使用即可。");
+        mcpInstallStatus = makeLabel("正在检查客户端目录中的 yiuk-mcp.exe。", "font-size: 12px; color: #69788d;");
+        mcpInstallStatus->setWordWrap(true);
+        agentLayout->addWidget(mcpInstallStatus);
+        auto *agentActionRow = new QHBoxLayout;
+        auto *copyMcpConfig = makeButton("复制 Agent 配置");
+        copyMcpConfig->setObjectName("primary");
+        agentActionRow->addWidget(copyMcpConfig);
+        agentActionRow->addStretch();
+        agentLayout->addLayout(agentActionRow);
+        settingsContentLayout->addWidget(agentSection);
+        connect(copyMcpConfig, &QPushButton::clicked, this, [this] { copyMcpAgentConfig(); });
+        refreshMcpIntegrationStatus();
+
         auto dataParts = makeSettingsCard();
         QFrame *dataSection = dataParts.first;
         QVBoxLayout *dataLayout = dataParts.second;
@@ -1183,7 +1241,7 @@ private:
             serviceFooter->setText("● 本机 API 启动失败");
             return;
         }
-        const QString configRoot = QDir(qEnvironmentVariable("APPDATA")).filePath("Yiuk/DeviceAssist");
+        const QString configRoot = yiukConfigRoot();
         if (!QDir().mkpath(configRoot)) {
             serviceState->setText("● MCP 配置目录创建失败");
             serviceFooter->setText("● 无法创建本机配置目录");
@@ -1210,7 +1268,7 @@ private:
     }
 
     QString platformConfigPath() const {
-        return QDir(qEnvironmentVariable("APPDATA")).filePath("Yiuk/DeviceAssist/platform.json");
+        return yiukConfigPath("platform.json");
     }
 
     void loadPlatformConfig() {
@@ -1220,7 +1278,7 @@ private:
         cfg.mode = "approval";
         cfg.ttlSeconds = 600;
         cfg.temporaryPassword = randomPassword(32);
-        QFile file(platformConfigPath());
+        QFile file(findYiukConfigPath("platform.json"));
         if (file.open(QIODevice::ReadOnly)) {
             const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
             cfg.enabled = object.value("enabled").toBool(false);
@@ -1246,7 +1304,8 @@ private:
             const int index = platformMode->findData(cfg.mode);
             platformMode->setCurrentIndex(index >= 0 ? index : 0);
         }
-        if (passwordValue) passwordValue->setText(passwordVisible ? temporaryPassword : "********");
+        if (passwordValue) passwordValue->setText(passwordVisible ? groupedPassword(temporaryPassword) : "********");
+        syncMcpClientConfig(cfg);
     }
 
     void savePlatformConfig() {
@@ -1278,6 +1337,52 @@ private:
         QFile file(platformConfigPath());
         if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
             file.write(QJsonDocument(object).toJson(QJsonDocument::Compact));
+        syncMcpClientConfig(cfg);
+    }
+
+    QString mcpToolSourcePath() const {
+        return QDir(QCoreApplication::applicationDirPath()).filePath("yiuk-mcp.exe");
+    }
+
+    QString mcpAgentConfigText() const {
+        QJsonObject server{{"command", mcpToolSourcePath()}, {"args", QJsonArray{}}};
+        QJsonObject root{{"mcpServers", QJsonObject{{"yiuk-switchboard", server}}}};
+        return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    }
+
+    bool syncMcpClientConfig(const PlatformClient::Config &cfg) {
+        if (cfg.address.trimmed().isEmpty() || cfg.playerPassword.isEmpty()) return false;
+        const QString root = yiukConfigRoot();
+        if (!QDir().mkpath(root)) return false;
+        QJsonObject object{
+            {"address", cfg.address.trimmed()},
+            {"player_password", cfg.playerPassword},
+            {"timeout_seconds", 30},
+        };
+        if (cfg.tls) {
+            if (!cfg.caFile.trimmed().isEmpty()) object.insert("tls_ca", cfg.caFile.trimmed());
+            object.insert("insecure_skip_verify", cfg.allowInsecure);
+        } else {
+            object.insert("allow_plaintext", true);
+        }
+        QFile file(QDir(root).filePath("platform-client.json"));
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+        return file.write(QJsonDocument(object).toJson(QJsonDocument::Compact)) >= 0;
+    }
+
+    void refreshMcpIntegrationStatus() {
+        if (!mcpInstallStatus) return;
+        if (!QFileInfo::exists(mcpToolSourcePath())) {
+            mcpInstallStatus->setText("当前发布目录缺少 yiuk-mcp.exe，请重新解压完整客户端包。");
+            return;
+        }
+        mcpInstallStatus->setText("MCP 工具已就绪，与客户端位于同一目录：\n" + mcpToolSourcePath() + "\n平台连接信息会自动同步。");
+    }
+
+    void copyMcpAgentConfig() {
+        refreshMcpIntegrationStatus();
+        copyToClipboard(mcpAgentConfigText(), "Agent MCP 配置已复制");
+        statusBar()->showMessage("把配置粘贴到 Agent 的 MCP 设置中即可", 4000);
     }
 
     void startPlatform() {
@@ -1470,7 +1575,10 @@ private:
         process->setProgram(program);
         process->setArguments({"-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath});
         appendActivity(sessionId, QString("本机已启动 PowerShell 任务 %1").arg(requestId.left(8)));
-        if (!workingDirectory.isEmpty() && QDir(workingDirectory).exists()) process->setWorkingDirectory(workingDirectory);
+        const QString effectiveWorkingDirectory = workingDirectory.trimmed().isEmpty()
+            ? defaultCommandWorkingDirectory() : workingDirectory.trimmed();
+        if (QDir(effectiveWorkingDirectory).exists())
+            process->setWorkingDirectory(effectiveWorkingDirectory);
         tasks.insert(requestId, {{"session_id", sessionId}, {"request_id", requestId}, {"status", "running"},
                                  {"stdout", ""}, {"stderr", ""}, {"exit_code", QJsonValue(QJsonValue::Null)}, {"truncated", false}});
         processes.insert(requestId, process);
@@ -1811,8 +1919,10 @@ private:
         QStringList args{"-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath};
         process->setProgram(program);
         process->setArguments(args);
-        const QString cwd = input.value("working_directory").toString();
-        if (!cwd.isEmpty() && QDir(cwd).exists()) process->setWorkingDirectory(cwd);
+        const QString requestedWorkingDirectory = input.value("working_directory").toString().trimmed();
+        const QString cwd = requestedWorkingDirectory.isEmpty()
+            ? defaultCommandWorkingDirectory() : requestedWorkingDirectory;
+        if (QDir(cwd).exists()) process->setWorkingDirectory(cwd);
         tasks.insert(requestId, {{"session_id", sessionId}, {"request_id", requestId}, {"status", "running"}, {"stdout", ""}, {"stderr", ""}, {"exit_code", QJsonValue(QJsonValue::Null)}, {"truncated", false}});
         processes.insert(requestId, process);
         taskFiles.insert(requestId, scriptPath);

@@ -26,6 +26,33 @@ endif()
 
 target_link_libraries(yiuk-device-assist PRIVATE Qt6::Widgets Qt6::Network)
 
+# Ship the Agent MCP adapter beside the Qt client so users do not need to
+# install Go or download a second repository.
+find_program(YIUK_GO_EXECUTABLE go)
+if(YIUK_GO_EXECUTABLE)
+    set(YIUK_MCP_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/yiuk-mcp.exe")
+    file(GLOB_RECURSE YIUK_GO_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/../cmd/**/*.go"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../internal/**/*.go"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../ops/**/*.go"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../go.mod"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../go.sum"
+    )
+    add_custom_command(
+        OUTPUT "${YIUK_MCP_OUTPUT}"
+        COMMAND "${YIUK_GO_EXECUTABLE}" build -o "${YIUK_MCP_OUTPUT}" ./cmd/yiuk-mcp
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+        DEPENDS ${YIUK_GO_SOURCES}
+        COMMENT "Building bundled yiuk-mcp.exe"
+        VERBATIM
+    )
+    add_custom_target(yiuk-mcp ALL DEPENDS "${YIUK_MCP_OUTPUT}")
+    add_dependencies(yiuk-device-assist yiuk-mcp)
+    set_target_properties(yiuk-mcp PROPERTIES FOLDER "bundled")
+else()
+    message(WARNING "Go was not found; yiuk-mcp.exe will not be bundled")
+endif()
+
 # Optional headless interop harness used to verify the protocol against the Go
 # platform server. Build with -DYIUK_BUILD_TESTS=ON.
 option(YIUK_BUILD_TESTS "Build the Qt platform interop harness" OFF)

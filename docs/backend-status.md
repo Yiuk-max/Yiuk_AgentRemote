@@ -84,7 +84,7 @@ ping / pong / error
 - 本地缓存流式 `command_output`，支持 `get_command_result` 游标分页。
 - `request_connection` 支持可选 `temporary_password` 字段（平台 backend 必填）。
 - 平台返回的结构化错误码直接映射为 `agenttools.Error`。
-- `cmd/yiuk-mcp` 优先使用 `%APPDATA%/Yiuk/DeviceAssist/platform-client.json`，否则回退本机 Qt bridge。
+- `cmd/yiuk-mcp` 优先使用 `%LOCALAPPDATA%/Yiuk/DeviceAssist/platform-client.json`，否则回退本机 Qt bridge；Qt 客户端发布包会自带 `yiuk-mcp.exe` 并在设置页提供一键安装和配置复制。
 
 ### Minecraft 边界
 
@@ -121,7 +121,7 @@ qt-client/tests/platform_interop.cpp  Qt↔Go 互操作测试
 已完成：
 
 - 设置页新增平台服务配置：服务器地址、player 密码、TLS、自签名证书开发选项、`direct` / `approval` 授权模式、连接/断开。
-- player 密码使用 Windows DPAPI 保护后写入 `%APPDATA%/Yiuk/DeviceAssist/platform.json`；非 Windows 构建显式使用明文标记，仅用于开发。
+- player 密码使用 Windows DPAPI 保护后写入 `%LOCALAPPDATA%/Yiuk/DeviceAssist/platform.json`；非 Windows 构建显式使用明文标记，仅用于开发。
 - 设备临时密码改为本地生成 32 字符 base32 密码；刷新密码会提升版本并通过 `update_temporary_password` 同步到平台，旧会话由服务端立即撤销。
 - Qt 通过 `QSslSocket` 连接平台，完成 `authenticate_player`、`register_device`、心跳和自动重连（指数退避）。
 - 平台 `session_request` 会进入现有审批 UI，批准/拒绝通过 `approve_session` / `reject_session` 回传。
