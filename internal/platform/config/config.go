@@ -247,8 +247,11 @@ func (c Config) Validate() error {
 	if c.OfflineDeviceKeepSec < 60 {
 		return errors.New("offline_device_keep_sec must be at least 60")
 	}
-	if c.PurposeMaxLen < 1 || c.CommandMaxLen < 1 || c.WorkingDirMaxLen < 1 || c.IdentifierMaxLen < 1 {
+	if c.CloseReasonMaxLen < 1 || c.PurposeMaxLen < 1 || c.CommandMaxLen < 1 || c.WorkingDirMaxLen < 1 || c.IdentifierMaxLen < 1 {
 		return errors.New("length limits must be positive")
+	}
+	if c.ObserverSlowClientBuf < 1 {
+		return errors.New("slow_client_buffer must be positive")
 	}
 	return nil
 }

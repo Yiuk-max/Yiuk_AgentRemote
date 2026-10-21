@@ -80,6 +80,21 @@ func TestUpdatePasswordRejectsStaleVersion(t *testing.T) {
 	}
 }
 
+func TestReRegistrationRequiresCurrentTemporaryPassword(t *testing.T) {
+	now := time.Unix(1000, 0)
+	m := newManager(2, time.Minute, func() time.Time { return now })
+	password := "0123456789abcdef0123456789abcdef"
+	if _, _, err := m.Register(Registration{ID: "d", TemporaryPass: password}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.Register(Registration{ID: "d", TemporaryPass: "fedcba9876543210fedcba9876543210"}); !errors.Is(err, ErrBadPassword) {
+		t.Fatalf("got %v, want ErrBadPassword", err)
+	}
+	if _, _, err := m.Register(Registration{ID: "d", TemporaryPass: password}); err != nil {
+		t.Fatalf("current password should reconnect: %v", err)
+	}
+}
+
 func TestOnlineOwnershipAndLimits(t *testing.T) {
 	now := time.Unix(1000, 0)
 	m := newManager(1, time.Minute, func() time.Time { return now })

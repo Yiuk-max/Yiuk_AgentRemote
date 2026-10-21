@@ -15,6 +15,7 @@ type Config struct {
 	RelayBinary     string `yaml:"relay_binary"`
 	RelayConfig     string `yaml:"relay_config"`
 	RelayWorkingDir string `yaml:"relay_working_dir"`
+	MaxConnections  int    `yaml:"max_connections"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -38,6 +39,12 @@ func (c Config) Validate() error {
 	}
 	if c.RelayBinary == "" || c.RelayConfig == "" {
 		return fmt.Errorf("relay_binary and relay_config are required")
+	}
+	if c.MaxConnections == 0 {
+		return nil
+	}
+	if c.MaxConnections < 1 || c.MaxConnections > 100000 {
+		return fmt.Errorf("max_connections must be between 1 and 100000")
 	}
 	return nil
 }

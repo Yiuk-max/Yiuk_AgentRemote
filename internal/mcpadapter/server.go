@@ -12,14 +12,9 @@ import (
 
 func NewServer(core *agenttools.Core) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "yiuk-switchboard", Version: "0.1.0"}, nil)
-	for _, spec := range core.Tools() {
-		toolSpec := spec
-		server.AddTool(&mcp.Tool{
-			Name:        toolSpec.Name,
-			Description: toolSpec.Description,
-			InputSchema: toolSpec.InputSchema,
-		}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			response := core.Call(ctx, toolSpec.Name, req.Params.Arguments)
+	newHandler := func(toolName string) mcp.ToolHandler {
+		return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			response := core.Call(ctx, toolName, req.Params.Arguments)
 			content, err := json.Marshal(response)
 			if err != nil {
 				return nil, fmt.Errorf("encode tool response: %w", err)
@@ -29,7 +24,14 @@ func NewServer(core *agenttools.Core) *mcp.Server {
 				StructuredContent: response,
 				IsError:           !response.OK,
 			}, nil
-		})
+		}
+	}
+	for _, spec := range core.Tools() {
+		server.AddTool(&mcp.Tool{
+			Name:        spec.Name,
+			Description: spec.Description,
+			InputSchema: spec.InputSchema,
+		}, newHandler(spec.Name))
 	}
 	return server
 }

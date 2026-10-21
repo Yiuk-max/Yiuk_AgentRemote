@@ -22,7 +22,10 @@ import (
 	relayconfig "yiuk-switchboard/internal/config"
 )
 
-const maxFrameBytes = 2 << 20
+const (
+	maxFrameBytes         = 2 << 20
+	defaultMaxConnections = 256
+)
 
 type wireRequest struct {
 	Version  int             `json:"version"`
@@ -56,6 +59,11 @@ func Run(c Config) error {
 	a := &api{config: c, auth: newAuthenticator(c.RelayConfig), relay: newRelayProcess(c), loginLimiter: auth.NewLimiter(5, time.Minute)}
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
+	maxConnections := c.MaxConnections
+	if maxConnections <= 0 {
+		maxConnections = defaultMaxConnections
+	}
+	connectionSlots := make(chan struct{}, maxConnections)
 	var connections sync.Map
 	var handlers sync.WaitGroup
 	go func() {
@@ -71,9 +79,20 @@ func Run(c Config) error {
 			}
 			return acceptErr
 		}
+		select {
+		case connectionSlots <- struct{}{}:
+		default:
+			_ = conn.Close()
+			continue
+		}
 		connections.Store(conn, conn)
 		handlers.Add(1)
-		go func() { defer handlers.Done(); defer connections.Delete(conn); a.serveConn(conn) }()
+		go func() {
+			defer handlers.Done()
+			defer connections.Delete(conn)
+			defer func() { <-connectionSlots }()
+			a.serveConn(conn)
+		}()
 	}
 	handlers.Wait()
 	if a.relay.status()["running"].(bool) {
@@ -124,7 +143,6 @@ func (a *api) serveConn(conn net.Conn) {
 			return
 		}
 	}
-	_ = conn.SetDeadline(time.Time{})
 	r := bufio.NewReaderSize(conn, 64<<10)
 	authenticated := false
 	for {
@@ -142,6 +160,11 @@ func (a *api) serveConn(conn net.Conn) {
 		if err = writeResponse(conn, response); err != nil {
 			log.Printf("write response to %s failed (type=%s): %v", remote, request.Type, err)
 			return
+		}
+		if authenticated {
+			// The authentication deadline only protects the handshake. An
+			// authenticated operations connection is allowed to stay idle.
+			_ = conn.SetDeadline(time.Time{})
 		}
 	}
 }

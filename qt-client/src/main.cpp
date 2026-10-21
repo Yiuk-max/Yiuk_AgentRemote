@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QButtonGroup>
 #include <QClipboard>
 #include <QComboBox>
 #include <QFrame>
@@ -24,6 +25,7 @@
 #include <QSettings>
 #include <QStackedWidget>
 #include <QTemporaryFile>
+#include <QTextCursor>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -41,6 +43,8 @@
 #include <QDir>
 #include <QFile>
 #include <QDateTime>
+#include <QDialog>
+#include <QPlainTextEdit>
 #include <QScrollArea>
 #include <QTimer>
 
@@ -248,7 +252,19 @@ public:
             QLabel#sectionTitle { font-size: 18px; font-weight: 650; }
             QFrame#identityPanel { background: #f5f7fa; border: 1px solid #edf0f4; border-radius: 14px; }
             QFrame#field { background: #ffffff; border: 1px solid #cbd3de; border-radius: 14px; }
+            QFrame#settingsCard { background: #ffffff; border: 1px solid #e1e7ef; border-radius: 8px; }
+            QFrame#settingsNav { background: #f7f9fc; border: 1px solid #e5eaf1; border-radius: 8px; }
             QLineEdit { border: none; background: transparent; color: #182230; font-size: 17px; selection-background-color: #b9d7ff; }
+            QLineEdit#settingsField { border: 1px solid #cbd5e1; border-radius: 6px; background: #ffffff; color: #182230; font-size: 14px; padding: 8px 10px; }
+            QLineEdit#settingsField:focus { border-color: #1479ed; }
+            QComboBox#settingsField { border: 1px solid #cbd5e1; border-radius: 6px; background: #ffffff; color: #182230; font-size: 14px; padding: 7px 10px; min-height: 20px; }
+            QComboBox#settingsField:focus { border-color: #1479ed; }
+            QComboBox#settingsField::drop-down { border: none; width: 28px; }
+            QScrollArea#settingsScroll { border: none; background: transparent; }
+            QPushButton#settingsCategory { text-align: left; border: none; border-radius: 6px; background: transparent; color: #536174; padding: 10px 12px; font-size: 13px; }
+            QPushButton#settingsCategory:hover { background: #edf3fa; color: #126fe0; }
+            QPushButton#settingsCategory:checked { background: #e2edf9; color: #126fe0; font-weight: 600; }
+            QLabel#settingsFieldLabel { color: #5f6d80; font-size: 13px; }
             QPushButton { border: 1px solid #d6dde7; border-radius: 6px; background: #ffffff; padding: 8px 12px; color: #334155; }
             QPushButton:hover { background: #f3f7fc; border-color: #b9c7d8; }
             QPushButton#primary { background: #1479ed; border: 1px solid #1479ed; color: #ffffff; font-size: 15px; font-weight: 600; padding: 12px 24px; }
@@ -368,14 +384,22 @@ private:
     QHash<QString, QString> taskFiles;
     QSystemTrayIcon *trayIcon = nullptr;
     QHash<QString, QString> notificationSessions;
+    QDialog *activityWindow = nullptr;
+    QComboBox *activitySessionSelector = nullptr;
+    QLabel *activityStatusValue = nullptr;
+    QPlainTextEdit *activityLog = nullptr;
+    QPushButton *activityDisconnectButton = nullptr;
+    QHash<QString, QStringList> activityLogs;
 
     void setupSystemTray() {
         trayIcon = new QSystemTrayIcon(QApplication::style()->standardIcon(QStyle::SP_ComputerIcon), this);
         trayIcon->setToolTip("Yiuk Device Assist");
         auto *menu = new QMenu(this);
         auto *open = menu->addAction("打开 Yiuk Device Assist");
+        auto *activity = menu->addAction("打开远程协助活动");
         auto *quit = menu->addAction("退出");
         connect(open, &QAction::triggered, this, [this] { showNormal(); activateWindow(); });
+        connect(activity, &QAction::triggered, this, [this] { showActivityWindow(); });
         connect(quit, &QAction::triggered, qApp, &QApplication::quit);
         trayIcon->setContextMenu(menu);
         connect(trayIcon, &QSystemTrayIcon::messageClicked, this, [this] {
@@ -861,77 +885,163 @@ private:
 
     QWidget *createSettingsPage() {
         QVBoxLayout *layout = nullptr;
-        settingsPage = pageShell("设置", "管理本机协助行为。", &layout);
-        auto *security = new QFrame;
-        security->setObjectName("identityPanel");
-        auto *securityLayout = new QVBoxLayout(security);
-        securityLayout->setContentsMargins(18, 16, 18, 16);
-        securityLayout->setSpacing(10);
-        securityLayout->addWidget(makeLabel("本机协助", "font-size: 15px; font-weight: 650; color: #263446;"));
-        acceptingRequests = new QCheckBox("允许本机接收协助请求");
-        acceptingRequests->setChecked(QSettings().value("allowLocalDemoRequests", true).toBool());
-        acceptingRequests->setStyleSheet("font-size: 13px; color: #435168;");
-        securityLayout->addWidget(acceptingRequests);
-        auto *risk = makeLabel("PowerShell 将以当前 Windows 用户权限运行。这不是沙箱。", "font-size: 12px; color: #8a5b14; background: #fff6e5; border-radius: 6px; padding: 10px;");
-        risk->setWordWrap(true);
-        securityLayout->addWidget(risk);
-        settingsStatusValue = makeLabel("", "font-size: 12px; color: #69788d;");
-        securityLayout->addWidget(settingsStatusValue);
-        layout->addWidget(security);
-        layout->addSpacing(18);
+        settingsPage = pageShell("设置", "管理本机协助、平台连接和本地数据。", &layout);
 
-        auto *platformCard = new QFrame;
-        platformCard->setObjectName("identityPanel");
-        auto *platformLayout = new QVBoxLayout(platformCard);
-        platformLayout->setContentsMargins(18, 16, 18, 16);
-        platformLayout->setSpacing(10);
-        platformLayout->addWidget(makeLabel("平台服务", "font-size: 15px; font-weight: 650; color: #263446;"));
+        auto *settingsBody = new QHBoxLayout;
+        settingsBody->setContentsMargins(0, 0, 0, 0);
+        settingsBody->setSpacing(16);
+
+        auto *settingsNav = new QFrame;
+        settingsNav->setObjectName("settingsNav");
+        settingsNav->setFixedWidth(148);
+        auto *settingsNavLayout = new QVBoxLayout(settingsNav);
+        settingsNavLayout->setContentsMargins(8, 12, 8, 12);
+        auto *settingsCategoryGroup = new QButtonGroup(settingsNav);
+        settingsCategoryGroup->setExclusive(true);
+        settingsNavLayout->setSpacing(3);
+        settingsNavLayout->addWidget(makeLabel("设置项目", "font-size: 12px; font-weight: 650; color: #8793a3; padding: 0 8px 8px;"));
+
+        auto *generalCategory = new QPushButton("本机协助");
+        auto *platformCategory = new QPushButton("平台服务");
+        auto *dataCategory = new QPushButton("本地数据");
+        const QList<QPushButton *> categories{generalCategory, platformCategory, dataCategory};
+        for (QPushButton *category : categories) {
+            settingsCategoryGroup->addButton(category);
+            category->setObjectName("settingsCategory");
+            category->setCheckable(true);
+            category->setCursor(Qt::PointingHandCursor);
+            category->setMinimumHeight(38);
+            settingsNavLayout->addWidget(category);
+        }
+        generalCategory->setChecked(true);
+        settingsNavLayout->addStretch();
+        settingsBody->addWidget(settingsNav);
+
+        auto *settingsScroll = new QScrollArea;
+        settingsScroll->setObjectName("settingsScroll");
+        settingsScroll->setWidgetResizable(true);
+        settingsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        settingsScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        auto *settingsContent = new QWidget;
+        auto *settingsContentLayout = new QVBoxLayout(settingsContent);
+        settingsContentLayout->setContentsMargins(0, 0, 8, 16);
+        settingsContentLayout->setSpacing(14);
+        settingsScroll->setWidget(settingsContent);
+        settingsBody->addWidget(settingsScroll, 1);
+        layout->addLayout(settingsBody, 1);
+
+        auto addSectionHeader = [](QVBoxLayout *sectionLayout, const QString &title, const QString &description) {
+            sectionLayout->addWidget(makeLabel(title, "font-size: 16px; font-weight: 650; color: #263446;"));
+            auto *descriptionLabel = makeLabel(description, "font-size: 12px; color: #7a8798;");
+            descriptionLabel->setWordWrap(true);
+            sectionLayout->addWidget(descriptionLabel);
+        };
+        auto addFormRow = [](QVBoxLayout *sectionLayout, const QString &labelText, QWidget *control) {
+            auto *row = new QHBoxLayout;
+            row->setContentsMargins(0, 0, 0, 0);
+            row->setSpacing(14);
+            auto *label = makeLabel(labelText);
+            label->setObjectName("settingsFieldLabel");
+            label->setFixedWidth(96);
+            label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+            row->addWidget(label);
+            row->addWidget(control, 1);
+            sectionLayout->addLayout(row);
+        };
+        auto makeSettingsCard = []() {
+            auto *card = new QFrame;
+            card->setObjectName("settingsCard");
+            auto *cardLayout = new QVBoxLayout(card);
+            cardLayout->setContentsMargins(18, 16, 18, 16);
+            cardLayout->setSpacing(11);
+            return qMakePair(card, cardLayout);
+        };
+
+        auto generalParts = makeSettingsCard();
+        QFrame *generalSection = generalParts.first;
+        QVBoxLayout *generalLayout = generalParts.second;
+        addSectionHeader(generalLayout, "本机协助", "控制此电脑是否接受来自本地工具的协助请求。");
+        acceptingRequests = new QCheckBox("允许本机接收协助请求");
+        acceptingRequests->setStyleSheet("font-size: 13px; color: #435168;");
+        acceptingRequests->setChecked(QSettings().value("allowLocalDemoRequests", true).toBool());
+        generalLayout->addWidget(acceptingRequests);
+        auto *risk = makeLabel("PowerShell 将以当前 Windows 用户权限运行。这不是沙箱。", "font-size: 12px; color: #8a5b14; background: #fff6e5; border: 1px solid #f3dfb0; border-radius: 6px; padding: 9px;");
+        risk->setWordWrap(true);
+        generalLayout->addWidget(risk);
+        settingsStatusValue = makeLabel("", "font-size: 12px; color: #69788d;");
+        generalLayout->addWidget(settingsStatusValue);
+        settingsContentLayout->addWidget(generalSection);
+
+        auto platformParts = makeSettingsCard();
+        QFrame *platformSection = platformParts.first;
+        QVBoxLayout *platformLayout = platformParts.second;
+        addSectionHeader(platformLayout, "平台服务", "连接平台后，可以发现在线设备并接收远程协助请求。");
         platformEnabled = new QCheckBox("启用平台服务连接");
         platformEnabled->setStyleSheet("font-size: 13px; color: #435168;");
         platformLayout->addWidget(platformEnabled);
-        auto *addressRow = new QHBoxLayout;
-        auto *addressLabel = makeLabel("服务器地址", "font-size: 12px; color: #69788d;");
-        addressLabel->setFixedWidth(84);
-        addressRow->addWidget(addressLabel);
+
         platformAddress = new QLineEdit;
+        platformAddress->setObjectName("settingsField");
+        platformAddress->setMinimumHeight(36);
         platformAddress->setPlaceholderText("switchboard.example.com:25664");
-        addressRow->addWidget(platformAddress, 1);
-        platformLayout->addLayout(addressRow);
-        auto *passwordRow = new QHBoxLayout;
-        auto *passwordLabel = makeLabel("Player 密码", "font-size: 12px; color: #69788d;");
-        passwordLabel->setFixedWidth(84);
-        passwordRow->addWidget(passwordLabel);
+        addFormRow(platformLayout, "服务器地址", platformAddress);
+
         platformPassword = new QLineEdit;
+        platformPassword->setObjectName("settingsField");
+        platformPassword->setMinimumHeight(36);
         platformPassword->setEchoMode(QLineEdit::Password);
-        passwordRow->addWidget(platformPassword, 1);
-        platformLayout->addLayout(passwordRow);
-        auto *optionsRow = new QHBoxLayout;
+        addFormRow(platformLayout, "Player 密码", platformPassword);
+
         platformTls = new QCheckBox("使用 TLS");
         platformTls->setChecked(true);
+        addFormRow(platformLayout, "连接安全", platformTls);
+
         platformAllowInsecure = new QCheckBox("允许自签名证书（仅开发）");
-        optionsRow->addWidget(platformTls);
-        optionsRow->addWidget(platformAllowInsecure);
-        optionsRow->addStretch();
-        platformLayout->addLayout(optionsRow);
-        auto *modeRow = new QHBoxLayout;
-        auto *modeLabel = makeLabel("授权模式", "font-size: 12px; color: #69788d;");
-        modeLabel->setFixedWidth(84);
-        modeRow->addWidget(modeLabel);
+        addFormRow(platformLayout, "开发选项", platformAllowInsecure);
+
         platformMode = new QComboBox;
+        platformMode->setObjectName("settingsField");
+        platformMode->setMinimumHeight(36);
         platformMode->addItem("等待对方同意", "approval");
         platformMode->addItem("直接远程", "direct");
-        modeRow->addWidget(platformMode);
-        modeRow->addStretch();
-        platformLayout->addLayout(modeRow);
+        addFormRow(platformLayout, "授权模式", platformMode);
+
         auto *platformActionRow = new QHBoxLayout;
+        platformActionRow->setContentsMargins(110, 3, 0, 0);
+        platformActionRow->setSpacing(12);
         platformConnectButton = makeButton("连接平台");
+        platformConnectButton->setObjectName("primary");
+        platformConnectButton->setMinimumHeight(36);
         platformActionRow->addWidget(platformConnectButton);
         platformStatusValue = makeLabel("状态：平台未连接", "font-size: 12px; color: #69788d;");
         platformActionRow->addWidget(platformStatusValue);
         platformActionRow->addStretch();
         platformLayout->addLayout(platformActionRow);
-        layout->addWidget(platformCard);
-        layout->addSpacing(18);
+        settingsContentLayout->addWidget(platformSection);
+
+        auto dataParts = makeSettingsCard();
+        QFrame *dataSection = dataParts.first;
+        QVBoxLayout *dataLayout = dataParts.second;
+        addSectionHeader(dataLayout, "本地数据", "会话和任务记录仅保存在当前 Windows 用户配置目录。");
+        auto *historyInfo = makeLabel("最多保留 100 条会话和 300 条任务记录。清除记录不会停止正在运行的任务。", "font-size: 12px; color: #69788d;");
+        historyInfo->setWordWrap(true);
+        dataLayout->addWidget(historyInfo);
+        auto *clearHistory = makeButton("清除本地会话和任务记录");
+        clearHistory->setObjectName("subtle");
+        clearHistory->setStyleSheet("QPushButton { color: #a52b2b; border: 1px solid #e8bcbc; border-radius: 6px; padding: 8px 12px; background: white; } QPushButton:hover { background: #fff0f0; }");
+        dataLayout->addWidget(clearHistory, 0, Qt::AlignLeft);
+        settingsContentLayout->addWidget(dataSection);
+        settingsContentLayout->addStretch();
+
+        connect(generalCategory, &QPushButton::clicked, this, [settingsScroll, generalSection] {
+            settingsScroll->ensureWidgetVisible(generalSection);
+        });
+        connect(platformCategory, &QPushButton::clicked, this, [settingsScroll, platformSection] {
+            settingsScroll->ensureWidgetVisible(platformSection);
+        });
+        connect(dataCategory, &QPushButton::clicked, this, [settingsScroll, dataSection] {
+            settingsScroll->ensureWidgetVisible(dataSection);
+        });
 
         connect(platformConnectButton, &QPushButton::clicked, this, [this] {
             if (!platform) return;
@@ -961,16 +1071,6 @@ private:
                 statusBar()->showMessage("授权模式已同步到平台", 1800);
             }
         });
-
-        layout->addWidget(makeLabel("本地数据", "font-size: 15px; font-weight: 650; color: #263446;"));
-        layout->addSpacing(7);
-        auto *historyInfo = makeLabel("最多保留 100 条会话和 300 条任务记录，仅保存在当前 Windows 用户配置目录。", "font-size: 12px; color: #69788d;");
-        historyInfo->setWordWrap(true);
-        layout->addWidget(historyInfo);
-        auto *clearHistory = makeButton("清除本地会话和任务记录");
-        clearHistory->setObjectName("subtle");
-        clearHistory->setStyleSheet("QPushButton { color: #a52b2b; border: 1px solid #e8bcbc; border-radius: 6px; padding: 8px 12px; background: white; } QPushButton:hover { background: #fff0f0; }");
-        layout->addWidget(clearHistory, 0, Qt::AlignLeft);
         connect(clearHistory, &QPushButton::clicked, this, [this] {
             QMessageBox confirm(this);
             confirm.setWindowTitle("清除本地记录");
@@ -994,7 +1094,6 @@ private:
             QSettings().setValue("allowLocalDemoRequests", enabled);
             refreshSettingsPage();
         });
-        layout->addStretch();
         refreshSettingsPage();
         return settingsPage;
     }
@@ -1242,6 +1341,7 @@ private:
         if (!record.contains("requester")) record.insert("requester", session.value("operator").toString("平台操作者"));
         if (!record.contains("source_device")) record.insert("source_device", session.value("operator_device").toString());
         sessions.insert(id, record);
+        appendActivity(id, QString("收到 Agent 协助请求：%1").arg(record.value("purpose").toString()));
         persistSessionState();
         refreshPendingRequests();
         refreshSessionsPage();
@@ -1265,6 +1365,7 @@ private:
         if (!record.contains("expires_at_ms") && record.value("expires_at").isDouble())
             record.insert("expires_at_ms", record.value("expires_at").toDouble() * 1000.0);
         sessions.insert(id, record);
+        appendActivity(id, QString("平台会话状态：%1").arg(session.value("status").toString()));
         persistSessionState();
         const QString status = session.value("status").toString();
         if (status != "active" && status != "approved" && status != "pending_approval")
@@ -1272,6 +1373,7 @@ private:
         refreshPendingRequests();
         refreshActiveSessions();
         refreshSessionsPage();
+        if (activitySessionSelector) refreshActivityWindow();
     }
 
     void onPlatformSessionCreated(const QJsonObject &session) {
@@ -1289,6 +1391,7 @@ private:
     }
 
     void onPlatformCloseRequested(const QString &sessionId) {
+        appendActivity(sessionId, "平台已请求结束会话");
         stopTasksForSession(sessionId, "cancelled");
         QJsonObject session = sessions.value(sessionId);
         session.insert("status", "closed");
@@ -1297,9 +1400,11 @@ private:
         refreshPendingRequests();
         refreshActiveSessions();
         refreshSessionsPage();
+        if (activitySessionSelector) refreshActivityWindow();
     }
 
     void onPlatformCancelRequested(const QString &sessionId, const QString &requestId) {
+        appendActivity(sessionId, QString("Agent 请求停止任务：%1").arg(requestId.left(8)));
         if (processes.contains(requestId)) {
             QProcess *process = processes.take(requestId);
             process->kill();
@@ -1321,6 +1426,8 @@ private:
 
     void onPlatformCommandRequested(const QString &sessionId, const QString &requestId, const QString &command,
                                     const QString &workingDirectory, int timeoutSeconds) {
+        appendActivity(sessionId, QString("Agent 开始执行任务 %1\nPowerShell> %2").arg(requestId.left(8), command));
+        showActivityWindow(sessionId);
         executePlatformCommand(sessionId, requestId, command, workingDirectory, timeoutSeconds);
     }
 
@@ -1362,6 +1469,7 @@ private:
         }
         process->setProgram(program);
         process->setArguments({"-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath});
+        appendActivity(sessionId, QString("本机已启动 PowerShell 任务 %1").arg(requestId.left(8)));
         if (!workingDirectory.isEmpty() && QDir(workingDirectory).exists()) process->setWorkingDirectory(workingDirectory);
         tasks.insert(requestId, {{"session_id", sessionId}, {"request_id", requestId}, {"status", "running"},
                                  {"stdout", ""}, {"stderr", ""}, {"exit_code", QJsonValue(QJsonValue::Null)}, {"truncated", false}});
@@ -1382,7 +1490,9 @@ private:
                 bytes.truncate(available);
                 truncated = true;
             }
-            current += QString::fromUtf8(bytes);
+            const QString output = QString::fromUtf8(bytes);
+            current += output;
+            appendActivity(sessionId, QString("%1> %2").arg(standardError ? "stderr" : "stdout", output.left(4000)));
             task.insert(key, current);
             task.insert("truncated", truncated);
             tasks.insert(requestId, task);
@@ -1443,6 +1553,7 @@ private:
             if (process->state() == QProcess::NotRunning) return;
             QJsonObject task = tasks.value(requestId);
             task.insert("status", "timed_out");
+            appendActivity(sessionId, QString("任务 %1 已超时，正在停止 PowerShell").arg(requestId.left(8)));
             tasks.insert(requestId, task);
             persistSessionState();
             process->kill();
@@ -1610,6 +1721,8 @@ private:
         if (platformSession && platform && platform->isConnected()) {
             if (approved) platform->approveSession(id); else platform->rejectSession(id);
         }
+        appendActivity(id, approved ? "本机用户已批准 Agent 会话" : "本机用户已拒绝 Agent 会话");
+        if (approved && platformSession) showActivityWindow(id);
         serviceFooter->setText(approved ? "● 会话已批准" : "● 连接申请已拒绝");
     }
 
@@ -1634,6 +1747,9 @@ private:
             auto *titleRow = new QHBoxLayout;
             titleRow->addWidget(makeLabel("活跃会话", "font-size: 14px; font-weight: 650; color: #185c3b;"));
             titleRow->addStretch();
+            auto *viewActivity = makeButton("查看活动");
+            viewActivity->setObjectName("subtle");
+            titleRow->addWidget(viewActivity);
             auto *stop = makeButton("立即停止会话");
             stop->setStyleSheet("QPushButton { color: #a52b2b; border: 1px solid #e8bcbc; background: white; padding: 6px 10px; } QPushButton:hover { background: #fff0f0; }");
             titleRow->addWidget(stop);
@@ -1646,6 +1762,7 @@ private:
                 "font-size: 12px; color: #536b5e;");
             details->setWordWrap(true);
             column->addWidget(details);
+            connect(viewActivity, &QPushButton::clicked, this, [this, id] { showActivityWindow(id); });
             connect(stop, &QPushButton::clicked, this, [this, id] {
                 if (QMessageBox::question(this, "立即停止会话", "停止后将撤销授权并取消正在运行的任务。") == QMessageBox::Yes)
                     closeSession(id);
@@ -1804,8 +1921,110 @@ private:
         refreshSessionsPage();
         notificationSessions.remove(id);
         if (platformSession && platform && platform->isConnected()) platform->closeSession(id);
+        appendActivity(id, "本机会话已断开，远程控制已停止");
+        if (activitySessionSelector) refreshActivityWindow();
         serviceFooter->setText("● 会话已关闭");
         return ok(session);
+    }
+
+    void appendActivity(const QString &sessionId, const QString &message) {
+        if (sessionId.isEmpty() || message.isEmpty()) return;
+        QStringList &lines = activityLogs[sessionId];
+        const QString timestamp = QDateTime::currentDateTime().toString("HH:mm:ss");
+        for (const QString &line : message.split('\n'))
+            lines.append(QString("[%1] %2").arg(timestamp, line));
+        while (lines.size() > 500) lines.removeFirst();
+        if (activityWindow && activityWindow->isVisible() && activitySessionSelector &&
+            activitySessionSelector->currentData().toString() == sessionId) {
+            activityLog->setPlainText(lines.join('\n'));
+            activityLog->moveCursor(QTextCursor::End);
+            activityStatusValue->setText(sessionStatusText(sessionId));
+        }
+    }
+
+    QString sessionStatusText(const QString &sessionId) const {
+        const QString status = sessions.value(sessionId).value("status").toString();
+        if (status == "active" || status == "approved") return "远程协助进行中";
+        if (status == "pending_approval") return "等待本机批准";
+        if (status == "closed") return "已断开，远程控制已停止";
+        if (status == "expired") return "会话已过期";
+        if (status == "rejected") return "请求已拒绝";
+        return status.isEmpty() ? "无活动会话" : status;
+    }
+
+    void refreshActivityWindow() {
+        if (!activityWindow || !activitySessionSelector || !activityLog) return;
+        const QString selected = activitySessionSelector->currentData().toString();
+        activitySessionSelector->blockSignals(true);
+        activitySessionSelector->clear();
+        for (auto it = sessions.cbegin(); it != sessions.cend(); ++it) {
+            const QJsonObject session = it.value();
+            if (session.value("source").toString() != "platform") continue;
+            const QString label = QString("%1 · %2 · %3")
+                .arg(session.value("purpose").toString("远程协助"),
+                     session.value("requester").toString("Agent"),
+                     sessionStatusText(it.key()));
+            activitySessionSelector->addItem(label, it.key());
+        }
+        int index = activitySessionSelector->findData(selected);
+        if (index < 0 && activitySessionSelector->count() > 0) index = 0;
+        if (index >= 0) activitySessionSelector->setCurrentIndex(index);
+        activitySessionSelector->blockSignals(false);
+        const QString id = activitySessionSelector->currentData().toString();
+        activityLog->setPlainText(activityLogs.value(id).join('\n'));
+        activityLog->moveCursor(QTextCursor::End);
+        activityStatusValue->setText(sessionStatusText(id));
+        activityDisconnectButton->setEnabled(!id.isEmpty() && (sessions.value(id).value("status").toString() == "active" || sessions.value(id).value("status").toString() == "approved"));
+    }
+
+    void showActivityWindow(const QString &sessionId = QString()) {
+        if (!activityWindow) {
+            activityWindow = new QDialog(this);
+            activityWindow->setWindowTitle("远程协助活动");
+            activityWindow->setModal(false);
+            activityWindow->setAttribute(Qt::WA_DeleteOnClose, false);
+            activityWindow->resize(720, 460);
+            auto *layout = new QVBoxLayout(activityWindow);
+            layout->setContentsMargins(16, 16, 16, 16);
+            layout->setSpacing(10);
+            auto *header = new QHBoxLayout;
+            header->addWidget(makeLabel("远程协助活动", "font-size: 17px; font-weight: 650; color: #1d2939;"));
+            header->addStretch();
+            activityStatusValue = makeLabel("无活动会话", "font-size: 12px; color: #16825d;");
+            header->addWidget(activityStatusValue);
+            layout->addLayout(header);
+            auto *sessionRow = new QHBoxLayout;
+            sessionRow->addWidget(makeLabel("当前 Agent", "font-size: 12px; color: #69788d;"));
+            activitySessionSelector = new QComboBox;
+            sessionRow->addWidget(activitySessionSelector, 1);
+            activityDisconnectButton = makeButton("断开会话");
+            activityDisconnectButton->setStyleSheet("QPushButton { color: #a52b2b; border: 1px solid #e8bcbc; background: white; padding: 7px 12px; } QPushButton:hover { background: #fff0f0; }");
+            sessionRow->addWidget(activityDisconnectButton);
+            layout->addLayout(sessionRow);
+            activityLog = new QPlainTextEdit;
+            activityLog->setReadOnly(true);
+            activityLog->setLineWrapMode(QPlainTextEdit::NoWrap);
+            activityLog->setStyleSheet("QPlainTextEdit { background: #101820; color: #d5e3ef; border: 1px solid #2e4556; border-radius: 6px; padding: 10px; font-family: Consolas, monospace; font-size: 12px; }");
+            layout->addWidget(activityLog, 1);
+            auto *hint = makeLabel("此窗口仅用于查看活动，关闭窗口不会断开会话。需要停止 Agent 控制，请点击“断开会话”。", "font-size: 12px; color: #69788d;");
+            hint->setWordWrap(true);
+            layout->addWidget(hint);
+            connect(activitySessionSelector, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] { refreshActivityWindow(); });
+            connect(activityDisconnectButton, &QPushButton::clicked, this, [this] {
+                const QString id = activitySessionSelector->currentData().toString();
+                if (id.isEmpty()) return;
+                if (QMessageBox::question(this, "断开远程协助", "断开后 Agent 将无法继续控制本机，正在运行的任务也会停止。") == QMessageBox::Yes)
+                    closeSession(id);
+            });
+        }
+        refreshActivityWindow();
+        if (!sessionId.isEmpty()) {
+            const int index = activitySessionSelector->findData(sessionId);
+            if (index >= 0) activitySessionSelector->setCurrentIndex(index);
+        }
+        activityWindow->show();
+        activityWindow->raise();
+        activityWindow->activateWindow();
     }
 
     void copyToClipboard(const QString &text, const QString &message) {

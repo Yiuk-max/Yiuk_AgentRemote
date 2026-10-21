@@ -136,7 +136,25 @@ func (m *Manager) Register(reg Registration) (Info, string, error) {
 
 	generated := ""
 	password := reg.TemporaryPass
+	if existing != nil {
+		// Re-registration is a reconnect operation, not a way to claim an
+		// offline device by knowing only its public ID. The current temporary
+		// password is the device's proof of identity.
+		if existing.revoked {
+			return Info{}, "", ErrPasswordRevoke
+		}
+		if !existing.info.PasswordExpiresAt.IsZero() && !now.Before(existing.info.PasswordExpiresAt) {
+			return Info{}, "", ErrPasswordExpiry
+		}
+		candidate := hashPassword(existing.passwordSalt, password)
+		if subtle.ConstantTimeCompare(candidate, existing.passwordHash) != 1 {
+			return Info{}, "", ErrBadPassword
+		}
+	}
 	if password == "" {
+		if existing != nil {
+			return Info{}, "", ErrBadPassword
+		}
 		var err error
 		password, err = GeneratePassword()
 		if err != nil {

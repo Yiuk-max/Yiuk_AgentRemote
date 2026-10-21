@@ -132,8 +132,9 @@ func (s *Server) handleRegisterDevice(c *conn, m protocol.Message) error {
 		return perr("INVALID_ARGUMENT", "temporary password is too long")
 	}
 
-	// A stale online entry can survive a crash before the read loop noticed the
-	// disconnect. Clear it only when no live connection owns it.
+	// A stale online entry can survive a crash before the read loop notices
+	// the disconnect. Clear it only when the owning connection is gone; the
+	// device manager still requires the current temporary password below.
 	if onlineID, ok := s.devices.OnlineConnection(m.DeviceID); ok && s.lookupConn(onlineID) == nil {
 		s.devices.ForceOffline(m.DeviceID)
 	}

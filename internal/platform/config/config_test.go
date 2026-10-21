@@ -82,4 +82,16 @@ func TestValidateRejectsInconsistentLimits(t *testing.T) {
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected approval timeout validation error")
 	}
+	cfg = Default()
+	cfg.AllowInsecure = true
+	cfg.PlayerPassword = "a-very-long-player-password"
+	cfg.CloseReasonMaxLen = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected close reason validation error")
+	}
+	cfg.CloseReasonMaxLen = Default().CloseReasonMaxLen
+	cfg.ObserverSlowClientBuf = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected slow client buffer validation error")
+	}
 }

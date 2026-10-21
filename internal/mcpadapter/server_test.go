@@ -72,6 +72,46 @@ func TestMCPListsToolsAndReturnsStructuredToolResponse(t *testing.T) {
 	}
 }
 
+func TestMCPDispatchesRunCommandToTheMatchingBackendTool(t *testing.T) {
+	core := agenttools.NewCore(backendFunc(func(_ context.Context, req agenttools.Request) (any, error) {
+		if req.Name != agenttools.RunCommand {
+			t.Fatalf("unexpected tool %q", req.Name)
+		}
+		return map[string]any{"status": "succeeded"}, nil
+	}))
+	server := NewServer(core)
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	clientSession, err := mcp.NewClient(&mcp.Implementation{Name: "test-client"}, nil).Connect(context.Background(), clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	result, err := clientSession.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: agenttools.RunCommand,
+		Arguments: map[string]any{
+			"device_id":          "device-1",
+			"temporary_password": "0123456789abcdef0123456789abcdef",
+			"command":            "whoami",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected MCP tool error: %#v", result.Content)
+	}
+	response := result.StructuredContent.(map[string]any)
+	if response["code"] != "OK" {
+		t.Fatalf("got %#v, want successful tool response", response)
+	}
+}
+
 func TestMCPReportsBackendUnavailableAsToolError(t *testing.T) {
 	server := NewServer(agenttools.NewCore(nil))
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()

@@ -1,0 +1,17 @@
+# 中转服务器配置示例。部署时复制为 config.yaml 并设置为仅服务账户可读写。
+control_port: 25564
+room_port_min: 25570
+room_port_max: 25599
+# Use separate, unique secrets. Host password can create and recover rooms.
+host_password: "Yiuk3n4e8a9s7d6f5g4h3j2k1l0qwertyuiopasdfghjklzxcvbnm"
+player_password: "1234567890"
+
+max_rooms: 30
+max_players_per_room: 8
+max_pending_per_room: 16
+pending_timeout_sec: 10
+reconnect_grace_sec: 30
+heartbeat_timeout_sec: 45
+auth_rate_per_min: 10
+
+log_file: "relay.log"

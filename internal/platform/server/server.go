@@ -246,7 +246,7 @@ func (s *Server) cleanupOperator(c *conn) {
 			})
 		}
 		for _, t := range finished {
-			s.sendToConnection(ses.DeviceConnectionID, taskResultMessage(t))
+			s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
 		}
 	}
 }
@@ -416,6 +416,16 @@ func (s *Server) sweep() {
 	expired := s.sessions.Expire()
 	for _, ses := range expired {
 		s.devices.RemoveSession(ses.DeviceID, ses.ID)
+		// Expiry is also a device-side control event. Stop remote processes
+		// before finalizing the task records so every client gets a chance to
+		// terminate work that is still running locally.
+		s.sendToConnection(ses.DeviceConnectionID, protocol.Message{
+			Type:      protocol.TypeCloseSession,
+			SessionID: ses.ID,
+			DeviceID:  ses.DeviceID,
+			Code:      "SESSION_EXPIRED",
+			Message:   "session expired",
+		})
 		finished := s.tasks.FinishSession(ses.ID, task.StatusCancelled)
 		s.notifySession(ses)
 		for _, t := range finished {
