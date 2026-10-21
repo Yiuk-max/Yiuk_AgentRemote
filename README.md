@@ -37,9 +37,7 @@ Yiuk Switchboard 想把这件事做成一条受控、可审计、随时可中止
   可以立即结束会话并终止正在运行的任务。
 - **有界命令任务**：单次 PowerShell 执行，返回 stdout、stderr、退出码、状态和
   截断标记；支持工作目录、超时、取消和输出上限。
-- **统一 Agent 工具核心**：`list_devices`、`get_device_status`、
-  `request_connection`、`get_session_status`、`execute_command`、
-  `get_command_result`、`cancel_command`、`close_session`，并提供 MCP stdio 适配器。
+- **统一 Agent 工具核心**：`list_devices`、`get_device_status`、`request_connection`、`run_command`、`get_session_status`、`execute_command`、`get_command_result`、`cancel_command`、`close_session`，并提供 MCP stdio 适配器。Agent 可主动申请连接：人类只需提供设备码和 32 位临时密码，`run_command` 即可一次性完成“申请—等待批准—执行—取结果—关闭”。
 - **加密中转与业务隔离**：远程协助使用独立于游戏联机的业务类型、端口、密码和
   资源限制，远程会话不能访问游戏联机通道。
 - **结构化错误与幂等语义**：稳定错误码、不可复用的请求 ID、断线后不自动重放。

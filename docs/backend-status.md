@@ -80,7 +80,7 @@ ping / pong / error
 `internal/platformclient` 实现 `agenttools.Backend`：
 
 - 保持一条已认证 operator 长连接，避免 tool 调用之间 session 被断开。
-- 支持 8 个统一工具。
+- 支持 9 个统一工具；其中 `run_command` 提供“申请会话（可等待批准）→执行→取结果→关闭”的一次性远程任务。
 - 本地缓存流式 `command_output`，支持 `get_command_result` 游标分页。
 - `request_connection` 支持可选 `temporary_password` 字段（平台 backend 必填）。
 - 平台返回的结构化错误码直接映射为 `agenttools.Error`。

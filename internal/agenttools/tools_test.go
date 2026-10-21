@@ -14,8 +14,8 @@ func (f backendFunc) Invoke(ctx context.Context, req Request) (any, error) { ret
 func TestToolCatalog(t *testing.T) {
 	core := NewCore(nil)
 	tools := core.Tools()
-	if len(tools) != 8 {
-		t.Fatalf("got %d tools, want 8", len(tools))
+	if len(tools) != 9 {
+		t.Fatalf("got %d tools, want 9", len(tools))
 	}
 	seen := map[string]bool{}
 	for _, tool := range tools {

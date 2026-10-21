@@ -45,8 +45,8 @@ func TestMCPListsToolsAndReturnsStructuredToolResponse(t *testing.T) {
 		}
 		toolNames = append(toolNames, tool.Name)
 	}
-	if len(toolNames) != 8 {
-		t.Fatalf("got %d tools, want 8: %v", len(toolNames), toolNames)
+	if len(toolNames) != 9 {
+		t.Fatalf("got %d tools, want 9: %v", len(toolNames), toolNames)
 	}
 
 	result, err := clientSession.CallTool(context.Background(), &mcp.CallToolParams{

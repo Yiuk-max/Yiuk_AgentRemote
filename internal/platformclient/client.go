@@ -143,6 +143,8 @@ func (c *Client) Invoke(ctx context.Context, req agenttools.Request) (any, error
 		return c.getDeviceStatus(ctx, req.Input)
 	case agenttools.RequestConnection:
 		return c.requestConnection(ctx, req.Input)
+	case agenttools.RunCommand:
+		return c.runCommand(ctx, req.Input)
 	case agenttools.GetSessionStatus:
 		return c.getSessionStatus(ctx, req.Input)
 	case agenttools.ExecuteCommand:
@@ -189,18 +191,39 @@ func (c *Client) getDeviceStatus(ctx context.Context, raw json.RawMessage) (any,
 	return nil, &agenttools.Error{Code: "DEVICE_NOT_FOUND", Message: "device is not registered"}
 }
 
+type connectionRequest struct {
+	DeviceID          string
+	Purpose           string
+	Permissions       []string
+	TemporaryPassword string
+	WaitForApproval   time.Duration
+}
+
 func (c *Client) requestConnection(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {
-		DeviceID          string   `json:"device_id"`
-		Purpose           string   `json:"purpose"`
-		Permissions       []string `json:"permissions"`
-		TemporaryPassword string   `json:"temporary_password"`
+		DeviceID               string   `json:"device_id"`
+		Purpose                string   `json:"purpose"`
+		Permissions            []string `json:"permissions"`
+		TemporaryPassword      string   `json:"temporary_password"`
+		WaitForApprovalSeconds int      `json:"wait_for_approval_seconds"`
 	}
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
+	return c.createSession(ctx, connectionRequest{
+		DeviceID:          input.DeviceID,
+		Purpose:           input.Purpose,
+		Permissions:       input.Permissions,
+		TemporaryPassword: input.TemporaryPassword,
+		WaitForApproval:   time.Duration(input.WaitForApprovalSeconds) * time.Second,
+	})
+}
+
+// createSession requests a session and, when requested, waits for the device
+// owner to approve it. Direct-mode devices are approved immediately.
+func (c *Client) createSession(ctx context.Context, input connectionRequest) (map[string]any, error) {
 	if input.TemporaryPassword == "" {
-		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "temporary_password is required by the platform backend"}
+		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "temporary_password is required; ask the device owner for the 32-character temporary password"}
 	}
 	resp, err := c.call(ctx, protocol.Message{
 		Type: protocol.TypeRequestSession, DeviceID: input.DeviceID, Purpose: input.Purpose,
@@ -211,7 +234,50 @@ func (c *Client) requestConnection(ctx context.Context, raw json.RawMessage) (an
 	if err != nil {
 		return nil, err
 	}
-	return sessionResult(resp), nil
+	result := sessionResult(resp)
+	id := sessionIDFromResult(result)
+	status, _ := result["status"].(string)
+	if (status == protocol.StatusPendingApproval || status == protocol.StatusRequested) && input.WaitForApproval > 0 {
+		if c.waitForApproval(ctx, id, input.WaitForApproval) {
+			result["wait_timed_out"] = true
+		} else if latest, err := c.getSessionStatusInternal(ctx, id); err == nil {
+			for key, value := range latest {
+				result[key] = value
+			}
+		}
+	}
+	return result, nil
+}
+
+func (c *Client) waitForApproval(ctx context.Context, sessionID string, timeout time.Duration) (timedOut bool) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if result, err := c.getSessionStatusInternal(ctx, sessionID); err == nil {
+			if status, _ := result["status"].(string); status != protocol.StatusPendingApproval && status != protocol.StatusRequested {
+				return false
+			}
+		}
+		sleep := 1500 * time.Millisecond
+		if remaining := time.Until(deadline); remaining < sleep {
+			sleep = remaining
+		}
+		if sleep <= 0 {
+			break
+		}
+		timer := time.NewTimer(sleep)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return true
+		case <-timer.C:
+		}
+	}
+	return true
+}
+
+func sessionIDFromResult(result map[string]any) string {
+	id, _ := result["session_id"].(string)
+	return id
 }
 
 func (c *Client) getSessionStatus(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -221,7 +287,11 @@ func (c *Client) getSessionStatus(ctx context.Context, raw json.RawMessage) (any
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
-	resp, err := c.call(ctx, protocol.Message{Type: protocol.TypeSessionStatus, SessionID: input.SessionID}, func(m protocol.Message) bool {
+	return c.getSessionStatusInternal(ctx, input.SessionID)
+}
+
+func (c *Client) getSessionStatusInternal(ctx context.Context, sessionID string) (map[string]any, error) {
+	resp, err := c.call(ctx, protocol.Message{Type: protocol.TypeSessionStatus, SessionID: sessionID}, func(m protocol.Message) bool {
 		return m.Type == protocol.TypeSessionStatus
 	})
 	if err != nil {
@@ -240,17 +310,25 @@ func (c *Client) executeCommand(ctx context.Context, raw json.RawMessage) (any, 
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
+	requestID, status, err := c.executeCommandInternal(ctx, input.SessionID, input.Command, input.WorkingDirectory, input.TimeoutSeconds)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"session_id": input.SessionID, "request_id": requestID, "status": status}, nil
+}
+
+func (c *Client) executeCommandInternal(ctx context.Context, sessionID, command, workingDirectory string, timeoutSeconds int) (string, string, error) {
 	requestID := randomID()
 	resp, err := c.call(ctx, protocol.Message{
-		Type: protocol.TypeExecuteCommand, SessionID: input.SessionID, RequestID: requestID,
-		Command: input.Command, WorkingDirectory: input.WorkingDirectory, TimeoutSeconds: input.TimeoutSeconds,
+		Type: protocol.TypeExecuteCommand, SessionID: sessionID, RequestID: requestID,
+		Command: command, WorkingDirectory: workingDirectory, TimeoutSeconds: timeoutSeconds,
 	}, func(m protocol.Message) bool {
 		return m.Type == protocol.TypeCommandAccepted
 	})
 	if err != nil {
-		return nil, err
+		return "", "", err
 	}
-	return map[string]any{"session_id": input.SessionID, "request_id": requestID, "status": resp.Status}, nil
+	return requestID, resp.Status, nil
 }
 
 func (c *Client) getCommandResult(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -262,11 +340,15 @@ func (c *Client) getCommandResult(ctx context.Context, raw json.RawMessage) (any
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
-	if result, ok := c.cachedResult(input.SessionID, input.RequestID, input.Cursor); ok {
+	return c.getCommandResultInternal(ctx, input.SessionID, input.RequestID, input.Cursor)
+}
+
+func (c *Client) getCommandResultInternal(ctx context.Context, sessionID, requestID string, cursor int) (map[string]any, error) {
+	if result, ok := c.cachedResult(sessionID, requestID, cursor); ok {
 		return result, nil
 	}
 	resp, err := c.call(ctx, protocol.Message{
-		Type: protocol.TypeGetCommandResult, SessionID: input.SessionID, RequestID: input.RequestID, Cursor: input.Cursor,
+		Type: protocol.TypeGetCommandResult, SessionID: sessionID, RequestID: requestID, Cursor: cursor,
 	}, func(m protocol.Message) bool {
 		return m.Type == protocol.TypeCommandResult
 	})
@@ -274,6 +356,146 @@ func (c *Client) getCommandResult(ctx context.Context, raw json.RawMessage) (any
 		return nil, err
 	}
 	return resultMap(resp), nil
+}
+
+// runCommand is the one-shot operator flow: request a session (optionally
+// waiting for owner approval), execute one command, wait for its result, and
+// close the session unless the caller asks to keep it open.
+func (c *Client) runCommand(ctx context.Context, raw json.RawMessage) (any, error) {
+	var input struct {
+		DeviceID               string `json:"device_id"`
+		TemporaryPassword      string `json:"temporary_password"`
+		Command                string `json:"command"`
+		Purpose                string `json:"purpose"`
+		WorkingDirectory       string `json:"working_directory"`
+		TimeoutSeconds         int    `json:"timeout_seconds"`
+		WaitForApprovalSeconds int    `json:"wait_for_approval_seconds"`
+		KeepSessionOpen        bool   `json:"keep_session_open"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
+	}
+	if input.Purpose == "" {
+		input.Purpose = "run a remote command"
+	}
+	if input.TimeoutSeconds <= 0 {
+		input.TimeoutSeconds = 60
+	}
+	budget := time.Duration(input.WaitForApprovalSeconds+input.TimeoutSeconds)*time.Second + 30*time.Second
+	runCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	session, err := c.createSession(runCtx, connectionRequest{
+		DeviceID:          input.DeviceID,
+		Purpose:           input.Purpose,
+		Permissions:       []string{"execute_command"},
+		TemporaryPassword: input.TemporaryPassword,
+		WaitForApproval:   time.Duration(input.WaitForApprovalSeconds) * time.Second,
+	})
+	if err != nil {
+		return nil, err
+	}
+	id := sessionIDFromResult(session)
+	authorization, _ := session["status"].(string)
+	if authorization != protocol.StatusApproved && authorization != protocol.StatusActive {
+		return map[string]any{
+			"session_id": id, "device_id": input.DeviceID, "authorization": authorization,
+			"executed": false, "message": "session was not approved; the command was not executed",
+		}, nil
+	}
+
+	requestID, commandStatus, err := c.executeCommandInternal(runCtx, id, input.Command, input.WorkingDirectory, input.TimeoutSeconds)
+	if err != nil {
+		return nil, err
+	}
+	result, err := c.waitCommandResult(runCtx, id, requestID, time.Duration(input.TimeoutSeconds)*time.Second+15*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if !input.KeepSessionOpen {
+		if _, closeErr := c.closeSessionInternal(runCtx, id); closeErr == nil {
+			result["session_closed"] = true
+		}
+	}
+	result["session_id"] = id
+	result["device_id"] = input.DeviceID
+	result["authorization"] = authorization
+	result["executed"] = true
+	if commandStatus != "" {
+		result["initial_status"] = commandStatus
+	}
+	return result, nil
+}
+
+func (c *Client) waitCommandResult(ctx context.Context, sessionID, requestID string, timeout time.Duration) (map[string]any, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		result, err := c.getCommandResultInternal(ctx, sessionID, requestID, 0)
+		if err == nil {
+			if status, _ := result["status"].(string); status != protocol.TaskRunning && status != protocol.TaskQueued && status != "" {
+				return aggregateResult(result), nil
+			}
+			if time.Now().After(deadline) {
+				result["status"] = protocol.TaskResultUnknown
+				result["result_known"] = false
+				result["message"] = "timed out waiting for command result"
+				return aggregateResult(result), nil
+			}
+		} else if time.Now().After(deadline) {
+			return nil, err
+		}
+		timer := time.NewTimer(750 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, &agenttools.Error{Code: "PLATFORM_TIMEOUT", Message: "command wait was canceled"}
+		case <-timer.C:
+		}
+	}
+}
+
+// aggregateResult turns streamed chunks into single stdout/stderr strings for
+// callers that do not want to page through output themselves.
+func aggregateResult(result map[string]any) map[string]any {
+	var stdout, stderr strings.Builder
+	switch chunks := result["chunks"].(type) {
+	case []protocol.OutputChunk:
+		for _, chunk := range chunks {
+			if chunk.Stream == "stderr" {
+				stderr.WriteString(chunk.Data)
+			} else {
+				stdout.WriteString(chunk.Data)
+			}
+		}
+	case []any:
+		for _, raw := range chunks {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			data, _ := entry["data"].(string)
+			if stream, _ := entry["stream"].(string); stream == "stderr" {
+				stderr.WriteString(data)
+			} else {
+				stdout.WriteString(data)
+			}
+		}
+	}
+	exitCode := result["exit_code"]
+	if pointer, ok := exitCode.(*int); ok && pointer != nil {
+		exitCode = *pointer
+	}
+	return map[string]any{
+		"session_id":   result["session_id"],
+		"request_id":   result["request_id"],
+		"status":       result["status"],
+		"exit_code":    exitCode,
+		"stdout":       stdout.String(),
+		"stderr":       stderr.String(),
+		"truncated":    result["truncated"],
+		"result_known": result["result_known"],
+		"output_bytes": result["output_bytes"],
+	}
 }
 
 func (c *Client) cancelCommand(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -302,7 +524,11 @@ func (c *Client) closeSession(ctx context.Context, raw json.RawMessage) (any, er
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
-	resp, err := c.call(ctx, protocol.Message{Type: protocol.TypeCloseSession, SessionID: input.SessionID}, func(m protocol.Message) bool {
+	return c.closeSessionInternal(ctx, input.SessionID)
+}
+
+func (c *Client) closeSessionInternal(ctx context.Context, sessionID string) (map[string]any, error) {
+	resp, err := c.call(ctx, protocol.Message{Type: protocol.TypeCloseSession, SessionID: sessionID}, func(m protocol.Message) bool {
 		return m.Type == protocol.TypeSessionStatus && isTerminalSession(m.Status)
 	})
 	if err != nil {

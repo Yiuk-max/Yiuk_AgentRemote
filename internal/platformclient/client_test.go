@@ -106,12 +106,16 @@ func matches(got string, want []string) bool {
 }
 
 func (d *fakeDevice) register(id string) {
+	d.registerWithMode(id, protocol.ModeDirect)
+}
+
+func (d *fakeDevice) registerWithMode(id, mode string) {
 	d.t.Helper()
 	d.send(protocol.Message{Type: protocol.TypeAuthenticatePlayer, IdentityType: "player", PlayerPassword: playerPassword})
 	d.recv(protocol.TypeAuthenticated)
 	d.send(protocol.Message{
 		Type: protocol.TypeRegisterDevice, DeviceID: id, DeviceName: "fake", Platform: "windows",
-		Mode: protocol.ModeDirect, TemporaryPassword: devicePassword,
+		Mode: mode, TemporaryPassword: devicePassword,
 	})
 	d.recv(protocol.TypeDeviceRegistered)
 }
@@ -228,4 +232,125 @@ func TestPlatformClientRejectsMissingTemporaryPassword(t *testing.T) {
 	if err == nil || !errors.As(err, &toolErr) || toolErr.Code != "INVALID_ARGUMENT" {
 		t.Fatalf("got %v, want INVALID_ARGUMENT", err)
 	}
+}
+
+func TestPlatformClientRunCommand(t *testing.T) {
+	address := startPlatform(t)
+	device := dialFakeDevice(t, address)
+	device.register("device-run")
+
+	backend, err := platformclient.New(platformclient.Config{
+		Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+
+	type outcome struct {
+		data any
+		err  error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		raw, _ := json.Marshal(map[string]any{
+			"device_id": "device-run", "temporary_password": devicePassword,
+			"command": "hostname", "timeout_seconds": 20, "wait_for_approval_seconds": 0,
+		})
+		data, err := backend.Invoke(context.Background(), agenttools.Request{Name: agenttools.RunCommand, Input: raw})
+		done <- outcome{data: data, err: err}
+	}()
+
+	forwarded := device.recv(protocol.TypeExecuteCommand)
+	if forwarded.RequestID == "" || forwarded.Command != "hostname" {
+		t.Fatalf("unexpected forwarded command: %#v", forwarded)
+	}
+	device.send(protocol.Message{
+		Type: protocol.TypeCommandOutput, SessionID: forwarded.SessionID, RequestID: forwarded.RequestID,
+		Stream: "stdout", Data: "server-01\n", Sequence: 1,
+	})
+	exit := 0
+	device.send(protocol.Message{
+		Type: protocol.TypeCommandResult, SessionID: forwarded.SessionID, RequestID: forwarded.RequestID,
+		Status: string(protocol.TaskSucceeded), ExitCode: &exit, ResultKnown: true,
+	})
+
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("run_command: %v", result.err)
+	}
+	data, ok := result.data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected result type %T", result.data)
+	}
+	if data["status"] != string(protocol.TaskSucceeded) || data["executed"] != true {
+		t.Fatalf("unexpected run result: %#v", data)
+	}
+	if stdout, _ := data["stdout"].(string); stdout != "server-01\n" {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if code, ok := data["exit_code"].(int); !ok || code != 0 {
+		t.Fatalf("exit_code = %#v", data["exit_code"])
+	}
+	if data["session_closed"] != true {
+		t.Fatalf("session should be closed: %#v", data)
+	}
+	device.recv(protocol.TypeCloseSession)
+}
+
+func TestPlatformClientRunCommandApprovalMode(t *testing.T) {
+	address := startPlatform(t)
+	device := dialFakeDevice(t, address)
+	device.registerWithMode("device-approval", protocol.ModeApproval)
+
+	backend, err := platformclient.New(platformclient.Config{
+		Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+
+	type outcome struct {
+		data any
+		err  error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		raw, _ := json.Marshal(map[string]any{
+			"device_id": "device-approval", "temporary_password": devicePassword,
+			"command": "ipconfig", "timeout_seconds": 20, "wait_for_approval_seconds": 5,
+		})
+		data, err := backend.Invoke(context.Background(), agenttools.Request{Name: agenttools.RunCommand, Input: raw})
+		done <- outcome{data: data, err: err}
+	}()
+
+	request := device.recv(protocol.TypeSessionRequest)
+	device.send(protocol.Message{Type: protocol.TypeApproveSession, SessionID: request.SessionID})
+	forwarded := device.recv(protocol.TypeExecuteCommand)
+	if forwarded.Command != "ipconfig" {
+		t.Fatalf("unexpected command: %#v", forwarded)
+	}
+	device.send(protocol.Message{
+		Type: protocol.TypeCommandOutput, SessionID: forwarded.SessionID, RequestID: forwarded.RequestID,
+		Stream: "stdout", Data: "ok\n", Sequence: 1,
+	})
+	exit := 0
+	device.send(protocol.Message{
+		Type: protocol.TypeCommandResult, SessionID: forwarded.SessionID, RequestID: forwarded.RequestID,
+		Status: string(protocol.TaskSucceeded), ExitCode: &exit, ResultKnown: true,
+	})
+
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("run_command: %v", result.err)
+	}
+	data := result.data.(map[string]any)
+	if data["authorization"] != protocol.StatusApproved || data["status"] != string(protocol.TaskSucceeded) {
+		t.Fatalf("unexpected approval-mode result: %#v", data)
+	}
+	if stdout, _ := data["stdout"].(string); stdout != "ok\n" {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	device.recv(protocol.TypeCloseSession)
 }

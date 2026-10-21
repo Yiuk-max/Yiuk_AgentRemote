@@ -156,7 +156,8 @@ internal/minecraft/         旧联机协议/房间兼容边界
 | --- | --- | --- |
 | `list_devices` | 可访问范围/分页 | 设备 ID、名称、在线状态 |
 | `get_device_status` | device_id | 在线、客户端版本、活动会话摘要 |
-| `request_connection` | device_id、purpose、requested_permissions、TTL | session_id、pending/approved/rejected/expired |
+| `request_connection` | device_id、temporary_password、purpose、requested_permissions、wait_for_approval_seconds | session_id、pending/approved/rejected/expired |
+| `run_command` | device_id、temporary_password、command、cwd、timeout、wait_for_approval_seconds、keep_session_open | 聚合 stdout/stderr、exit_code、状态、是否关闭会话 |
 | `get_session_status` | session_id | 状态、授权范围、错误 |
 | `execute_command` | session_id、command、cwd、timeout | request_id、状态、stdout/stderr、exit_code、truncated |
 | `get_command_result` | session_id、request_id、cursor | 新输出块和终态 |
