@@ -20,6 +20,18 @@ build-*/
 *.key
 *.crt
 
+# Client-side runtime credentials and bridge tokens
+platform-client.json
+local-api.json
+platform.json
+sessions.json
+device.json
+
+# Ad-hoc debugging scratch files (never commit these)
+tmp-*
+*.ps1
+!deploy/*.sh
+
 # IDE files
 .idea/
 .vscode/*.local.json

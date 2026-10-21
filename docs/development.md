@@ -200,3 +200,22 @@ go run ./cmd/device-sim -addr host:29564 -password '<player-password>' \
 ```
 
 随后可用 MCP `run_command` 指向该 `device_id` 和临时密码验证完整 Agent 链路。
+
+## 提交前检查
+
+以下内容绝不能进入仓库：
+
+- `platform-client.json`、`local-api.json`、`platform.json`、`sessions.json`、`device.json`
+  等客户端运行时凭证文件。
+- `tmp-*` 临时调试脚本、TLS 握手抓包、证书导出文件。
+- 任何包含 `player_password`、`temporary_password`、bridge token 的配置副本。
+
+`.gitignore` 已默认忽略上述模式。提交前请执行一次：
+
+```sh
+git status --short
+git diff --cached | grep -nE "password|token|secret|PRIVATE KEY" || true
+```
+
+如果密码已经在某个提交中泄露，仅删除文件不够：历史记录仍然可被检出。需要轮换密码，
+必要时用 `git filter-repo` 重写历史并强制推送。

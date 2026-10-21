@@ -1,4 +1,0 @@
-sha256 Fingerprint=51:3E:94:88:F5:5C:7D:A9:0E:F9:34:9A:98:90:9A:95:E2:69:BC:E6:B6:9C:F7:64:30:C2:97:78:52:4B:FC:9B
-subject=CN=103.185.248.64, O=Yiuk Switchboard
-notBefore=Oct 18 03:44:59 2026 GMT
-notAfter=Jan 20 03:44:59 2029 GMT
