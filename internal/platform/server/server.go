@@ -200,6 +200,9 @@ func (s *Server) unregisterConn(c *conn) {
 	c.close("unregistered")
 
 	if c.role == roleAnonymous {
+		// Useful when a client fails before authenticating (often a TLS
+		// handshake or wrong-port issue rather than a password problem).
+		s.audit.Warn("connection_closed_unauthenticated", "remote", c.remoteString())
 		return
 	}
 	if c.role == roleDevice {
