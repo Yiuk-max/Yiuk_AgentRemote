@@ -45,6 +45,34 @@ func TestRegisterVerifyExpireAndRevoke(t *testing.T) {
 	}
 }
 
+func TestExpiredPasswordCanReRegisterAndRotate(t *testing.T) {
+	now := time.Unix(1000, 0)
+	m := newManager(2, time.Minute, func() time.Time { return now })
+	oldPassword := "0123456789abcdef0123456789abcdef"
+	info, _, err := m.Register(Registration{ID: "d", TemporaryPass: oldPassword, PasswordVersion: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = info.PasswordExpiresAt.Add(time.Second)
+
+	refreshed, newPassword, err := m.Register(Registration{ID: "d", TemporaryPass: oldPassword, PasswordVersion: 4})
+	if err != nil {
+		t.Fatalf("expired credential holder should recover registration: %v", err)
+	}
+	if len(newPassword) != 32 {
+		t.Fatalf("server should issue a replacement password, got length %d", len(newPassword))
+	}
+	if refreshed.PasswordVersion <= info.PasswordVersion {
+		t.Fatalf("password version did not advance: old=%d new=%d", info.PasswordVersion, refreshed.PasswordVersion)
+	}
+	if _, err := m.VerifyPassword("d", newPassword); err != nil {
+		t.Fatalf("replacement password rejected: %v", err)
+	}
+	if _, err := m.VerifyPassword("d", oldPassword); !errors.Is(err, ErrBadPassword) {
+		t.Fatalf("old password should be invalid after recovery, got %v", err)
+	}
+}
+
 func TestGeneratedPasswordIsLongAndUnique(t *testing.T) {
 	a, err := GeneratePassword()
 	if err != nil {

@@ -411,12 +411,9 @@ private:
     QLineEdit *platformAddress = nullptr;
     QLineEdit *platformPassword = nullptr;
     QCheckBox *platformTls = nullptr;
-    QCheckBox *platformAllowInsecure = nullptr;
-    QCheckBox *platformEnabled = nullptr;
     QComboBox *platformMode = nullptr;
     QLabel *platformStatusValue = nullptr;
     QPushButton *platformConnectButton = nullptr;
-    QLabel *mcpInstallStatus = nullptr;
     QHash<QString, quint64> platformOutputSequence;
     QHash<QString, QString> platformTaskSession;
     QHash<QString, QJsonObject> sessions;
@@ -977,9 +974,11 @@ private:
 
         auto addSectionHeader = [](QVBoxLayout *sectionLayout, const QString &title, const QString &description) {
             sectionLayout->addWidget(makeLabel(title, "font-size: 16px; font-weight: 650; color: #263446;"));
-            auto *descriptionLabel = makeLabel(description, "font-size: 12px; color: #7a8798;");
-            descriptionLabel->setWordWrap(true);
-            sectionLayout->addWidget(descriptionLabel);
+            if (!description.isEmpty()) {
+                auto *descriptionLabel = makeLabel(description, "font-size: 12px; color: #7a8798;");
+                descriptionLabel->setWordWrap(true);
+                sectionLayout->addWidget(descriptionLabel);
+            }
         };
         auto addFormRow = [](QVBoxLayout *sectionLayout, const QString &labelText, QWidget *control) {
             auto *row = new QHBoxLayout;
@@ -1020,11 +1019,7 @@ private:
         auto platformParts = makeSettingsCard();
         QFrame *platformSection = platformParts.first;
         QVBoxLayout *platformLayout = platformParts.second;
-        addSectionHeader(platformLayout, "平台服务", "连接平台后，可以发现在线设备并接收远程协助请求。");
-        platformEnabled = new QCheckBox("启用平台服务连接");
-        platformEnabled->setStyleSheet("font-size: 13px; color: #435168;");
-        platformLayout->addWidget(platformEnabled);
-
+        addSectionHeader(platformLayout, "平台服务", "");
         platformAddress = new QLineEdit;
         platformAddress->setObjectName("settingsField");
         platformAddress->setMinimumHeight(36);
@@ -1040,9 +1035,6 @@ private:
         platformTls = new QCheckBox("使用 TLS");
         platformTls->setChecked(true);
         addFormRow(platformLayout, "连接安全", platformTls);
-
-        platformAllowInsecure = new QCheckBox("允许自签名证书（仅开发）");
-        addFormRow(platformLayout, "开发选项", platformAllowInsecure);
 
         platformMode = new QComboBox;
         platformMode->setObjectName("settingsField");
@@ -1067,10 +1059,7 @@ private:
         auto agentParts = makeSettingsCard();
         QFrame *agentSection = agentParts.first;
         QVBoxLayout *agentLayout = agentParts.second;
-        addSectionHeader(agentLayout, "Agent 集成", "MCP 工具与客户端位于同一发布目录，不会复制到其他目录。把整个发布目录交给 Agent 使用即可。");
-        mcpInstallStatus = makeLabel("正在检查客户端目录中的 yiuk-mcp.exe。", "font-size: 12px; color: #69788d;");
-        mcpInstallStatus->setWordWrap(true);
-        agentLayout->addWidget(mcpInstallStatus);
+        addSectionHeader(agentLayout, "Agent 集成", "");
         auto *agentActionRow = new QHBoxLayout;
         auto *copyMcpConfig = makeButton("复制 Agent 配置");
         copyMcpConfig->setObjectName("primary");
@@ -1079,7 +1068,6 @@ private:
         agentLayout->addLayout(agentActionRow);
         settingsContentLayout->addWidget(agentSection);
         connect(copyMcpConfig, &QPushButton::clicked, this, [this] { copyMcpAgentConfig(); });
-        refreshMcpIntegrationStatus();
 
         auto dataParts = makeSettingsCard();
         QFrame *dataSection = dataParts.first;
@@ -1111,15 +1099,8 @@ private:
             const QString state = platform->state();
             if (platform->isConnected() || state == "connecting" || state == "authenticating")
                 platform->disconnectFromPlatform();
-            else if (platformEnabled && platformEnabled->isChecked())
+            else
                 platform->connectToPlatform();
-            updatePlatformState(platform->state());
-        });
-        connect(platformEnabled, &QCheckBox::toggled, this, [this](bool enabled) {
-            savePlatformConfig();
-            if (!platform) return;
-            if (enabled) platform->connectToPlatform();
-            else platform->disconnectFromPlatform();
             updatePlatformState(platform->state());
         });
         connect(platformAddress, &QLineEdit::editingFinished, this, [this] {
@@ -1137,7 +1118,6 @@ private:
         });
         connect(platformPassword, &QLineEdit::editingFinished, this, [this] { savePlatformConfig(); });
         connect(platformTls, &QCheckBox::toggled, this, [this] { savePlatformConfig(); });
-        connect(platformAllowInsecure, &QCheckBox::toggled, this, [this] { savePlatformConfig(); });
         connect(platformMode, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
             savePlatformConfig();
             if (platform && platform->isConnected() && platformMode) {
@@ -1293,14 +1273,16 @@ private:
         cfg.deviceName = QSysInfo::machineHostName();
         cfg.mode = "approval";
         cfg.ttlSeconds = 600;
+        cfg.enabled = true;
+        cfg.allowInsecure = false;
         cfg.temporaryPassword = randomPassword(32);
         QFile file(findYiukConfigPath("platform.json"));
         if (file.open(QIODevice::ReadOnly)) {
             const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
-            cfg.enabled = object.value("enabled").toBool(false);
+            cfg.enabled = true;
             cfg.address = object.value("address").toString();
             cfg.tls = object.value("tls").toBool(true);
-            cfg.allowInsecure = object.value("allow_insecure").toBool(false);
+            cfg.allowInsecure = false;
             cfg.caFile = object.value("ca_file").toString();
             cfg.pinnedFingerprint = object.value("certificate_fingerprint").toString();
             cfg.mode = object.value("mode").toString("approval");
@@ -1315,14 +1297,10 @@ private:
         const QSignalBlocker blockAddress(platformAddress);
         const QSignalBlocker blockPassword(platformPassword);
         const QSignalBlocker blockTls(platformTls);
-        const QSignalBlocker blockAllowInsecure(platformAllowInsecure);
-        const QSignalBlocker blockEnabled(platformEnabled);
         const QSignalBlocker blockMode(platformMode);
         if (platformAddress) platformAddress->setText(cfg.address);
         if (platformPassword) platformPassword->setText(cfg.playerPassword);
         if (platformTls) platformTls->setChecked(cfg.tls);
-        if (platformAllowInsecure) platformAllowInsecure->setChecked(cfg.allowInsecure);
-        if (platformEnabled) platformEnabled->setChecked(cfg.enabled);
         if (platformMode) {
             const int index = platformMode->findData(cfg.mode);
             platformMode->setCurrentIndex(index >= 0 ? index : 0);
@@ -1341,16 +1319,16 @@ private:
         if (platformAddress) cfg.address = platformAddress->text().trimmed();
         if (platformPassword) cfg.playerPassword = platformPassword->text();
         if (platformTls) cfg.tls = platformTls->isChecked();
-        if (platformAllowInsecure) cfg.allowInsecure = platformAllowInsecure->isChecked();
-        if (platformEnabled) cfg.enabled = platformEnabled->isChecked();
+        cfg.enabled = true;
+        cfg.allowInsecure = false;
         if (platformMode) cfg.mode = platformMode->currentData().toString();
         platform->setConfig(cfg);
         QDir().mkpath(QFileInfo(platformConfigPath()).absolutePath());
         const QJsonObject object{
-            {"enabled", cfg.enabled},
+            {"enabled", true},
             {"address", cfg.address},
             {"tls", cfg.tls},
-            {"allow_insecure", cfg.allowInsecure},
+            {"allow_insecure", false},
             {"ca_file", cfg.caFile},
             {"certificate_fingerprint", cfg.pinnedFingerprint},
             {"mode", cfg.mode},
@@ -1395,17 +1373,7 @@ private:
         return file.write(QJsonDocument(object).toJson(QJsonDocument::Compact)) >= 0;
     }
 
-    void refreshMcpIntegrationStatus() {
-        if (!mcpInstallStatus) return;
-        if (!QFileInfo::exists(mcpToolSourcePath())) {
-            mcpInstallStatus->setText("当前发布目录缺少 yiuk-mcp.exe，请重新解压完整客户端包。");
-            return;
-        }
-        mcpInstallStatus->setText("MCP 工具已就绪，与客户端位于同一目录：\n" + mcpToolSourcePath() + "\n平台连接信息会自动同步。");
-    }
-
     void copyMcpAgentConfig() {
-        refreshMcpIntegrationStatus();
         copyToClipboard(mcpAgentConfigText(), "Agent MCP 配置已复制");
         statusBar()->showMessage("把配置粘贴到 Agent 的 MCP 设置中即可", 4000);
     }
@@ -1416,16 +1384,28 @@ private:
         connect(platform, &PlatformClient::registered, this, [this](const QJsonObject &) {
             serviceFooter->setText("● 平台在线，可接收协助请求");
         });
+        connect(platform, &PlatformClient::credentialsRenewed, this,
+                [this](const QString &password, int version) {
+            temporaryPassword = password;
+            passwordVersion = version;
+            if (passwordValue)
+                passwordValue->setText(passwordVisible ? groupedPassword(password) : "********");
+            savePlatformConfig();
+        });
         connect(platform, &PlatformClient::sessionRequested, this, &MainWindow::onPlatformSessionRequested);
         connect(platform, &PlatformClient::sessionUpdated, this, &MainWindow::onPlatformSessionUpdated);
         connect(platform, &PlatformClient::sessionCreated, this, &MainWindow::onPlatformSessionCreated);
         connect(platform, &PlatformClient::commandRequested, this, &MainWindow::onPlatformCommandRequested);
         connect(platform, &PlatformClient::cancelRequested, this, &MainWindow::onPlatformCancelRequested);
         connect(platform, &PlatformClient::closeRequested, this, &MainWindow::onPlatformCloseRequested);
-        connect(platform, &PlatformClient::temporaryPasswordUpdated, this, [this](int version, qint64) {
+        connect(platform, &PlatformClient::temporaryPasswordUpdated, this,
+                [this](const QString &password, int version, qint64) {
+            temporaryPassword = password;
             passwordVersion = version;
+            if (passwordValue)
+                passwordValue->setText(passwordVisible ? groupedPassword(temporaryPassword) : "********");
             savePlatformConfig();
-            statusBar()->showMessage("临时密码已在平台更新", 1800);
+            statusBar()->showMessage("连接密码已自动续期", 1800);
         });
         connect(platform, &PlatformClient::platformError, this, [this](const QString &code, const QString &message) {
             statusBar()->showMessage(QString("平台错误：%1 %2").arg(code, message), 4000);
@@ -1458,7 +1438,7 @@ private:
             platform->connectToPlatform();
         });
         loadPlatformConfig();
-        if (platform->config().enabled && !platform->config().address.isEmpty())
+        if (!platform->config().address.isEmpty())
             platform->connectToPlatform();
         updatePlatformState(platform->state());
     }

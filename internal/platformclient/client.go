@@ -713,6 +713,14 @@ func (c *Client) dial() (net.Conn, error) {
 		cfg.RootCAs = pool
 	}
 	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	return dialTLSWithFallback(dialer, address, cfg)
+}
+
+func dialTLSWithFallback(dialer *net.Dialer, address string, cfg *tls.Config) (net.Conn, error) {
+	conn, err := tls.DialWithDialer(dialer, "tcp4", address, cfg)
+	if err == nil {
+		return conn, nil
+	}
 	return tls.DialWithDialer(dialer, "tcp", address, cfg)
 }
 

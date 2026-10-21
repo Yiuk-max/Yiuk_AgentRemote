@@ -34,11 +34,14 @@ public:
         // public CA. This keeps self-signed deployments usable without
         // disabling certificate verification for arbitrary certificates.
         QString pinnedFingerprint;
+        // Most TUN adapters provide IPv4 routes only. This also avoids an IPv6
+        // route escaping the VPN when the server is configured with an address.
+        bool forceIPv4 = true;
         // Some Windows Schannel builds fail the TLS 1.3 handshake against
         // certain Go server configurations while TLS 1.2 succeeds. Setting this
         // pins the connection to TLS 1.2.
         bool forceTls12 = false;
-        bool enabled = false;
+        bool enabled = true;
     };
 
     explicit PlatformClient(QObject *parent = nullptr);
@@ -84,7 +87,8 @@ signals:
                        const QJsonValue &exitCode, bool resultKnown, bool truncated);
     void cancelRequested(const QString &sessionId, const QString &requestId);
     void closeRequested(const QString &sessionId);
-    void temporaryPasswordUpdated(int version, qint64 expiresAt);
+    void temporaryPasswordUpdated(const QString &password, int version, qint64 expiresAt);
+    void credentialsRenewed(const QString &password, int version);
     void platformError(const QString &code, const QString &message);
     void connectionError(const QString &message);
     // Emitted when the server certificate cannot be verified. The user must
@@ -100,18 +104,22 @@ private slots:
     void onSocketError(QAbstractSocket::SocketError error);
     void onHeartbeat();
     void onReconnect();
+    void renewTemporaryPassword();
 
 private:
     void send(const QJsonObject &message);
     void handleMessage(const QJsonObject &message);
     void setState(const QString &state);
     void scheduleReconnect();
+    void retryWithoutProxy();
     void beginSession();
     void rejectCertificate(const QString &fingerprint, const QString &subject, const QString &details, bool changed);
+    void schedulePasswordRenewal(qint64 expiresAt);
 
     QTcpSocket *socket_ = nullptr;
     QTimer heartbeatTimer_;
     QTimer reconnectTimer_;
+    QTimer passwordRenewalTimer_;
     Config config_;
     QByteArray buffer_;
     QString connectionId_;
@@ -119,6 +127,10 @@ private:
     bool manualDisconnect_ = false;
     bool authenticated_ = false;
     bool registered_ = false;
+    QString pendingTemporaryPassword_;
+    bool proxyFallbackAttempted_ = false;
+    bool forceDirectConnection_ = false;
+    bool usingProxy_ = false;
     // Set when a TLS verification failure has already been reported for the
     // current connection, so the peer's abort does not replace the real cause
     // with the generic "remote host closed" message.

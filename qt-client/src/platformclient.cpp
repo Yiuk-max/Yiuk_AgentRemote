@@ -5,28 +5,48 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonValue>
+#include <QNetworkProxy>
+#include <QNetworkProxyFactory>
+#include <QNetworkProxyQuery>
+#include <QRandomGenerator>
 #include <QSslCertificate>
 #include <QSslConfiguration>
 #include <QSslSocket>
 #include <QSignalBlocker>
 #include <QtEndian>
+#include <limits>
 
 namespace {
 constexpr int kProtocolVersion = 1;
 constexpr int kMaxFrameBytes = 256 * 1024;
 constexpr int kHeartbeatIntervalMs = 15000;
 constexpr int kMaxReconnectDelayMs = 30000;
+
+QString makeTemporaryPassword() {
+    static constexpr char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    constexpr int alphabetSize = sizeof(alphabet) - 1;
+    QString password;
+    password.reserve(32);
+    for (int i = 0; i < 32; ++i)
+        password.append(QLatin1Char(alphabet[QRandomGenerator::system()->bounded(alphabetSize)]));
+    return password;
+}
 } // namespace
 
 PlatformClient::PlatformClient(QObject *parent) : QObject(parent) {
+    QNetworkProxyFactory::setUseSystemConfiguration(true);
     heartbeatTimer_.setInterval(kHeartbeatIntervalMs);
     connect(&heartbeatTimer_, &QTimer::timeout, this, &PlatformClient::onHeartbeat);
     reconnectTimer_.setSingleShot(true);
     connect(&reconnectTimer_, &QTimer::timeout, this, &PlatformClient::onReconnect);
+    passwordRenewalTimer_.setSingleShot(true);
+    connect(&passwordRenewalTimer_, &QTimer::timeout, this, &PlatformClient::renewTemporaryPassword);
 }
 
 void PlatformClient::setConfig(const Config &config) {
     config_ = config;
+    proxyFallbackAttempted_ = false;
+    forceDirectConnection_ = false;
 }
 
 void PlatformClient::connectToPlatform() {
@@ -44,6 +64,7 @@ void PlatformClient::connectToPlatform() {
     registered_ = false;
     sslErrorsSeen_ = false;
     tlsErrorReported_ = false;
+    usingProxy_ = false;
 
     if (config_.address.trimmed().isEmpty()) {
         emit connectionError(QStringLiteral("未配置平台服务器地址"));
@@ -68,6 +89,14 @@ void PlatformClient::connectToPlatform() {
 
     auto *socket = new QSslSocket(this);
     socket_ = socket;
+    // Use a VPN-configured system proxy first, then retry direct through the
+    // Windows route table if that proxy cannot complete TLS.
+    const QList<QNetworkProxy> proxies = QNetworkProxyFactory::systemProxyForQuery(
+        QNetworkProxyQuery(host, static_cast<quint16>(port), QString(), QNetworkProxyQuery::TcpSocket));
+    usingProxy_ = !forceDirectConnection_ && !proxies.isEmpty() &&
+                  proxies.first().type() != QNetworkProxy::NoProxy;
+    socket->setProxy(forceDirectConnection_ ? QNetworkProxy(QNetworkProxy::NoProxy)
+                                            : QNetworkProxy(QNetworkProxy::DefaultProxy));
     connect(socket, &QTcpSocket::connected, this, &PlatformClient::onConnected);
     connect(socket, &QSslSocket::encrypted, this, &PlatformClient::onEncrypted);
     connect(socket, &QTcpSocket::readyRead, this, &PlatformClient::onReadyRead);
@@ -100,7 +129,7 @@ void PlatformClient::connectToPlatform() {
         // exact DER fingerprint. Avoid backend-specific CA validation here:
         // Schannel can abort a self-signed handshake before encrypted() and
         // surface only the misleading "remote host closed" error.
-        if (config_.allowInsecure || !config_.pinnedFingerprint.trimmed().isEmpty())
+        if (!config_.pinnedFingerprint.trimmed().isEmpty())
             socket->setPeerVerifyMode(QSslSocket::VerifyNone);
         else
             socket->setPeerVerifyMode(QSslSocket::QueryPeer);
@@ -119,9 +148,17 @@ void PlatformClient::connectToPlatform() {
                 socket->setSslConfiguration(sslConfiguration);
             }
         }
-        socket->connectToHostEncrypted(host, static_cast<quint16>(port));
+        const auto networkProtocol = config_.forceIPv4 ? QAbstractSocket::IPv4Protocol
+                                                       : QAbstractSocket::AnyIPProtocol;
+        // Keep the original hostname for SNI and certificate hostname checks;
+        // constrain only the address family used for DNS/socket routing.
+        socket->connectToHostEncrypted(host, static_cast<quint16>(port), host,
+                                       QIODevice::ReadWrite, networkProtocol);
     } else {
-        socket->connectToHost(host, static_cast<quint16>(port));
+        const auto networkProtocol = config_.forceIPv4 ? QAbstractSocket::IPv4Protocol
+                                                       : QAbstractSocket::AnyIPProtocol;
+        socket->connectToHost(host, static_cast<quint16>(port), QIODevice::ReadWrite,
+                              networkProtocol);
     }
 }
 
@@ -129,6 +166,7 @@ void PlatformClient::disconnectFromPlatform() {
     manualDisconnect_ = true;
     reconnectTimer_.stop();
     heartbeatTimer_.stop();
+    passwordRenewalTimer_.stop();
     QTcpSocket *socket = socket_;
     socket_ = nullptr;
     if (socket) {
@@ -227,6 +265,11 @@ void PlatformClient::onReadyRead() {
 void PlatformClient::onDisconnected() {
     auto *socket = qobject_cast<QSslSocket *>(sender());
     if (!socket || socket != socket_) return;
+    passwordRenewalTimer_.stop();
+    if (usingProxy_ && !proxyFallbackAttempted_ && config_.tls && !socket->isEncrypted()) {
+        retryWithoutProxy();
+        return;
+    }
     socket_ = nullptr;
     socket->deleteLater();
     heartbeatTimer_.stop();
@@ -239,6 +282,15 @@ void PlatformClient::onDisconnected() {
 void PlatformClient::onSocketError(QAbstractSocket::SocketError error) {
     auto *socket = qobject_cast<QSslSocket *>(sender());
     if (!socket || socket != socket_) return;
+    if (usingProxy_ && !proxyFallbackAttempted_ && config_.tls && !socket->isEncrypted() &&
+        (error == QAbstractSocket::RemoteHostClosedError ||
+         error == QAbstractSocket::SslHandshakeFailedError ||
+         error == QAbstractSocket::ProxyConnectionClosedError ||
+         error == QAbstractSocket::ProxyConnectionRefusedError ||
+         error == QAbstractSocket::ProxyConnectionTimeoutError)) {
+        retryWithoutProxy();
+        return;
+    }
     if (tlsErrorReported_) {
         // The TLS dialog and message already explain the failure; the aborted
         // handshake typically surfaces here as RemoteHostClosedError.
@@ -286,6 +338,34 @@ void PlatformClient::onHeartbeat() {
 void PlatformClient::onReconnect() {
     if (manualDisconnect_ || socket_) return;
     connectToPlatform();
+}
+
+void PlatformClient::retryWithoutProxy() {
+    if (proxyFallbackAttempted_ || manualDisconnect_) return;
+    proxyFallbackAttempted_ = true;
+    forceDirectConnection_ = true;
+    QSslSocket *socket = qobject_cast<QSslSocket *>(socket_);
+    socket_ = nullptr;
+    if (socket) {
+        socket->abort();
+        socket->deleteLater();
+    }
+    connectToPlatform();
+}
+
+void PlatformClient::schedulePasswordRenewal(qint64 expiresAt) {
+    passwordRenewalTimer_.stop();
+    if (!registered_ || expiresAt <= 0) return;
+    const qint64 remainingMs = expiresAt * 1000 - QDateTime::currentMSecsSinceEpoch();
+    const qint64 renewInMs = qMax<qint64>(1000, remainingMs - 60 * 1000);
+    passwordRenewalTimer_.start(static_cast<int>(qMin<qint64>(renewInMs, std::numeric_limits<int>::max())));
+}
+
+void PlatformClient::renewTemporaryPassword() {
+    if (!registered_ || !isConnected()) return;
+    pendingTemporaryPassword_ = makeTemporaryPassword();
+    updateTemporaryPassword(pendingTemporaryPassword_, config_.passwordVersion + 1,
+                            config_.mode, config_.ttlSeconds);
 }
 
 void PlatformClient::scheduleReconnect() {
@@ -338,14 +418,22 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
     }
     if (type == QLatin1String("device_registered")) {
         registered_ = true;
+        const QString serverPassword = message.value(QStringLiteral("temporary_password")).toString();
+        const int previousPasswordVersion = config_.passwordVersion;
+        if (!serverPassword.isEmpty())
+            config_.temporaryPassword = serverPassword;
         if (message.value(QStringLiteral("mode")).isString())
             config_.mode = message.value(QStringLiteral("mode")).toString();
         if (message.value(QStringLiteral("password_version")).isDouble())
             config_.passwordVersion = message.value(QStringLiteral("password_version")).toInt();
+        if (!serverPassword.isEmpty() || config_.passwordVersion != previousPasswordVersion)
+            emit credentialsRenewed(config_.temporaryPassword, config_.passwordVersion);
         reconnectAttempts_ = 0;
         setState(QStringLiteral("connected"));
         heartbeatTimer_.start();
-        emit registered(message.value(QStringLiteral("device")).toObject());
+        const QJsonObject device = message.value(QStringLiteral("device")).toObject();
+        schedulePasswordRenewal(static_cast<qint64>(device.value(QStringLiteral("password_expires_at")).toDouble()));
+        emit registered(device);
         return;
     }
     if (type == QLatin1String("session_request")) {
@@ -398,8 +486,15 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
     if (type == QLatin1String("temporary_password_updated")) {
         if (message.value(QStringLiteral("password_version")).isDouble())
             config_.passwordVersion = message.value(QStringLiteral("password_version")).toInt();
-        emit temporaryPasswordUpdated(config_.passwordVersion,
-                                      static_cast<qint64>(message.value(QStringLiteral("expires_at")).toDouble()));
+        const QString serverPassword = message.value(QStringLiteral("temporary_password")).toString();
+        if (!serverPassword.isEmpty())
+            config_.temporaryPassword = serverPassword;
+        else if (!pendingTemporaryPassword_.isEmpty())
+            config_.temporaryPassword = pendingTemporaryPassword_;
+        pendingTemporaryPassword_.clear();
+        const qint64 expiresAt = static_cast<qint64>(message.value(QStringLiteral("expires_at")).toDouble());
+        schedulePasswordRenewal(expiresAt);
+        emit temporaryPasswordUpdated(config_.temporaryPassword, config_.passwordVersion, expiresAt);
         return;
     }
     if (type == QLatin1String("error")) {

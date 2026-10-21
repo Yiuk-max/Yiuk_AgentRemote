@@ -127,6 +127,7 @@ func (m *Manager) Register(reg Registration) (Info, string, error) {
 	defer m.mu.Unlock()
 
 	existing := m.devices[reg.ID]
+	expiredPassword := false
 	if existing == nil && len(m.devices) >= m.max {
 		return Info{}, "", ErrDeviceLimit
 	}
@@ -143,18 +144,14 @@ func (m *Manager) Register(reg Registration) (Info, string, error) {
 		if existing.revoked {
 			return Info{}, "", ErrPasswordRevoke
 		}
-		if !existing.info.PasswordExpiresAt.IsZero() && !now.Before(existing.info.PasswordExpiresAt) {
-			return Info{}, "", ErrPasswordExpiry
-		}
 		candidate := hashPassword(existing.passwordSalt, password)
 		if subtle.ConstantTimeCompare(candidate, existing.passwordHash) != 1 {
 			return Info{}, "", ErrBadPassword
 		}
+		expiredPassword = !existing.info.PasswordExpiresAt.IsZero() &&
+			!now.Before(existing.info.PasswordExpiresAt)
 	}
-	if password == "" {
-		if existing != nil {
-			return Info{}, "", ErrBadPassword
-		}
+	if password == "" || expiredPassword {
 		var err error
 		password, err = GeneratePassword()
 		if err != nil {
