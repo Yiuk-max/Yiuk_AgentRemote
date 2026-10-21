@@ -3,11 +3,11 @@
 版本：1.1  
 状态：单人 + AI Agent 粗估，按阶段验收，不是日期承诺  
 人员假设：没有工程师团队；项目所有者负责决策、提供环境和少量真实验收，AI coding agent 承担主要代码修改、测试编写和文档维护。  
-关联文档：[产品需求](product-requirements.md)、[技术选型](technical-selection.md)、[实现方案](implementation.md)
+关联文档：[产品需求](product-requirements.md)、[技术选型](technical-selection.md)、[实现方案](implementation.md)、[后端实施状态](backend-status.md)
 
 ## 1. 当前 P0 与估算结论
 
-当前 P0 已完成“Agent 适配 + 统一工具”以及 Qt 本机客户端基础界面。Qt 客户端目前包含主页、设备码输入、添加设备、设备列表、复制本机设备码、会话记录、设置和本地 MCP bridge；跨设备设备注册、在线连接和远程平台路由仍未完成。
+当前 P0（Agent 适配 + 统一工具）已完成，平台服务端、Agent 平台 backend 与 Qt 客户端平台对接也已实现；当前重点是真实 Windows 端到端验收、Windows Job Object 进程树清理、安装升级和 Minecraft 联机回归，详见 [后端实施状态](backend-status.md)。
 
 按 AI Agent 协助实现、项目所有者可用 MCP Host 实际配置验证的假设，P0 预计 2-5 个有效工作日。当前代码已完成工具核心、8 个 MCP 工具注册、参数校验和 SDK 内存传输集成测试；剩余的关键验收是接入一个真实 Agent/MCP Host 做启动和工具发现验证，以及稳定契约审查。
 

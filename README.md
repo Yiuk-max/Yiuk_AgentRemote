@@ -1,136 +1,116 @@
 # Yiuk Switchboard
 
-## 项目状态
+**面向 AI Agent 的远程设备协作与执行平台**
 
-本项目的主产品是面向 AI Agent 的远程设备协作与执行平台，正式需求见 [`docs/product-requirements.md`](docs/product-requirements.md)。Windows Qt 客户端当前已具备本机协助界面、本机设备信息、设备码收藏和本地会话管理；跨设备平台连接、设备注册和远程路由仍在实现中。旧 Qt 运维客户端与旧 Minecraft MOD 已移除。
+让 AI Agent 在设备所有者明确授权的前提下，安全地连接并操作远端的 Windows
+设备；操作者、设备所有者和 Agent 使用同一套设备、会话与任务语义。
 
-Go 平台后端已完成第一轮改造：`cmd/platform` 提供 TLS 长连接、player 密码认证、设备临时密码、direct/approval 会话状态机、任务状态与有界输出、会话路由和业务类型隔离；状态完全在内存中，重启即失效。Agent MCP 已可通过 `internal/platformclient` 连接平台后端。Qt 设备端已接入平台协议：注册临时密码、接收/批准会话、执行平台下发的 PowerShell 并回传输出；仍需在真实 Windows 上完成 TLS、进程树清理和安装包验收。
+> 项目状态：**正在开发中（MVP）**。核心平台服务、Agent 接入和 Windows Qt
+> 客户端的平台对接已完成，正在推进真实 Windows 端到端验证与安全加固。
 
-Minecraft 联机是必须保留的既有能力，但不要求保留当前后端架构、协议或 MOD 实现。可以重构或重写 Go 后端，并在需要时调整 MOD 以适配新的后端。改造前后都应验证 Minecraft 联机功能仍可用。
+## 项目愿景
 
-平台服务已实现 PRD 所需的设备临时密码、所有者批准、会话授权、任务路由和 MCP 接入。既有 Minecraft relay 继续独立运行；`ops/server` 是 relay 运维代理，不是远程执行 Agent。
+今天的大多数 AI Agent 只能在本机运行工具。但真正有价值的任务往往发生在另一台
+设备上：帮家人排查电脑、在测试机上复现问题、远程读取日志、在隔离环境里执行一次
+诊断命令。
 
-## 目录
+Yiuk Switchboard 想把这件事做成一条受控、可审计、随时可中止的通道：
 
-- `cmd/platform`、`internal/platform/`：平台服务入口、TLS 传输、认证、设备/会话/任务内存管理器、协议与审计。
-- `cmd/relay`、`internal/`：Go TCP relay 与房间/会话实现（Minecraft 联机）。
-- `internal/platformclient`：Agent MCP 使用的平台 operator 客户端 backend。
-- `configs/platform.yaml`：平台服务配置模板；`configs/config.yaml` 为 Minecraft relay 模板。
-- `ops/server`：管理 relay 进程的 Go 运维代理，不是 PRD 中的 Windows 远程执行 Agent。
-- `deploy/`：部署相关文件。
-- `111.md`：PRD 入口；正式产品需求见 `docs/product-requirements.md`。
-- `docs/technical-selection.md`：技术选型与待决技术门槛。
-- `docs/implementation.md`：模块边界、协议、会话/任务状态和实现顺序。
-- `docs/product-requirements.md`：唯一正式产品需求基线。
-- `docs/schedule.md`：MVP 工期、人力假设、阶段和风险。
-- `docs/server-refactor-plan.md`：完全内存化服务器改造计划、密码授权模型和实施阶段。
-- `docs/backend-status.md`：平台后端已实施范围、测试和剩余工作。
+- **Agent 作为操作者**：通过统一的 MCP 工具接口列设备、申请会话、执行命令、读取结果。
+- **设备所有者掌握开关**：每一次连接都需要所有者明确批准，随时可以拒绝或立即停止。
+- **一台设备，一个软件**：所有者与协助者使用同一款 Windows 客户端，按角色启用功能。
+- **可替换的 Agent**：设备执行核心与 Agent 解耦，更换 Agent 不需要重写后端。
 
-## Windows Qt 客户端
+长期来看，平台可以承载更多设备类型和更多 Agent 适配器，成为“Agent 使用真实世界
+设备能力”的通用入口，而不是绑定某一个助手或某一种命令执行方式。
 
-Qt 客户端位于 [`qt-client`](qt-client) 目录，使用 Qt 6 Widgets、C++17 和 CMake。当前界面包含：
+## 核心能力
 
-- `主页`：显示本机设备码、连接密码、设备码输入和协助请求入口。
-- 设备码输入行：输入框、添加设备按钮和申请连接按钮保持在同一行；添加设备后保存到本机设备列表。
-- `设备列表`：显示本机设备和已添加设备，支持复制本机设备码、刷新列表和滚动查看设备。
-- `会话记录`：显示本机会话与任务记录。
-- `设置`：控制本机接收协助请求和本地记录，以及平台服务器地址、player 密码、TLS 和授权模式（direct/approval）。
+- **设备识别与在线状态**：设备码用于标识设备，在线状态由平台实时维护；设备码
+  本身不构成任何认证凭证。
+- **临时密码授权**：由设备所有者生成本机 32 位临时密码，通过安全渠道交给操作者；
+  支持有效期、版本轮换和随时撤销。
+- **两种授权模式**：
+  - *等待对方同意*：操作者只能创建待批准请求，设备所有者逐次批准。
+  - *直接远程*：在设备开关允许时建立短期已授权会话，仍受期限、权限和并发限制。
+- **会话授权与即时撤销**：每个会话绑定设备、操作者、权限集合和到期时间；所有者
+  可以立即结束会话并终止正在运行的任务。
+- **有界命令任务**：单次 PowerShell 执行，返回 stdout、stderr、退出码、状态和
+  截断标记；支持工作目录、超时、取消和输出上限。
+- **统一 Agent 工具核心**：`list_devices`、`get_device_status`、
+  `request_connection`、`get_session_status`、`execute_command`、
+  `get_command_result`、`cancel_command`、`close_session`，并提供 MCP stdio 适配器。
+- **加密中转与业务隔离**：远程协助使用独立于游戏联机的业务类型、端口、密码和
+  资源限制，远程会话不能访问游戏联机通道。
+- **结构化错误与幂等语义**：稳定错误码、不可复用的请求 ID、断线后不自动重放。
 
-当前客户端的设备列表和会话数据保存在当前 Windows 用户配置目录。设备码用于识别设备，不能单独认证。连接平台后，设备会显示本机 32 位临时密码；对方需输入该密码发起协助请求。临时密码刷新后旧密码和旧会话立即失效。
+## 典型场景
 
-构建 Qt 客户端：
+- 家人在另一台 Windows 电脑上遇到问题，你用自己的 Agent 申请协助，对方批准后
+  执行诊断命令并查看结果。
+- 开发者在测试机上远程执行一次构建或日志抓取，任务结束会话立即关闭。
+- 设备所有者只在需要时打开临时密码，用完即刷新，旧密码和旧会话立即失效。
+- 支持 MCP 的 Agent 通过统一工具完成“申请—等待批准—执行—读取结果—继续执行—关闭”。
 
-```sh
-cmake -S qt-client -B qt-client/build-qt -G Ninja
-cmake --build qt-client/build-qt
+## 安全与信任
+
+- 远程命令必须绑定到设备所有者批准的会话，未批准、被拒绝、过期或已关闭的会话
+  一律拒绝执行。
+- 命令以当前登录用户的普通权限运行，默认不提升权限；普通用户权限不是沙箱。
+- 传输使用 TLS；`player` 密码只用于证明可使用平台中转，不能直接操作任何设备。
+- 临时密码、命令正文和完整输出不写入服务端日志；设备端凭证使用 Windows DPAPI
+  保护。
+- 服务端当前完全内存化，重启后所有在线连接、临时密码、请求和会话失效，不会
+  伪造成功或自动恢复授权。
+
+## 游戏联机兼容
+
+平台保留既有的 Minecraft 局域网联机中转能力，作为与远程协助并列的独立业务存在；
+它不参与远程命令授权，远程协助会话也无法进入游戏联机通道。
+
+## 项目现状
+
+项目处于 MVP 开发阶段：
+
+| 能力 | 状态 |
+| --- | --- |
+| Go 平台服务（认证、设备、会话、任务、TLS 中转、路由） | 已完成 |
+| Agent 工具核心与 MCP 适配器 | 已完成 |
+| Agent 平台 backend | 已完成 |
+| Windows Qt 客户端平台对接（注册、审批、执行、流式回传） | 已完成 |
+| Qt↔Go 互操作测试 | 已通过 |
+| 真实 Windows 安装包与 TLS 端到端验收 | 进行中 |
+| Windows 进程树清理、安装升级、发布前安全检查 | 进行中 |
+| Minecraft 联机回归与冻结清单验证 | 待执行 |
+
+平台服务目前为完全内存化实现，没有业务数据库，这是 MVP 阶段的有意设计。
+
+## 架构概览
+
+```text
+操作者 Windows                          设备所有者 Windows
++--------------------------+            +--------------------------+
+| Agent (MCP)              |            | Yiuk Qt Client           |
+|   MCP Adapter            |            |   所有者审批 / 会话管理  |
+|   Tool Core              |            |   PowerShell 执行        |
++------------+-------------+            +------------+-------------+
+             |                                       |
+             +------------------+--------------------+
+                                |
+                         +------v-------+
+                         | Go 平台服务  |
+                         | 认证 / 设备  |
+                         | 会话 / 任务  |
+                         | TLS 中转路由 |
+                         +--------------+
 ```
 
-构建并运行 Qt↔Go 平台互操作测试（需要先启动明文或 TLS 平台服务）：
+## 文档
 
-```sh
-cmake -S qt-client -B qt-client/build-qt -G Ninja -DYIUK_BUILD_TESTS=ON
-cmake --build qt-client/build-qt
-YIUK_PLATFORM_ADDRESS=127.0.0.1:25664 YIUK_PLATFORM_PASSWORD=... ./qt-client/build-qt/yiuk-platform-interop
-```
-
-## Agent 工具适配（当前 P0）
-
-统一工具核心位于 `internal/agenttools`，首个 MCP stdio adapter 位于 `internal/mcpadapter`。构建并启动：
-
-```sh
-go run ./cmd/yiuk-mcp
-```
-
-也可以构建独立程序：
-
-```sh
-go build -o yiuk-mcp ./cmd/yiuk-mcp
-```
-
-Agent MCP 配置示例（将 `command` 改为本机可执行文件的绝对路径）：
-
-```json
-{
-  "mcpServers": {
-    "yiuk-switchboard": {
-      "command": "C:/path/to/yiuk-mcp",
-      "args": []
-    }
-  }
-}
-```
-
-当前 adapter 注册 8 个统一工具。若存在本机平台客户端配置 `%APPDATA%/Yiuk/DeviceAssist/platform-client.json`，`yiuk-mcp` 会使用远程平台 backend；否则回退到本机 Qt HTTP bridge；两者都没有时返回 `NOT_CONFIGURED`，不会伪造设备在线或命令执行结果。后续 Agent 类型通过增加 adapter 复用 `agenttools` 契约，不修改工具业务语义。
-
-平台客户端配置示例（`platform-client.json`，仅本机用户可读写）：
-
-```json
-{
-  "address": "switchboard.example.com:25664",
-  "player_password": "REPLACE_WITH_THE_PLATFORM_PLAYER_PASSWORD",
-  "tls_ca": "C:/certs/platform-ca.pem",
-  "timeout_seconds": 30
-}
-```
-
-本地开发可使用 `"allow_plaintext": true` 连接明文 listener；生产环境必须使用 TLS 并校验证书。平台工具调用返回结构化错误码（如 `DEVICE_OFFLINE`、`BAD_TEMPORARY_PASSWORD`、`INVALID_SESSION_STATE`、`PLATFORM_TIMEOUT`）。
-
-`request_connection` 在平台 backend 下需要设备所有者通过安全渠道提供的 32 字符临时密码（可选字段 `temporary_password`）；临时密码只用于确认对目标设备的访问权，不会成为长期凭证。
-
-## Go 开发
-
-需要 Go 1.26 或更新版本。
-
-```sh
-go test ./...
-go build ./...
-```
-
-构建平台服务：
-
-```sh
-go build -o platform ./cmd/platform
-./platform -config configs/platform.yaml
-```
-
-构建 relay：
-
-```sh
-go build -o relay ./cmd/relay
-```
-
-构建运维代理：
-
-```sh
-go build -o ops-agent ./ops/server/cmd/ops-agent
-```
-
-relay 使用 `configs/config.yaml` 作为配置模板。平台服务使用 `configs/platform.yaml`；部署前应复制到受限权限的运行目录，为平台 player 密码、Minecraft host/player 密码分别设置不同的随机强密码，并按部署环境设置监听端口和 TLS 证书。不要将真实密码、TLS 私钥或其他凭证提交到仓库。
-
-平台服务当前内存化运行，重启后设备临时密码、会话和任务全部失效；这是改造计划的有意设计，不要用数据库或磁盘文件"修复"它。
-
-运维代理配置模板位于 `ops/server/ops-agent.yaml`。管理端口应通过防火墙限制为可信运维终端访问。
-
-## 后续方向
-
-平台服务端（P0/P1/P2）和 Agent 平台 backend（P4 的 operator 侧）已实现，并有单元与集成测试覆盖认证、direct/approval、临时密码轮换、跨会话拒绝、输出截断和会话/任务终态。下一步重点是 P3：Qt 设备端接入平台 TLS 连接、注册设备临时密码、展示待批准请求并对每个 session 再校验设备 ID、session ID、权限和过期时间；以及 P4 设备侧的 PowerShell 任务链路、取消和进程树清理。Minecraft 联机能力必须保留，但其 Go 后端和 MOD 可以协同调整，并需按冻结清单做端到端回归。
+- [产品需求](docs/product-requirements.md)：产品范围、功能和验收标准。
+- [技术选型](docs/technical-selection.md)：技术基线与待决门槛。
+- [实现方案](docs/implementation.md)：模块边界、协议和状态机。
+- [工期计划](docs/schedule.md)：阶段、人力假设和风险。
+- [后端实施状态](docs/backend-status.md)：已完成范围、测试和剩余工作。
+- [服务器改造计划](docs/server-refactor-plan.md)：内存化服务器和密码授权模型。
+- [开发与构建](docs/development.md)：环境、构建、运行和测试。

@@ -1,6 +1,8 @@
 # 平台后端实施状态
 
-关联文档：[服务器改造计划](server-refactor-plan.md)、[实现方案](implementation.md)。
+状态：项目处于 MVP 开发中；本文档记录已完成范围、测试和剩余工作。
+
+关联文档：[服务器改造计划](server-refactor-plan.md)、[实现方案](implementation.md)、[开发与构建](development.md)。
 
 ## 已完成
 

@@ -2,7 +2,7 @@
 
 版本：1.0  
 状态：建议基线，阶段一原型验证后冻结  
-关联文档：[产品需求](product-requirements.md)、[实现方案](implementation.md)、[工期估算](schedule.md)
+关联文档：[产品需求](product-requirements.md)、[实现方案](implementation.md)、[工期估算](schedule.md)、[后端实施状态](backend-status.md)
 
 ## 1. 选型目标
 

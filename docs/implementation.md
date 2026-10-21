@@ -2,13 +2,13 @@
 
 版本：1.0  
 状态：MVP 实施基线  
-关联文档：[技术选型](technical-selection.md)、[产品需求](product-requirements.md)、[工期估算](schedule.md)
+关联文档：[技术选型](technical-selection.md)、[产品需求](product-requirements.md)、[工期估算](schedule.md)、[后端实施状态](backend-status.md)
 
 ## 1. 目标与范围
 
 交付一个可在真实两台 Windows 电脑验证的远程协助闭环：两端安装同一款 Qt 软件；受协助者注册设备并批准会话；协助者电脑上的 Agent 经 MCP 调用统一工具；远端 PowerShell 执行单条命令并返回 stdout、stderr 和退出码。MVP 同时验证现有 Minecraft 联机能力未回归。
 
-本文件定义建议实现边界。当前 Qt 客户端已经完成本机 UI、设备码持久化、设备码收藏、本机设备列表、会话记录、本地 MCP HTTP bridge 和本机 PowerShell 执行；真实设备注册、账户凭证、跨设备平台连接和远程任务路由仍未完成。现有 Go relay、旧运维代理和 Protobuf schema 均为待评估资产。
+本文件定义建议实现边界。平台服务端、Agent 平台 backend 和 Qt 客户端平台对接已经实现，具体范围与测试见 [后端实施状态](backend-status.md)；真实 Windows 端到端验收、进程树清理和 Minecraft 联机回归仍在推进。既有 Go relay 继续承载 Minecraft 联机，旧运维代理和 Protobuf schema 为待评估资产。
 
 ## 1.1 当前 Qt 客户端界面
 
