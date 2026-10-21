@@ -547,12 +547,11 @@ func (c *Client) downloadFile(ctx context.Context, raw json.RawMessage) (any, er
 			return nil, &agenttools.Error{Code: "LOCAL_WRITE_FAILED", Message: "could not inspect destination_path"}
 		}
 	} else {
-		root, err := os.UserCacheDir()
+		root, err := defaultDownloadDir()
 		if err != nil {
 			return nil, &agenttools.Error{Code: "LOCAL_WRITE_FAILED", Message: "could not determine a local download directory"}
 		}
-		destination = filepath.Join(root, "Yiuk", "DeviceAssist", "downloads",
-			fmt.Sprintf("%d-%s", time.Now().UnixNano(), safeRemoteBase(input.RemotePath)))
+		destination = filepath.Join(root, fmt.Sprintf("%d-%s", time.Now().UnixNano(), safeRemoteBase(input.RemotePath)))
 		if _, err := os.Lstat(destination); err == nil {
 			return nil, &agenttools.Error{Code: "LOCAL_PATH_EXISTS", Message: "generated download path already exists; retry"}
 		} else if !errors.Is(err, os.ErrNotExist) {
