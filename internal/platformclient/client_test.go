@@ -3,11 +3,16 @@ package platformclient_test
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -295,6 +300,86 @@ func TestPlatformClientRunCommand(t *testing.T) {
 	if data["session_closed"] != true {
 		t.Fatalf("session should be closed: %#v", data)
 	}
+	device.recv(protocol.TypeCloseSession)
+}
+
+func TestPlatformClientDownloadsFileWithReadFilePermission(t *testing.T) {
+	address := startPlatform(t)
+	device := dialFakeDevice(t, address)
+	device.register("device-files")
+
+	backend, err := platformclient.New(platformclient.Config{
+		Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+
+	session := invoke(t, backend, agenttools.RequestConnection, map[string]any{
+		"device_id": "device-files", "purpose": "read a log", "permissions": []string{"read_file"},
+		"temporary_password": devicePassword,
+	}).(map[string]any)
+	sessionID, _ := session["session_id"].(string)
+	if sessionID == "" || session["status"] != protocol.StatusApproved {
+		t.Fatalf("unexpected session: %#v", session)
+	}
+	device.recv(protocol.TypeSessionStatus)
+
+	destination := filepath.Join(t.TempDir(), "server.log")
+	type outcome struct {
+		data any
+		err  error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		raw, _ := json.Marshal(map[string]any{
+			"session_id": sessionID, "remote_path": `C:\logs\server.log`, "destination_path": destination,
+		})
+		data, err := backend.Invoke(context.Background(), agenttools.Request{Name: agenttools.DownloadFile, Input: raw})
+		done <- outcome{data: data, err: err}
+	}()
+
+	forwarded := device.recv(protocol.TypeDownloadFile)
+	if forwarded.RequestID == "" || forwarded.RemotePath != `C:\logs\server.log` {
+		t.Fatalf("unexpected file request: %#v", forwarded)
+	}
+	contents := []byte("first line\nsecond line\n")
+	sum := sha256.Sum256(contents)
+	split := 7
+	device.send(protocol.Message{
+		Type: protocol.TypeFileChunk, SessionID: sessionID, RequestID: forwarded.RequestID, Sequence: 1,
+		Data: base64.StdEncoding.EncodeToString(contents[:split]),
+	})
+	device.send(protocol.Message{
+		Type: protocol.TypeFileChunk, SessionID: sessionID, RequestID: forwarded.RequestID, Sequence: 2,
+		Data: base64.StdEncoding.EncodeToString(contents[split:]), EOF: true,
+	})
+	device.send(protocol.Message{
+		Type: protocol.TypeFileDownloadResult, SessionID: sessionID, RequestID: forwarded.RequestID,
+		Status: string(protocol.TaskSucceeded), FileName: "server.log", FileSize: int64(len(contents)),
+		FileSHA256: hex.EncodeToString(sum[:]), ResultKnown: true,
+	})
+
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("download_file: %v", result.err)
+	}
+	data := result.data.(map[string]any)
+	if data["local_path"] != destination || data["status"] != string(protocol.TaskSucceeded) {
+		t.Fatalf("unexpected download result: %#v", data)
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(contents) {
+		t.Fatalf("downloaded contents = %q", got)
+	}
+	if data["sha256"] != hex.EncodeToString(sum[:]) {
+		t.Fatalf("sha256 = %v", data["sha256"])
+	}
+	invoke(t, backend, agenttools.CloseSession, map[string]any{"session_id": sessionID})
 	device.recv(protocol.TypeCloseSession)
 }
 

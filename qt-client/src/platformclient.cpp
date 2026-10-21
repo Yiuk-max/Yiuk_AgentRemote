@@ -39,8 +39,6 @@ PlatformClient::PlatformClient(QObject *parent) : QObject(parent) {
     connect(&heartbeatTimer_, &QTimer::timeout, this, &PlatformClient::onHeartbeat);
     reconnectTimer_.setSingleShot(true);
     connect(&reconnectTimer_, &QTimer::timeout, this, &PlatformClient::onReconnect);
-    passwordRenewalTimer_.setSingleShot(true);
-    connect(&passwordRenewalTimer_, &QTimer::timeout, this, &PlatformClient::renewTemporaryPassword);
 }
 
 void PlatformClient::setConfig(const Config &config) {
@@ -166,7 +164,6 @@ void PlatformClient::disconnectFromPlatform() {
     manualDisconnect_ = true;
     reconnectTimer_.stop();
     heartbeatTimer_.stop();
-    passwordRenewalTimer_.stop();
     QTcpSocket *socket = socket_;
     socket_ = nullptr;
     if (socket) {
@@ -265,7 +262,6 @@ void PlatformClient::onReadyRead() {
 void PlatformClient::onDisconnected() {
     auto *socket = qobject_cast<QSslSocket *>(sender());
     if (!socket || socket != socket_) return;
-    passwordRenewalTimer_.stop();
     if (usingProxy_ && !proxyFallbackAttempted_ && config_.tls && !socket->isEncrypted()) {
         retryWithoutProxy();
         return;
@@ -353,21 +349,6 @@ void PlatformClient::retryWithoutProxy() {
     connectToPlatform();
 }
 
-void PlatformClient::schedulePasswordRenewal(qint64 expiresAt) {
-    passwordRenewalTimer_.stop();
-    if (!registered_ || expiresAt <= 0) return;
-    const qint64 remainingMs = expiresAt * 1000 - QDateTime::currentMSecsSinceEpoch();
-    const qint64 renewInMs = qMax<qint64>(1000, remainingMs - 60 * 1000);
-    passwordRenewalTimer_.start(static_cast<int>(qMin<qint64>(renewInMs, std::numeric_limits<int>::max())));
-}
-
-void PlatformClient::renewTemporaryPassword() {
-    if (!registered_ || !isConnected()) return;
-    pendingTemporaryPassword_ = makeTemporaryPassword();
-    updateTemporaryPassword(pendingTemporaryPassword_, config_.passwordVersion + 1,
-                            config_.mode, config_.ttlSeconds);
-}
-
 void PlatformClient::scheduleReconnect() {
     if (manualDisconnect_) return;
     ++reconnectAttempts_;
@@ -413,6 +394,7 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
             {QStringLiteral("mode"), config_.mode},
             {QStringLiteral("temporary_password"), config_.temporaryPassword},
             {QStringLiteral("password_version"), config_.passwordVersion},
+            {QStringLiteral("expires_at"), QDateTime::currentSecsSinceEpoch() + config_.ttlSeconds},
         });
         return;
     }
@@ -426,13 +408,21 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
             config_.mode = message.value(QStringLiteral("mode")).toString();
         if (message.value(QStringLiteral("password_version")).isDouble())
             config_.passwordVersion = message.value(QStringLiteral("password_version")).toInt();
-        if (!serverPassword.isEmpty() || config_.passwordVersion != previousPasswordVersion)
+        const bool serverRotatedPassword = !serverPassword.isEmpty() ||
+                                           config_.passwordVersion != previousPasswordVersion;
+        if (serverRotatedPassword) {
+            rotatePasswordOnFirstRegistration_ = false;
             emit credentialsRenewed(config_.temporaryPassword, config_.passwordVersion);
+        } else if (rotatePasswordOnFirstRegistration_) {
+            rotatePasswordOnFirstRegistration_ = false;
+            pendingTemporaryPassword_ = makeTemporaryPassword();
+            updateTemporaryPassword(pendingTemporaryPassword_, config_.passwordVersion + 1,
+                                    config_.mode, config_.ttlSeconds);
+        }
         reconnectAttempts_ = 0;
         setState(QStringLiteral("connected"));
         heartbeatTimer_.start();
         const QJsonObject device = message.value(QStringLiteral("device")).toObject();
-        schedulePasswordRenewal(static_cast<qint64>(device.value(QStringLiteral("password_expires_at")).toDouble()));
         emit registered(device);
         return;
     }
@@ -474,6 +464,17 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
                            message.value(QStringLiteral("truncated")).toBool());
         return;
     }
+    if (type == QLatin1String("download_file")) {
+        emit fileDownloadRequested(message.value(QStringLiteral("session_id")).toString(),
+                                   message.value(QStringLiteral("request_id")).toString(),
+                                   message.value(QStringLiteral("remote_path")).toString());
+        return;
+    }
+    if (type == QLatin1String("cancel_file_download")) {
+        emit fileDownloadCanceled(message.value(QStringLiteral("session_id")).toString(),
+                                 message.value(QStringLiteral("request_id")).toString());
+        return;
+    }
     if (type == QLatin1String("cancel_command")) {
         emit cancelRequested(message.value(QStringLiteral("session_id")).toString(),
                              message.value(QStringLiteral("request_id")).toString());
@@ -493,7 +494,6 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
             config_.temporaryPassword = pendingTemporaryPassword_;
         pendingTemporaryPassword_.clear();
         const qint64 expiresAt = static_cast<qint64>(message.value(QStringLiteral("expires_at")).toDouble());
-        schedulePasswordRenewal(expiresAt);
         emit temporaryPasswordUpdated(config_.temporaryPassword, config_.passwordVersion, expiresAt);
         return;
     }
@@ -551,7 +551,31 @@ void PlatformClient::sendCommandResult(const QString &sessionId, const QString &
     send(message);
 }
 
+void PlatformClient::sendFileChunk(const QString &sessionId, const QString &requestId, quint64 sequence,
+                                   const QByteArray &data, bool eof) {
+    send(QJsonObject{{QStringLiteral("type"), QStringLiteral("file_chunk")},
+                     {QStringLiteral("session_id"), sessionId},
+                     {QStringLiteral("request_id"), requestId},
+                     {QStringLiteral("sequence"), static_cast<double>(sequence)},
+                     {QStringLiteral("data"), QString::fromLatin1(data.toBase64())},
+                     {QStringLiteral("eof"), eof}});
+}
+
+void PlatformClient::sendFileDownloadResult(const QString &sessionId, const QString &requestId,
+                                            const QString &status, const QString &fileName, qint64 fileSize,
+                                            const QString &sha256, bool resultKnown) {
+    send(QJsonObject{{QStringLiteral("type"), QStringLiteral("file_download_result")},
+                     {QStringLiteral("session_id"), sessionId},
+                     {QStringLiteral("request_id"), requestId},
+                     {QStringLiteral("status"), status},
+                     {QStringLiteral("file_name"), fileName},
+                     {QStringLiteral("file_size"), static_cast<double>(fileSize)},
+                     {QStringLiteral("file_sha256"), sha256},
+                     {QStringLiteral("result_known"), resultKnown}});
+}
+
 void PlatformClient::updateTemporaryPassword(const QString &password, int version, const QString &mode, int ttlSeconds) {
+    pendingTemporaryPassword_ = password;
     QJsonObject message{{QStringLiteral("type"), QStringLiteral("update_temporary_password")},
                         {QStringLiteral("temporary_password"), password},
                         {QStringLiteral("password_version"), version},

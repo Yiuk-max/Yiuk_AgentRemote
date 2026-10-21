@@ -65,6 +65,7 @@ int main(int argc, char *argv[]) {
     operation->setConfig(operatorConfig);
 
     bool deviceReady = false;
+    bool devicePasswordReady = false;
     bool operatorReady = false;
     bool requested = false;
     bool approved = false;
@@ -74,11 +75,15 @@ int main(int argc, char *argv[]) {
     int failures = 0;
 
     auto maybeRequest = [&] {
-        if (!deviceReady || !operatorReady || requested) return;
+        // The device rotates its temporary password on first registration. A
+        // session created before that rotation is correctly revoked by the
+        // server, so wait for the rotation acknowledgement first.
+        if (!deviceReady || !devicePasswordReady || !operatorReady || requested) return;
         requested = true;
         qInfo() << "both clients registered; requesting session";
         operation->requestSession(QStringLiteral("123456789"), QStringLiteral("interop"),
-                                  QStringList{QStringLiteral("execute_command")}, QString::fromLatin1(kDevicePassword));
+                                  QStringList{QStringLiteral("execute_command")},
+                                  device->config().temporaryPassword);
     };
 
     QObject::connect(device, &PlatformClient::registered, &app, [&](const QJsonObject &) {
@@ -87,6 +92,11 @@ int main(int argc, char *argv[]) {
     });
     QObject::connect(operation, &PlatformClient::registered, &app, [&](const QJsonObject &) {
         operatorReady = true;
+        maybeRequest();
+    });
+    QObject::connect(device, &PlatformClient::temporaryPasswordUpdated, &app,
+                     [&](const QString &, int, qint64) {
+        devicePasswordReady = true;
         maybeRequest();
     });
     QObject::connect(device, &PlatformClient::sessionRequested, &app, [&](const QJsonObject &session) {

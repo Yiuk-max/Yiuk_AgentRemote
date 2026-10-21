@@ -291,6 +291,41 @@ func TestDirectModeAndOperatorBinding(t *testing.T) {
 	device.recv(protocol.TypeExecuteCommand)
 }
 
+func TestExpiredDevicePasswordCanRecoverWithSameDeviceID(t *testing.T) {
+	address, _ := startServer(t, func(cfg *config.Config) {
+		cfg.TempPasswordTTLSec = 1
+		cfg.TemporaryPasswordMin = 1
+		cfg.TemporaryPasswordMax = 60
+	})
+
+	first := dialClient(t, address)
+	first.auth(testPlayerPassword)
+	registered := first.register("device-expired", testDevicePassword, protocol.ModeApproval)
+	if registered.PasswordVersion != 1 {
+		t.Fatalf("initial password version = %d, want 1", registered.PasswordVersion)
+	}
+	_ = first.conn.Close()
+	time.Sleep(1100 * time.Millisecond)
+
+	reconnect := dialClient(t, address)
+	reconnect.auth(testPlayerPassword)
+	recovered := reconnect.register("device-expired", testDevicePassword, protocol.ModeApproval)
+	if recovered.TemporaryPassword == "" {
+		t.Fatal("server did not issue a replacement password")
+	}
+	if recovered.PasswordVersion != 2 {
+		t.Fatalf("recovered password version = %d, want 2", recovered.PasswordVersion)
+	}
+
+	operator := dialClient(t, address)
+	operator.auth(testPlayerPassword)
+	operator.send(protocol.Message{Type: protocol.TypeListDevices})
+	devices := operator.recv(protocol.TypeDeviceList)
+	if len(devices.Devices) != 1 || devices.Devices[0].DeviceID != "device-expired" || !devices.Devices[0].Online {
+		t.Fatalf("recovered device not online: %#v", devices.Devices)
+	}
+}
+
 func TestWrongPlayerPasswordAndAuthRequired(t *testing.T) {
 	address, _ := startServer(t, nil)
 
@@ -364,6 +399,57 @@ func TestTemporaryPasswordRotationRevokesSessions(t *testing.T) {
 	})
 	if created := operator2.recv(protocol.TypeSessionCreated); created.Status != protocol.StatusPendingApproval {
 		t.Fatalf("new password status = %s, want pending_approval", created.Status)
+	}
+}
+
+func TestFileDownloadRequiresReadFilePermissionAndStreamsChunks(t *testing.T) {
+	address, _ := startServer(t, func(cfg *config.Config) { cfg.MaxDownloadBytes = 1024 })
+	device := dialClient(t, address)
+	device.auth(testPlayerPassword)
+	device.register("device-files", testDevicePassword, protocol.ModeDirect)
+
+	operator := dialClient(t, address)
+	operator.auth(testPlayerPassword)
+	operator.send(protocol.Message{
+		Type: protocol.TypeRequestSession, DeviceID: "device-files", TemporaryPassword: testDevicePassword,
+		Purpose: "commands only", Permissions: []string{"execute_command"},
+	})
+	created := operator.recv(protocol.TypeSessionCreated)
+	device.recv(protocol.TypeSessionStatus)
+	operator.send(protocol.Message{Type: protocol.TypeDownloadFile, SessionID: created.SessionID, RequestID: "file-denied", RemotePath: `C:\secret.txt`})
+	if errMsg := operator.recv(protocol.TypeError); errMsg.Code != "PERMISSION_DENIED" {
+		t.Fatalf("download without read_file = %s, want PERMISSION_DENIED", errMsg.Code)
+	}
+	device.expectNone(100 * time.Millisecond)
+
+	operator.send(protocol.Message{
+		Type: protocol.TypeRequestSession, DeviceID: "device-files", TemporaryPassword: testDevicePassword,
+		Purpose: "read logs", Permissions: []string{"read_file"},
+	})
+	readSession := operator.recv(protocol.TypeSessionCreated)
+	device.recv(protocol.TypeSessionStatus)
+	operator.send(protocol.Message{Type: protocol.TypeDownloadFile, SessionID: readSession.SessionID, RequestID: "file-1", RemotePath: `C:\logs\app.log`})
+	forwarded := device.recv(protocol.TypeDownloadFile)
+	if forwarded.RequestID != "file-1" || forwarded.RemotePath != `C:\logs\app.log` {
+		t.Fatalf("unexpected forwarded file request: %#v", forwarded)
+	}
+
+	device.send(protocol.Message{Type: protocol.TypeFileChunk, SessionID: readSession.SessionID, RequestID: "file-1", Sequence: 2, Data: "bG9n"})
+	if errMsg := device.recv(protocol.TypeError); errMsg.Code != "INVALID_CHUNK_SEQUENCE" {
+		t.Fatalf("out-of-order chunk = %s, want INVALID_CHUNK_SEQUENCE", errMsg.Code)
+	}
+	device.send(protocol.Message{Type: protocol.TypeFileChunk, SessionID: readSession.SessionID, RequestID: "file-1", Sequence: 1, Data: "aGVsbG8="})
+	chunk := operator.recvWhere(protocol.TypeFileChunk, func(m protocol.Message) bool { return m.RequestID == "file-1" })
+	if chunk.Data != "aGVsbG8=" || chunk.Sequence != 1 {
+		t.Fatalf("unexpected forwarded chunk: %#v", chunk)
+	}
+	device.send(protocol.Message{
+		Type: protocol.TypeFileDownloadResult, SessionID: readSession.SessionID, RequestID: "file-1",
+		Status: string(protocol.TaskSucceeded), FileName: "app.log", FileSize: 5, FileSHA256: "checksum", ResultKnown: true,
+	})
+	result := operator.recvWhere(protocol.TypeFileDownloadResult, func(m protocol.Message) bool { return m.RequestID == "file-1" })
+	if result.Status != string(protocol.TaskSucceeded) || result.FileSize != 5 || result.FileSHA256 != "checksum" {
+		t.Fatalf("unexpected file result: %#v", result)
 	}
 }
 

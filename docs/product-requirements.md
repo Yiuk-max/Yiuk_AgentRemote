@@ -97,7 +97,7 @@ Minecraft 联机不是新产品的主要场景，但属于必须保留的既有�
 
 ### 5.4 Agent 工具核心与适配器
 
-统一能力至少包含：`list_devices`、`get_device_status`、`request_connection`、`run_command`、`get_session_status`、`execute_command`、`get_command_result`、`cancel_command`、`close_session`。其中 `run_command` 为便利工具，在平台 backend 上一次性完成“申请会话—等待批准—执行—取结果—关闭”。
+统一能力至少包含：`list_devices`、`get_device_status`、`request_connection`、`run_command`、`get_session_status`、`execute_command`、`get_command_result`、`download_file`、`cancel_command`、`close_session`。其中 `run_command` 为便利工具，在平台 backend 上一次性完成“申请会话—等待批准—执行—取结果—关闭”；`download_file` 必须在显式授予 `read_file` 权限的会话中调用，把受限大小的远端文件下载到 agent 本机。
 
 每个工具定义严格参数 schema、结构化结果、稳定错误码、超时和取消语义。MCP 是首个适配器，通过 stdio 与本机 Agent 通信；MCP 不实现授权本身。核心能力可后续接 CLI、HTTP 或其他 Agent 适配器。
 

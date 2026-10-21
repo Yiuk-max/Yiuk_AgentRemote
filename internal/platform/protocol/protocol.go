@@ -53,6 +53,11 @@ const (
 	TypeCancelCommand    = "cancel_command"
 	TypeCommandCanceled  = "command_cancelled"
 
+	TypeDownloadFile       = "download_file"
+	TypeCancelFileDownload = "cancel_file_download"
+	TypeFileChunk          = "file_chunk"
+	TypeFileDownloadResult = "file_download_result"
+
 	TypeListDevices = "list_devices"
 	TypeDeviceList  = "device_list"
 
@@ -131,12 +136,18 @@ type Message struct {
 	TimeoutSeconds   int    `json:"timeout_seconds,omitempty"`
 	Cursor           int    `json:"cursor,omitempty"`
 
+	RemotePath string `json:"remote_path,omitempty"`
+	FileName   string `json:"file_name,omitempty"`
+	FileSize   int64  `json:"file_size,omitempty"`
+	FileSHA256 string `json:"file_sha256,omitempty"`
+
 	Stream      string `json:"stream,omitempty"`
 	Data        string `json:"data,omitempty"`
 	ExitCode    *int   `json:"exit_code,omitempty"`
 	Truncated   bool   `json:"truncated,omitempty"`
 	ResultKnown bool   `json:"result_known,omitempty"`
 	Status      string `json:"status,omitempty"`
+	EOF         bool   `json:"eof,omitempty"`
 
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`

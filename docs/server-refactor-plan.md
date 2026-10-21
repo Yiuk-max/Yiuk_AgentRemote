@@ -99,7 +99,7 @@ last_activity
 - 目标设备临时密码校验成功，且未过期、未撤销。
 - session 属于当前操作者和目标设备。
 - session 状态为 `approved` 或 `active`。
-- session 权限包含 `execute_command`。
+- session 权限包含 `execute_command`（命令）；文件下载需要独立的 `read_file` 权限。
 - 设备端仍在线，并再次校验 session 和任务绑定。
 
 ## 4. 两种连接授权模式
@@ -141,8 +141,8 @@ last_activity
 服务端 -> 目标设备：推送操作者、用途、权限、过期时间
 目标所有者：批准或拒绝
 服务端：原子更新 session 状态
-approved -> 允许 execute_command
-rejected/expired/closed -> 拒绝 execute_command
+approved -> 允许已批准的 execute_command / read_file
+rejected/expired/closed -> 拒绝所有操作
 ```
 
 目标设备 UI 至少显示：

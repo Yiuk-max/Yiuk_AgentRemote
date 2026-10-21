@@ -27,8 +27,12 @@ const (
 	StatusInterrupted     Status = "interrupted"
 )
 
-// PermissionExecuteCommand is the only permission in the MVP.
-const PermissionExecuteCommand = "execute_command"
+// Session permissions are explicitly requested and approved by the device
+// owner. A file download never inherits command execution permission.
+const (
+	PermissionExecuteCommand = "execute_command"
+	PermissionReadFile       = "read_file"
+)
 
 var (
 	ErrNotFound       = errors.New("session not found")
@@ -452,7 +456,7 @@ func normalizePermissions(in []string) (map[string]struct{}, error) {
 	}
 	out := make(map[string]struct{}, len(in))
 	for _, p := range in {
-		if p != PermissionExecuteCommand {
+		if p != PermissionExecuteCommand && p != PermissionReadFile {
 			return nil, fmt.Errorf("%w: %q", ErrNoPermission, p)
 		}
 		out[p] = struct{}{}

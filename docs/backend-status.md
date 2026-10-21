@@ -60,6 +60,7 @@ request_session / session_request / session_created / session_status
 approve_session / reject_session
 open_session_channel / close_session
 execute_command / command_accepted / command_output / command_result
+download_file / cancel_file_download / file_chunk / file_download_result
 get_command_result / cancel_command / command_cancelled
 list_devices / device_list
 ping / pong / error
@@ -80,7 +81,8 @@ ping / pong / error
 `internal/platformclient` 实现 `agenttools.Backend`：
 
 - 保持一条已认证 operator 长连接，避免 tool 调用之间 session 被断开。
-- 支持 9 个统一工具；其中 `run_command` 提供“申请会话（可等待批准）→执行→取结果→关闭”的一次性远程任务。
+- 支持 10 个统一工具；其中 `run_command` 提供“申请会话（可等待批准）→执行→取结果→关闭”的一次性远程任务，`download_file` 在显式授予 `read_file` 权限的会话中下载远端文件。
+- MCP 工具声明 `outputSchema` 及只读/破坏性/幂等提示，供 pi 等 Host 做结构化结果消费和权限提示。
 - 本地缓存流式 `command_output`，支持 `get_command_result` 游标分页。
 - `request_connection` 支持可选 `temporary_password` 字段（平台 backend 必填）。
 - 平台返回的结构化错误码直接映射为 `agenttools.Error`。
@@ -127,6 +129,7 @@ qt-client/tests/platform_interop.cpp  Qt↔Go 互操作测试
 - 平台 `session_request` 会进入现有审批 UI，批准/拒绝通过 `approve_session` / `reject_session` 回传。
 - 平台 `execute_command` 会创建有界 QProcess 任务，按 `command_output` 流式回传 stdout/stderr，并发送 `command_result`（退出码、截断、结果未知）。
 - 平台 `cancel_command` / `close_session` 会终止对应 QProcess；超时会回传 `timed_out`。
+- 平台文件下载仅转发 Base64 分块，不持久化文件内容；服务端校验会话 `read_file` 权限、分块序号、累计字节数和设备归属，超过 `max_download_bytes` 或 5 分钟未完成的传输会被终止。
 - operator 侧支持通过 UI 申请会话：输入 32 位临时密码和用途后发送 `request_session`。
 
 Qt↔Go 互操作测试已通过：两个 Qt `PlatformClient` 分别作为设备和操作者，完成认证、注册、请求、批准、`execute_command`、输出/结果回传和关闭会话。

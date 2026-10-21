@@ -28,9 +28,16 @@ func NewServer(core *agenttools.Core) *mcp.Server {
 	}
 	for _, spec := range core.Tools() {
 		server.AddTool(&mcp.Tool{
-			Name:        spec.Name,
-			Description: spec.Description,
-			InputSchema: spec.InputSchema,
+			Name:         spec.Name,
+			Description:  spec.Description,
+			InputSchema:  spec.InputSchema,
+			OutputSchema: spec.OutputSchema,
+			Annotations: &mcp.ToolAnnotations{
+				ReadOnlyHint:    spec.Annotations.ReadOnly,
+				DestructiveHint: spec.Annotations.Destructive,
+				IdempotentHint:  spec.Annotations.Idempotent,
+				OpenWorldHint:   spec.Annotations.OpenWorld,
+			},
 		}, newHandler(spec.Name))
 	}
 	return server

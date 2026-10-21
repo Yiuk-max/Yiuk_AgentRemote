@@ -25,7 +25,7 @@ public:
         QString temporaryPassword;  // 32-character temporary password
         int passwordVersion = 1;
         QString mode;               // "direct" or "approval"
-        int ttlSeconds = 600;
+        int ttlSeconds = 24 * 60 * 60;
         bool tls = true;
         bool allowInsecure = false; // dev only: skip certificate verification
         QString caFile;
@@ -63,6 +63,11 @@ public:
                            const QString &data, quint64 sequence);
     void sendCommandResult(const QString &sessionId, const QString &requestId, const QString &status,
                            const QJsonValue &exitCode, bool resultKnown, bool truncated);
+    void sendFileChunk(const QString &sessionId, const QString &requestId, quint64 sequence,
+                       const QByteArray &data, bool eof);
+    void sendFileDownloadResult(const QString &sessionId, const QString &requestId, const QString &status,
+                                const QString &fileName, qint64 fileSize, const QString &sha256,
+                                bool resultKnown);
     void updateTemporaryPassword(const QString &password, int version, const QString &mode, int ttlSeconds);
     void closeSession(const QString &sessionId);
     void cancelCommand(const QString &sessionId, const QString &requestId);
@@ -85,6 +90,8 @@ signals:
                        const QString &data, quint64 sequence, bool truncated);
     void commandResult(const QString &sessionId, const QString &requestId, const QString &status,
                        const QJsonValue &exitCode, bool resultKnown, bool truncated);
+    void fileDownloadRequested(const QString &sessionId, const QString &requestId, const QString &remotePath);
+    void fileDownloadCanceled(const QString &sessionId, const QString &requestId);
     void cancelRequested(const QString &sessionId, const QString &requestId);
     void closeRequested(const QString &sessionId);
     void temporaryPasswordUpdated(const QString &password, int version, qint64 expiresAt);
@@ -104,7 +111,6 @@ private slots:
     void onSocketError(QAbstractSocket::SocketError error);
     void onHeartbeat();
     void onReconnect();
-    void renewTemporaryPassword();
 
 private:
     void send(const QJsonObject &message);
@@ -114,12 +120,10 @@ private:
     void retryWithoutProxy();
     void beginSession();
     void rejectCertificate(const QString &fingerprint, const QString &subject, const QString &details, bool changed);
-    void schedulePasswordRenewal(qint64 expiresAt);
 
     QTcpSocket *socket_ = nullptr;
     QTimer heartbeatTimer_;
     QTimer reconnectTimer_;
-    QTimer passwordRenewalTimer_;
     Config config_;
     QByteArray buffer_;
     QString connectionId_;
@@ -127,6 +131,7 @@ private:
     bool manualDisconnect_ = false;
     bool authenticated_ = false;
     bool registered_ = false;
+    bool rotatePasswordOnFirstRegistration_ = true;
     QString pendingTemporaryPassword_;
     bool proxyFallbackAttempted_ = false;
     bool forceDirectConnection_ = false;

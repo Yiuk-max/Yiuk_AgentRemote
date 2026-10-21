@@ -11,12 +11,15 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,6 +27,7 @@ import (
 
 	"yiuk-switchboard/internal/agenttools"
 	"yiuk-switchboard/internal/platform/protocol"
+	"yiuk-switchboard/internal/userconfig"
 )
 
 const configFileName = "platform-client.json"
@@ -48,11 +52,7 @@ type Config struct {
 
 // ConfigPath returns the per-user platform client configuration path.
 func ConfigPath() (string, error) {
-	root, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, "Yiuk", "DeviceAssist", configFileName), nil
+	return userconfig.Path(configFileName)
 }
 
 // NewFromUserConfig loads the platform client configuration. It returns an
@@ -88,10 +88,11 @@ func New(cfg Config) (*Client, error) {
 		cfg.TimeoutSeconds = 30
 	}
 	return &Client{
-		cfg:      cfg,
-		codec:    protocol.NewCodec(protocol.DefaultMaxFrameBytes),
-		sessions: make(map[string]protocol.SessionInfo),
-		tasks:    make(map[string]*taskCache),
+		cfg:       cfg,
+		codec:     protocol.NewCodec(protocol.DefaultMaxFrameBytes),
+		sessions:  make(map[string]protocol.SessionInfo),
+		tasks:     make(map[string]*taskCache),
+		downloads: make(map[string]*downloadCache),
 	}, nil
 }
 
@@ -103,6 +104,16 @@ type taskCache struct {
 	resultKnown bool
 	outputBytes int
 	chunks      []protocol.OutputChunk
+}
+
+type downloadCache struct {
+	sessionID   string
+	status      string
+	fileName    string
+	fileSHA256  string
+	resultKnown bool
+	bytes       int64
+	chunks      [][]byte
 }
 
 // Client is a persistent operator connection to the platform.
@@ -120,10 +131,11 @@ type Client struct {
 	connected bool
 	closed    bool
 
-	cacheMu  sync.Mutex
-	sessions map[string]protocol.SessionInfo
-	tasks    map[string]*taskCache
-	devices  []protocol.DeviceInfo
+	cacheMu   sync.Mutex
+	sessions  map[string]protocol.SessionInfo
+	tasks     map[string]*taskCache
+	downloads map[string]*downloadCache
+	devices   []protocol.DeviceInfo
 }
 
 // Close terminates the operator connection.
@@ -160,6 +172,8 @@ func (c *Client) Invoke(ctx context.Context, req agenttools.Request) (any, error
 		return c.executeCommand(ctx, req.Input)
 	case agenttools.GetCommandResult:
 		return c.getCommandResult(ctx, req.Input)
+	case agenttools.DownloadFile:
+		return c.downloadFile(ctx, req.Input)
 	case agenttools.CancelCommand:
 		return c.cancelCommand(ctx, req.Input)
 	case agenttools.CloseSession:
@@ -507,6 +521,167 @@ func aggregateResult(result map[string]any) map[string]any {
 	}
 }
 
+// downloadFile requests one bounded file from the device. The platform streams
+// base64 chunks back as events; the terminal result arrives as the correlated
+// response, after which the bytes are written atomically to a local file.
+func (c *Client) downloadFile(ctx context.Context, raw json.RawMessage) (any, error) {
+	var input struct {
+		SessionID       string `json:"session_id"`
+		RemotePath      string `json:"remote_path"`
+		DestinationPath string `json:"destination_path"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
+	}
+	if strings.TrimSpace(input.RemotePath) == "" || len(input.RemotePath) > 4096 {
+		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "remote_path is required and bounded"}
+	}
+	destination := strings.TrimSpace(input.DestinationPath)
+	if destination != "" {
+		if !filepath.IsAbs(destination) {
+			return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "destination_path must be absolute"}
+		}
+		if _, err := os.Lstat(destination); err == nil {
+			return nil, &agenttools.Error{Code: "LOCAL_PATH_EXISTS", Message: "destination_path already exists; refusing to overwrite"}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, &agenttools.Error{Code: "LOCAL_WRITE_FAILED", Message: "could not inspect destination_path"}
+		}
+	} else {
+		root, err := os.UserCacheDir()
+		if err != nil {
+			return nil, &agenttools.Error{Code: "LOCAL_WRITE_FAILED", Message: "could not determine a local download directory"}
+		}
+		destination = filepath.Join(root, "Yiuk", "DeviceAssist", "downloads",
+			fmt.Sprintf("%d-%s", time.Now().UnixNano(), safeRemoteBase(input.RemotePath)))
+		if _, err := os.Lstat(destination); err == nil {
+			return nil, &agenttools.Error{Code: "LOCAL_PATH_EXISTS", Message: "generated download path already exists; retry"}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, &agenttools.Error{Code: "LOCAL_WRITE_FAILED", Message: "could not inspect the download directory"}
+		}
+	}
+
+	requestID := randomID()
+	resp, err := c.callTimeout(ctx, protocol.Message{
+		Type: protocol.TypeDownloadFile, SessionID: input.SessionID, RequestID: requestID, RemotePath: input.RemotePath,
+	}, func(m protocol.Message) bool {
+		return m.Type == protocol.TypeFileDownloadResult && m.RequestID == requestID
+	}, c.downloadTimeout())
+	if err != nil {
+		return nil, err
+	}
+
+	c.cacheMu.Lock()
+	d := c.download(input.SessionID, requestID)
+	status := d.status
+	fileName := d.fileName
+	resultKnown := d.resultKnown
+	remoteSHA := strings.ToLower(strings.TrimSpace(d.fileSHA256))
+	chunks := append([][]byte(nil), d.chunks...)
+	c.cacheMu.Unlock()
+
+	if status != string(protocol.TaskSucceeded) || !resultKnown {
+		if resp.Code != "" {
+			return nil, &agenttools.Error{Code: resp.Code, Message: resp.Message}
+		}
+		return nil, &agenttools.Error{Code: "FILE_DOWNLOAD_FAILED", Message: "file download did not complete successfully (status " + status + ")"}
+	}
+	if fileName == "" {
+		fileName = safeRemoteBase(input.RemotePath)
+	}
+
+	hash := sha256.New()
+	var total int64
+	for _, chunk := range chunks {
+		total += int64(len(chunk))
+	}
+	if resp.FileSize > 0 && resp.FileSize != total {
+		return nil, &agenttools.Error{Code: "FILE_INTEGRITY_FAILED", Message: "received file size does not match the device result"}
+	}
+	if err := writeDownload(destination, chunks, hash); err != nil {
+		return nil, err
+	}
+	localSHA := hex.EncodeToString(hash.Sum(nil))
+	if remoteSHA != "" && remoteSHA != localSHA {
+		_ = os.Remove(destination)
+		return nil, &agenttools.Error{Code: "FILE_INTEGRITY_FAILED", Message: "file checksum does not match the device result"}
+	}
+	return map[string]any{
+		"session_id":  input.SessionID,
+		"request_id":  requestID,
+		"remote_path": input.RemotePath,
+		"file_name":   fileName,
+		"local_path":  destination,
+		"size":        total,
+		"sha256":      localSHA,
+		"status":      status,
+	}, nil
+}
+
+func writeDownload(destination string, chunks [][]byte, hash io.Writer) error {
+	dir := filepath.Dir(destination)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return &agenttools.Error{Code: "LOCAL_WRITE_FAILED", Message: "could not create the download directory"}
+	}
+	tmp, err := os.CreateTemp(dir, ".yiuk-download-*")
+	if err != nil {
+		return &agenttools.Error{Code: "LOCAL_WRITE_FAILED", Message: "could not create a temporary download file"}
+	}
+	tmpName := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}
+	for _, chunk := range chunks {
+		if _, err := tmp.Write(chunk); err != nil {
+			cleanup()
+			return &agenttools.Error{Code: "LOCAL_WRITE_FAILED", Message: "could not write the downloaded file"}
+		}
+		if _, err := hash.Write(chunk); err != nil {
+			cleanup()
+			return &agenttools.Error{Code: "LOCAL_WRITE_FAILED", Message: "could not hash the downloaded file"}
+		}
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return &agenttools.Error{Code: "LOCAL_WRITE_FAILED", Message: "could not flush the downloaded file"}
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return &agenttools.Error{Code: "LOCAL_WRITE_FAILED", Message: "could not close the downloaded file"}
+	}
+	if err := os.Rename(tmpName, destination); err != nil {
+		_ = os.Remove(tmpName)
+		return &agenttools.Error{Code: "LOCAL_WRITE_FAILED", Message: "could not move the downloaded file into place"}
+	}
+	return nil
+}
+
+func safeRemoteBase(remotePath string) string {
+	base := path.Base(strings.ReplaceAll(remotePath, "\\", "/"))
+	base = strings.Map(func(r rune) rune {
+		if r < 32 || strings.ContainsRune(`<>:"/\|?*`, r) {
+			return '_'
+		}
+		return r
+	}, base)
+	base = strings.TrimSpace(strings.Trim(base, "."))
+	if base == "" {
+		return "download.bin"
+	}
+	if len(base) > 160 {
+		base = base[:160]
+	}
+	return base
+}
+
+func (c *Client) downloadTimeout() time.Duration {
+	timeout := time.Duration(c.cfg.TimeoutSeconds) * time.Second
+	if timeout < 5*time.Minute {
+		timeout = 5 * time.Minute
+	}
+	return timeout
+}
+
 func (c *Client) cancelCommand(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {
 		SessionID string `json:"session_id"`
@@ -547,6 +722,10 @@ func (c *Client) closeSessionInternal(ctx context.Context, sessionID string) (ma
 }
 
 func (c *Client) call(ctx context.Context, req protocol.Message, match func(protocol.Message) bool) (protocol.Message, error) {
+	return c.callTimeout(ctx, req, match, time.Duration(c.cfg.TimeoutSeconds)*time.Second)
+}
+
+func (c *Client) callTimeout(ctx context.Context, req protocol.Message, match func(protocol.Message) bool, timeout time.Duration) (protocol.Message, error) {
 	c.callMu.Lock()
 	defer c.callMu.Unlock()
 
@@ -572,7 +751,6 @@ func (c *Client) call(ctx context.Context, req protocol.Message, match func(prot
 	}
 	_ = conn.SetWriteDeadline(time.Time{})
 
-	timeout := time.Duration(c.cfg.TimeoutSeconds) * time.Second
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	for {
@@ -765,6 +943,10 @@ func (c *Client) observe(m protocol.Message) {
 		c.observeOutput(m)
 	case protocol.TypeCommandResult:
 		c.observeResult(m)
+	case protocol.TypeFileChunk:
+		c.observeFileChunk(m)
+	case protocol.TypeFileDownloadResult:
+		c.observeFileResult(m)
 	case protocol.TypeDeviceList:
 		c.cacheMu.Lock()
 		c.devices = append([]protocol.DeviceInfo(nil), m.Devices...)
@@ -791,6 +973,41 @@ func (c *Client) observeOutput(m protocol.Message) {
 	} else if m.Data != "" {
 		t.outputBytes += len(m.Data)
 	}
+}
+
+func (c *Client) observeFileChunk(m protocol.Message) {
+	data, err := base64.StdEncoding.DecodeString(m.Data)
+	if err != nil {
+		return
+	}
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	d := c.download(m.SessionID, m.RequestID)
+	d.chunks = append(d.chunks, data)
+	d.bytes += int64(len(data))
+}
+
+func (c *Client) observeFileResult(m protocol.Message) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	d := c.download(m.SessionID, m.RequestID)
+	d.status = m.Status
+	d.fileName = m.FileName
+	d.fileSHA256 = m.FileSHA256
+	d.resultKnown = m.ResultKnown
+	if m.FileSize > 0 {
+		d.bytes = m.FileSize
+	}
+}
+
+// download must be called with cacheMu held.
+func (c *Client) download(sessionID, requestID string) *downloadCache {
+	d, ok := c.downloads[requestID]
+	if !ok || d.sessionID != sessionID {
+		d = &downloadCache{sessionID: sessionID, status: "running"}
+		c.downloads[requestID] = d
+	}
+	return d
 }
 
 func (c *Client) observeResult(m protocol.Message) {

@@ -12,9 +12,13 @@ import (
 	"yiuk-switchboard/internal/platform/protocol"
 	"yiuk-switchboard/internal/platform/session"
 	"yiuk-switchboard/internal/platform/task"
+	"yiuk-switchboard/internal/platform/transfer"
 )
 
-const maxTemporaryPasswordLen = 256
+const (
+	maxTemporaryPasswordLen = 256
+	downloadTransferTimeout = 5 * time.Minute
+)
 
 func (s *Server) handle(c *conn, m protocol.Message) error {
 	if m.Version != protocol.Version {
@@ -49,6 +53,12 @@ func (s *Server) handle(c *conn, m protocol.Message) error {
 		return s.handleRejectSession(c, m)
 	case protocol.TypeGetCommandResult:
 		return s.handleGetCommandResult(c, m)
+	case protocol.TypeDownloadFile:
+		return s.handleDownloadFile(c, m)
+	case protocol.TypeFileChunk:
+		return s.handleFileChunk(c, m)
+	case protocol.TypeFileDownloadResult:
+		return s.handleFileDownloadResult(c, m)
 	case protocol.TypeSessionStatus:
 		return s.handleGetSessionStatus(c, m)
 	case protocol.TypeOpenSessionChannel:
@@ -596,6 +606,116 @@ func (s *Server) handleGetCommandResult(c *conn, m protocol.Message) error {
 	})
 }
 
+func (s *Server) handleDownloadFile(c *conn, m protocol.Message) error {
+	if err := s.validID("session_id", m.SessionID); err != nil {
+		return perr("INVALID_ARGUMENT", err.Error())
+	}
+	if err := s.validID("request_id", m.RequestID); err != nil {
+		return perr("INVALID_ARGUMENT", err.Error())
+	}
+	if strings.TrimSpace(m.RemotePath) == "" || len(m.RemotePath) > s.cfg.WorkingDirMaxLen {
+		return perr("INVALID_ARGUMENT", "remote_path is required and bounded")
+	}
+	ses, err := s.sessions.Authorize(m.SessionID, c.id, session.PermissionReadFile)
+	if err != nil {
+		return s.sessionError(err)
+	}
+	onlineID, ok := s.devices.OnlineConnection(ses.DeviceID)
+	if !ok || onlineID != ses.DeviceConnectionID || s.lookupConn(onlineID) == nil {
+		return perr("DEVICE_OFFLINE", "device is no longer online")
+	}
+	t, created, err := s.transfers.Start(ses.ID, m.RequestID, m.CorrelationID, int64(s.cfg.MaxDownloadBytes), downloadTransferTimeout)
+	if err != nil {
+		return s.transferError(err)
+	}
+	if !created {
+		return perr("TRANSFER_IN_PROGRESS", "a download with this request id is already in progress")
+	}
+	if _, err := s.sessions.Activate(ses.ID, c.id); err != nil {
+		s.transfers.Finish(ses.ID, t.RequestID, transfer.StatusFailed, "", 0, true)
+		return s.sessionError(err)
+	}
+	if !s.sendToConnection(ses.DeviceConnectionID, protocol.Message{
+		Type:       protocol.TypeDownloadFile,
+		SessionID:  ses.ID,
+		RequestID:  t.RequestID,
+		RemotePath: m.RemotePath,
+	}) {
+		s.transfers.Finish(ses.ID, t.RequestID, transfer.StatusResultUnknown, "", 0, false)
+		return perr("DEVICE_UNAVAILABLE", "could not deliver file request to device")
+	}
+	s.audit.Event("file_download_submitted", "session", audit.RedactID(ses.ID), "request", audit.RedactID(t.RequestID), "device", audit.RedactID(ses.DeviceID))
+	return nil
+}
+
+func (s *Server) handleFileChunk(c *conn, m protocol.Message) error {
+	if c.role != roleDevice {
+		return perr("NOT_DEVICE", "only the target device can send file chunks")
+	}
+	if err := s.validID("session_id", m.SessionID); err != nil {
+		return perr("INVALID_ARGUMENT", err.Error())
+	}
+	if err := s.validID("request_id", m.RequestID); err != nil {
+		return perr("INVALID_ARGUMENT", err.Error())
+	}
+	ses, ok := s.sessions.Get(m.SessionID)
+	if !ok || ses.DeviceID != c.deviceID || ses.DeviceConnectionID != c.id {
+		return perr("NOT_FOUND", "session not found")
+	}
+	t, err := s.transfers.Append(ses.ID, m.RequestID, m.Sequence, m.Data)
+	if err != nil {
+		if errors.Is(err, transfer.ErrSizeLimit) || errors.Is(err, transfer.ErrChunkLimit) {
+			s.sendToConnection(ses.OperatorConnectionID, transferResultMessage(t))
+			s.sendToConnection(ses.DeviceConnectionID, protocol.Message{
+				Type: protocol.TypeCancelFileDownload, SessionID: ses.ID, RequestID: m.RequestID,
+			})
+			s.audit.Warn("file_download_limit_exceeded", "session", audit.RedactID(ses.ID), "request", audit.RedactID(m.RequestID))
+		}
+		return s.transferError(err)
+	}
+	s.sendToConnection(ses.OperatorConnectionID, protocol.Message{
+		Type:      protocol.TypeFileChunk,
+		SessionID: ses.ID,
+		RequestID: m.RequestID,
+		Sequence:  m.Sequence,
+		Data:      m.Data,
+		EOF:       m.EOF,
+	})
+	return nil
+}
+
+func (s *Server) handleFileDownloadResult(c *conn, m protocol.Message) error {
+	if c.role != roleDevice {
+		return perr("NOT_DEVICE", "only the target device can report a file download result")
+	}
+	if err := s.validID("session_id", m.SessionID); err != nil {
+		return perr("INVALID_ARGUMENT", err.Error())
+	}
+	if err := s.validID("request_id", m.RequestID); err != nil {
+		return perr("INVALID_ARGUMENT", err.Error())
+	}
+	ses, ok := s.sessions.Get(m.SessionID)
+	if !ok || ses.DeviceID != c.deviceID || ses.DeviceConnectionID != c.id {
+		return perr("NOT_FOUND", "session not found")
+	}
+	status, err := terminalTransferStatus(m.Status)
+	if err != nil {
+		return perr("INVALID_ARGUMENT", err.Error())
+	}
+	if len(m.FileName) > 255 || len(m.FileSHA256) > 128 {
+		return perr("INVALID_ARGUMENT", "file metadata is too long")
+	}
+	t, err := s.transfers.Finish(ses.ID, m.RequestID, status, m.FileName, m.FileSize, m.ResultKnown)
+	if err != nil {
+		return s.transferError(err)
+	}
+	msg := transferResultMessage(t)
+	msg.FileSHA256 = m.FileSHA256
+	s.sendToConnection(ses.OperatorConnectionID, msg)
+	s.audit.Event("file_download_finished", "session", audit.RedactID(ses.ID), "request", audit.RedactID(t.RequestID), "status", string(t.Status), "bytes", t.Bytes)
+	return nil
+}
+
 func (s *Server) handleCancelCommand(c *conn, m protocol.Message) error {
 	if err := s.validID("session_id", m.SessionID); err != nil {
 		return perr("INVALID_ARGUMENT", err.Error())
@@ -654,6 +774,7 @@ func (s *Server) handleCloseSession(c *conn, m protocol.Message) error {
 	}
 	s.devices.RemoveSession(closed.DeviceID, closed.ID)
 	finished := s.tasks.FinishSession(closed.ID, task.StatusCancelled)
+	cancelledTransfers := s.transfers.FinishSession(closed.ID, transfer.StatusCancelled)
 	// Ask the device to stop local processes when the operator closed the
 	// session, and tell the operator when the device closed it.
 	if c.role != roleDevice {
@@ -668,6 +789,9 @@ func (s *Server) handleCloseSession(c *conn, m protocol.Message) error {
 	s.notifySession(closed)
 	for _, t := range finished {
 		s.sendToConnection(closed.OperatorConnectionID, taskResultMessage(t))
+	}
+	for _, t := range cancelledTransfers {
+		s.sendToConnection(closed.OperatorConnectionID, transferResultMessage(t))
 	}
 	s.audit.Event("session_closed", "session", audit.RedactID(closed.ID), "device", audit.RedactID(closed.DeviceID), "reason", reason)
 	si := sessionInfo(closed)
@@ -698,6 +822,9 @@ func (s *Server) revokeDeviceSessions(deviceID, reason string) {
 		s.notifySession(ses)
 		for _, t := range finished {
 			s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
+		}
+		for _, t := range s.transfers.FinishSession(ses.ID, transfer.StatusResultUnknown) {
+			s.sendToConnection(ses.OperatorConnectionID, transferResultMessage(t))
 		}
 	}
 }
@@ -771,6 +898,65 @@ func (s *Server) sessionError(err error) error {
 	default:
 		return perr("INVALID_ARGUMENT", "session request failed")
 	}
+}
+
+func (s *Server) transferError(err error) error {
+	switch {
+	case errors.Is(err, transfer.ErrNotFound):
+		return perr("TRANSFER_NOT_FOUND", "file transfer not found")
+	case errors.Is(err, transfer.ErrTransferLimit):
+		return perr("TRANSFER_LIMIT", "transfer limit reached for session")
+	case errors.Is(err, transfer.ErrRequestConflict):
+		return perr("REQUEST_ID_CONFLICT", "request id is already used by another session")
+	case errors.Is(err, transfer.ErrSequence):
+		return perr("INVALID_CHUNK_SEQUENCE", "file chunk sequence is not contiguous")
+	case errors.Is(err, transfer.ErrChunkTooLarge):
+		return perr("CHUNK_TOO_LARGE", "file chunk exceeds the maximum chunk size")
+	case errors.Is(err, transfer.ErrEmptyChunk):
+		return perr("INVALID_ARGUMENT", "file chunk is empty")
+	case errors.Is(err, transfer.ErrChunkLimit):
+		return perr("CHUNK_LIMIT", "file transfer exceeds the maximum chunk count")
+	case errors.Is(err, transfer.ErrInvalidBase64):
+		return perr("INVALID_ARGUMENT", "file chunk is not valid base64")
+	case errors.Is(err, transfer.ErrSizeLimit):
+		return perr("FILE_TOO_LARGE", "file download exceeds the configured size limit")
+	case errors.Is(err, transfer.ErrTerminal):
+		return perr("TRANSFER_ALREADY_FINISHED", "file transfer is already finished")
+	case errors.Is(err, transfer.ErrInvalidStatus):
+		return perr("INVALID_ARGUMENT", "invalid transfer status")
+	default:
+		return perr("INVALID_ARGUMENT", "file transfer request failed")
+	}
+}
+
+func terminalTransferStatus(status string) (transfer.Status, error) {
+	switch transfer.Status(status) {
+	case transfer.StatusSucceeded, transfer.StatusFailed, transfer.StatusCancelled, transfer.StatusResultUnknown:
+		return transfer.Status(status), nil
+	default:
+		return "", errors.New("status must be a terminal transfer status")
+	}
+}
+
+func transferResultMessage(t *transfer.Transfer) protocol.Message {
+	if t == nil {
+		return protocol.Message{Type: protocol.TypeFileDownloadResult}
+	}
+	msg := protocol.Message{
+		Type:          protocol.TypeFileDownloadResult,
+		SessionID:     t.SessionID,
+		RequestID:     t.RequestID,
+		CorrelationID: t.Correlation,
+		Status:        string(t.Status),
+		FileName:      t.FileName,
+		FileSize:      t.Bytes,
+		ResultKnown:   t.ResultKnown,
+	}
+	if t.Status == transfer.StatusFailed {
+		msg.Code = "FILE_TRANSFER_FAILED"
+		msg.Message = "file download failed"
+	}
+	return msg
 }
 
 func (s *Server) taskError(err error) error {

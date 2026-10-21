@@ -161,10 +161,11 @@ internal/minecraft/         旧联机协议/房间兼容边界
 | `get_session_status` | session_id | 状态、授权范围、错误 |
 | `execute_command` | session_id、command、cwd、timeout | request_id、状态、stdout/stderr、exit_code、truncated |
 | `get_command_result` | session_id、request_id、cursor | 新输出块和终态 |
+| `download_file` | session_id、remote_path、destination_path | 本地路径、文件大小、SHA-256、传输状态 |
 | `cancel_command` | session_id、request_id | 是否接受取消及任务状态 |
 | `close_session` | session_id | 关闭状态 |
 
-注意：产品级权限不应由 Agent 任意请求并自动授予；设备所有者 UI 展示并批准请求权限，服务端只下发已批准范围。
+注意：产品级权限不应由 Agent 任意请求并自动授予；设备所有者 UI 展示并批准请求权限，服务端只下发已批准范围。`read_file` 与 `execute_command` 是独立权限，文件下载不能通过命令执行权限隐含获得。
 
 ## 9. Minecraft 兼容策略
 

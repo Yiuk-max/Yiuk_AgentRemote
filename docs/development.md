@@ -108,6 +108,10 @@ Qt 客户端发布目录会同时包含 `yiuk-device-assist.exe` 和 `yiuk-mcp.e
 
 MCP 平台配置保存在当前用户的 `%LOCALAPPDATA%/Yiuk/DeviceAssist/platform-client.json`，由 Qt 客户端自动生成。旧版本的 `%APPDATA%/Yiuk/DeviceAssist` 配置会兼容读取。
 
+需要读取远端文件时，先通过 `request_connection` 显式申请 `read_file` 权限并取得已批准会话，再调用 `download_file(session_id, remote_path, destination_path?)`。未提供 `destination_path` 时文件写入用户缓存目录下的 `Yiuk/DeviceAssist/downloads`；显式路径必须是绝对路径且不会覆盖已有文件。
+
+文件按 64 KiB 分块传输，服务端默认 `max_download_bytes: 33554432`（32 MiB），设备端强制同一上限并计算 SHA-256，MCP 端落盘前校验大小和校验和。该权限与 `execute_command` 相互独立，不能由命令执行权限隐含获得。
+
 生产环境必须使用 TLS 并校验证书；`allow_plaintext` 只用于本机开发测试。
 
 ### 自签名证书（内部部署）

@@ -18,6 +18,7 @@ import (
 	"yiuk-switchboard/internal/platform/protocol"
 	"yiuk-switchboard/internal/platform/session"
 	"yiuk-switchboard/internal/platform/task"
+	"yiuk-switchboard/internal/platform/transfer"
 	"yiuk-switchboard/internal/platform/transport"
 )
 
@@ -37,11 +38,12 @@ type Server struct {
 	codec    protocol.Codec
 	listener net.Listener
 
-	devices  *device.Manager
-	sessions *session.Manager
-	tasks    *task.Manager
-	auth     *auth.Authenticator
-	audit    *audit.Logger
+	devices   *device.Manager
+	sessions  *session.Manager
+	tasks     *task.Manager
+	transfers *transfer.Manager
+	auth      *auth.Authenticator
+	audit     *audit.Logger
 
 	mu        sync.Mutex
 	conns     map[string]*conn
@@ -83,17 +85,18 @@ func NewWithListener(cfg config.Config, log *slog.Logger, ln net.Listener) *Serv
 		log = slog.Default()
 	}
 	return &Server{
-		cfg:      cfg,
-		log:      log,
-		codec:    protocol.NewCodec(cfg.MaxFrameBytes),
-		listener: ln,
-		devices:  device.NewManager(cfg.MaxDevices, cfg.TempPasswordTTL()),
-		sessions: session.NewManager(cfg.MaxSessions, cfg.MaxSessionsPerDevice, cfg.SessionTimeout(), cfg.ApprovalTimeout()),
-		tasks:    task.NewManager(cfg.MaxOutputBytes, cfg.MaxTasksPerSession),
-		auth:     auth.New(cfg.PlayerPassword, cfg.AuthRatePerMin),
-		audit:    audit.New(log),
-		conns:    make(map[string]*conn),
-		done:     make(chan struct{}),
+		cfg:       cfg,
+		log:       log,
+		codec:     protocol.NewCodec(cfg.MaxFrameBytes),
+		listener:  ln,
+		devices:   device.NewManager(cfg.MaxDevices, cfg.TempPasswordTTL()),
+		sessions:  session.NewManager(cfg.MaxSessions, cfg.MaxSessionsPerDevice, cfg.SessionTimeout(), cfg.ApprovalTimeout()),
+		tasks:     task.NewManager(cfg.MaxOutputBytes, cfg.MaxTasksPerSession),
+		transfers: transfer.NewManager(cfg.MaxTasksPerSession),
+		auth:      auth.New(cfg.PlayerPassword, cfg.AuthRatePerMin),
+		audit:     audit.New(log),
+		conns:     make(map[string]*conn),
+		done:      make(chan struct{}),
 	}
 }
 
@@ -230,6 +233,9 @@ func (s *Server) cleanupDevice(c *conn) {
 		for _, t := range finished {
 			s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
 		}
+		for _, t := range s.transfers.FinishSession(ses.ID, transfer.StatusResultUnknown) {
+			s.sendToConnection(ses.OperatorConnectionID, transferResultMessage(t))
+		}
 	}
 }
 
@@ -238,6 +244,9 @@ func (s *Server) cleanupOperator(c *conn) {
 	for _, ses := range interrupted {
 		s.devices.RemoveSession(ses.DeviceID, ses.ID)
 		finished := s.tasks.FinishSession(ses.ID, task.StatusCancelled)
+		for _, t := range s.transfers.FinishSession(ses.ID, transfer.StatusCancelled) {
+			s.sendToConnection(ses.OperatorConnectionID, transferResultMessage(t))
+		}
 		s.notifySession(ses)
 		if ses.DeviceConnectionID != "" {
 			s.sendToConnection(ses.DeviceConnectionID, protocol.Message{
@@ -439,6 +448,20 @@ func (s *Server) sweep() {
 		for _, t := range finished {
 			s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
 		}
+		for _, t := range s.transfers.FinishSession(ses.ID, transfer.StatusCancelled) {
+			s.sendToConnection(ses.OperatorConnectionID, transferResultMessage(t))
+		}
+	}
+	for _, t := range s.transfers.Expire() {
+		ses, ok := s.sessions.Get(t.SessionID)
+		if !ok {
+			continue
+		}
+		s.sendToConnection(ses.OperatorConnectionID, transferResultMessage(t))
+		s.sendToConnection(ses.DeviceConnectionID, protocol.Message{
+			Type: protocol.TypeCancelFileDownload, SessionID: t.SessionID, RequestID: t.RequestID,
+		})
+		s.audit.Event("file_download_timed_out", "session", audit.RedactID(t.SessionID), "request", audit.RedactID(t.RequestID))
 	}
 	for _, t := range s.tasks.Expire() {
 		ses, ok := s.sessions.Get(t.SessionID)

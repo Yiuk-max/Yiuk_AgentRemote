@@ -47,7 +47,7 @@ Minecraft 游戏字节流可继续由 TCP 中转。Minecraft 控制协议和远�
 
 先定义语言/进程边界无关的工具契约：工具名、输入 schema、结构化输出、错误码、超时与取消语义。MCP adapter 只做协议映射，不承担设备授权、命令执行或业务状态管理。
 
-首发建议工具：`list_devices`、`get_device_status`、`request_connection`、`run_command`、`get_session_status`、`execute_command`、`get_command_result`、`cancel_command`、`close_session`。长任务使用任务 ID 和结果读取/事件通知，不能让单个 MCP 调用无限挂起。
+首发建议工具：`list_devices`、`get_device_status`、`request_connection`、`run_command`、`get_session_status`、`execute_command`、`get_command_result`、`download_file`、`cancel_command`、`close_session`。文件下载需要独立的 `read_file` 会话权限和字节上限，不能复用命令输出通道。长任务使用任务 ID 和结果读取/事件通知，不能让单个 MCP 调用无限挂起。
 
 MCP 传输选 stdio，便于各 Agent 用本机进程配置启动。adapter 通过本机 IPC/受限 loopback API 调用桌面应用核心，或者独立实现连接客户端。阶段一原型需验证目标 Agent 的 MCP 配置、进程生命周期、错误展示和多 Agent 并存行为后，冻结进程边界。
 

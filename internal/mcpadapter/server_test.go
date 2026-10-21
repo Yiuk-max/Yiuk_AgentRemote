@@ -44,9 +44,18 @@ func TestMCPListsToolsAndReturnsStructuredToolResponse(t *testing.T) {
 			t.Fatal(err)
 		}
 		toolNames = append(toolNames, tool.Name)
+		if tool.OutputSchema == nil {
+			t.Fatalf("%s is missing an output schema", tool.Name)
+		}
+		if tool.Name == agenttools.ListDevices && (tool.Annotations == nil || !tool.Annotations.ReadOnlyHint) {
+			t.Fatal("list_devices should be annotated read-only for pi permission policies")
+		}
+		if tool.Name == agenttools.DownloadFile && (tool.Annotations == nil || tool.Annotations.DestructiveHint == nil) {
+			t.Fatal("download_file should declare a destructive hint")
+		}
 	}
-	if len(toolNames) != 9 {
-		t.Fatalf("got %d tools, want 9: %v", len(toolNames), toolNames)
+	if len(toolNames) != 10 {
+		t.Fatalf("got %d tools, want 10: %v", len(toolNames), toolNames)
 	}
 
 	result, err := clientSession.CallTool(context.Background(), &mcp.CallToolParams{
@@ -109,6 +118,43 @@ func TestMCPDispatchesRunCommandToTheMatchingBackendTool(t *testing.T) {
 	response := result.StructuredContent.(map[string]any)
 	if response["code"] != "OK" {
 		t.Fatalf("got %#v, want successful tool response", response)
+	}
+}
+
+func TestMCPDispatchesDownloadFileAndReturnsLocalPath(t *testing.T) {
+	core := agenttools.NewCore(backendFunc(func(_ context.Context, req agenttools.Request) (any, error) {
+		if req.Name != agenttools.DownloadFile {
+			t.Fatalf("unexpected tool %q", req.Name)
+		}
+		return map[string]any{"local_path": "/tmp/yiuk/server.log", "size": 12, "status": "succeeded"}, nil
+	}))
+	server := NewServer(core)
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	clientSession, err := mcp.NewClient(&mcp.Implementation{Name: "test-client"}, nil).Connect(context.Background(), clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	result, err := clientSession.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      agenttools.DownloadFile,
+		Arguments: map[string]any{"session_id": "session-1", "remote_path": `C:\logs\server.log`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected MCP tool error: %#v", result.Content)
+	}
+	response := result.StructuredContent.(map[string]any)
+	data := response["data"].(map[string]any)
+	if data["local_path"] != "/tmp/yiuk/server.log" {
+		t.Fatalf("unexpected structured download result: %#v", response)
 	}
 }
 

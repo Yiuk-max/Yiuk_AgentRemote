@@ -42,10 +42,14 @@
 #include <QWindow>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QCryptographicHash>
+#include <QSharedPointer>
 #include <QDateTime>
 #include <QDialog>
 #include <QPlainTextEdit>
 #include <QScrollArea>
+#include <QSaveFile>
 #include <QTimer>
 
 #ifndef YIUK_CLIENT_VERSION
@@ -420,6 +424,7 @@ private:
     QHash<QString, QJsonObject> tasks;
     QHash<QString, QProcess *> processes;
     QHash<QString, QString> taskFiles;
+    QHash<QString, bool> activeFileDownloads;
     QSystemTrayIcon *trayIcon = nullptr;
     QHash<QString, QString> notificationSessions;
     QDialog *activityWindow = nullptr;
@@ -667,17 +672,15 @@ private:
         });
         connect(copyPassword, &QPushButton::clicked, this, [this] { copyToClipboard(temporaryPassword, "密码已复制"); });
         connect(refreshPassword, &QPushButton::clicked, this, [this] {
+            if (!platform || !platform->isConnected()) {
+                statusBar()->showMessage("请先连接平台，再手动更新连接密码", 2500);
+                return;
+            }
             temporaryPassword = randomPassword(32);
             ++passwordVersion;
-            passwordValue->setText(passwordVisible ? groupedPassword(temporaryPassword) : "********");
-            savePlatformConfig();
-            if (platform && platform->isConnected()) {
-                const QString mode = platformMode ? platformMode->currentData().toString() : QStringLiteral("approval");
-                platform->updateTemporaryPassword(temporaryPassword, passwordVersion, mode, platform->config().ttlSeconds);
-                statusBar()->showMessage("密码已更新，旧会话已失效", 2200);
-            } else {
-                statusBar()->showMessage("密码已更新", 1800);
-            }
+            const QString mode = platformMode ? platformMode->currentData().toString() : QStringLiteral("approval");
+            platform->updateTemporaryPassword(temporaryPassword, passwordVersion, mode, platform->config().ttlSeconds);
+            statusBar()->showMessage("正在手动更新连接密码", 1800);
         });
 
         layout->addSpacing(40);
@@ -1272,7 +1275,7 @@ private:
         cfg.deviceId = deviceId();
         cfg.deviceName = QSysInfo::machineHostName();
         cfg.mode = "approval";
-        cfg.ttlSeconds = 600;
+        cfg.ttlSeconds = 24 * 60 * 60;
         cfg.enabled = true;
         cfg.allowInsecure = false;
         cfg.temporaryPassword = randomPassword(32);
@@ -1396,6 +1399,11 @@ private:
         connect(platform, &PlatformClient::sessionUpdated, this, &MainWindow::onPlatformSessionUpdated);
         connect(platform, &PlatformClient::sessionCreated, this, &MainWindow::onPlatformSessionCreated);
         connect(platform, &PlatformClient::commandRequested, this, &MainWindow::onPlatformCommandRequested);
+        connect(platform, &PlatformClient::fileDownloadRequested, this, &MainWindow::onPlatformFileDownloadRequested);
+        connect(platform, &PlatformClient::fileDownloadCanceled, this, [this](const QString &sessionId, const QString &requestId) {
+            activeFileDownloads.remove(requestId);
+            appendActivity(sessionId, QString("平台已取消文件下载 %1").arg(requestId.left(8)));
+        });
         connect(platform, &PlatformClient::cancelRequested, this, &MainWindow::onPlatformCancelRequested);
         connect(platform, &PlatformClient::closeRequested, this, &MainWindow::onPlatformCloseRequested);
         connect(platform, &PlatformClient::temporaryPasswordUpdated, this,
@@ -1405,7 +1413,7 @@ private:
             if (passwordValue)
                 passwordValue->setText(passwordVisible ? groupedPassword(temporaryPassword) : "********");
             savePlatformConfig();
-            statusBar()->showMessage("连接密码已自动续期", 1800);
+            statusBar()->showMessage("连接密码已更新", 1800);
         });
         connect(platform, &PlatformClient::platformError, this, [this](const QString &code, const QString &message) {
             statusBar()->showMessage(QString("平台错误：%1 %2").arg(code, message), 4000);
@@ -1555,6 +1563,149 @@ private:
             platform->sendCommandResult(sessionId, requestId, "cancelled", QJsonValue(), true, false);
         refreshSessionsPage();
         refreshActiveSessions();
+    }
+
+    struct FileDownloadState {
+        QString sessionId;
+        QString requestId;
+        QString fileName;
+        QFile *file = nullptr;
+        QCryptographicHash *hash = nullptr;
+        quint64 sequence = 1;
+        qint64 sent = 0;
+        qint64 expected = 0;
+    };
+
+    bool sessionAllowsFileRead(const QString &sessionId) {
+        expireSessionIfNeeded(sessionId);
+        if (!sessions.contains(sessionId)) return false;
+        const QJsonObject session = sessions.value(sessionId);
+        const QString status = session.value("status").toString();
+        if (status != "active" && status != "approved") return false;
+        const QJsonArray permissions = session.value("permissions").toArray();
+        for (const QJsonValue &permission : permissions) {
+            if (permission.toString() == QLatin1String("read_file")) return true;
+        }
+        return false;
+    }
+
+    void finishFileDownload(const QSharedPointer<FileDownloadState> &state, const QString &status,
+                            bool resultKnown) {
+        if (!state || state->requestId.isEmpty()) return;
+        const QString sha = status == QLatin1String("succeeded") && state->hash
+            ? QString::fromLatin1(state->hash->result().toHex()) : QString();
+        if (platform && platform->isConnected()) {
+            platform->sendFileDownloadResult(state->sessionId, state->requestId, status, state->fileName,
+                                             state->sent, sha, resultKnown);
+        }
+        activeFileDownloads.remove(state->requestId);
+        if (state->file) {
+            state->file->close();
+            state->file->deleteLater();
+            state->file = nullptr;
+        }
+        delete state->hash;
+        state->hash = nullptr;
+        refreshActiveSessions();
+    }
+
+    void pumpFileDownload(const QSharedPointer<FileDownloadState> &state) {
+        if (!state) return;
+        if (!activeFileDownloads.contains(state->requestId)) {
+            if (state->file) {
+                state->file->close();
+                state->file->deleteLater();
+            }
+            delete state->hash;
+            return;
+        }
+        if (!sessionAllowsFileRead(state->sessionId)) {
+            appendActivity(state->sessionId, QString("文件下载 %1 已停止：会话不再授权读取").arg(state->requestId.left(8)));
+            finishFileDownload(state, QStringLiteral("cancelled"), true);
+            return;
+        }
+        if (state->file->atEnd()) {
+            finishFileDownload(state, QStringLiteral("succeeded"), true);
+            return;
+        }
+        constexpr qint64 chunkSize = 64 * 1024;
+        const QByteArray chunk = state->file->read(chunkSize);
+        if (chunk.isEmpty() && state->file->error() != QFile::NoError) {
+            appendActivity(state->sessionId, QString("文件下载 %1 读取失败：%2").arg(state->requestId.left(8), state->file->errorString()));
+            finishFileDownload(state, QStringLiteral("failed"), true);
+            return;
+        }
+        constexpr qint64 maxDownloadBytes = 32LL * 1024 * 1024;
+        if (state->sent + chunk.size() > maxDownloadBytes) {
+            appendActivity(state->sessionId, QString("文件下载 %1 已停止：文件超过 32 MiB 上限").arg(state->requestId.left(8)));
+            finishFileDownload(state, QStringLiteral("failed"), true);
+            return;
+        }
+        state->hash->addData(chunk);
+        state->sent += chunk.size();
+        const bool eof = state->file->atEnd();
+        if (platform && platform->isConnected()) {
+            platform->sendFileChunk(state->sessionId, state->requestId, state->sequence++, chunk, eof);
+        }
+        if (eof) {
+            if (state->expected >= 0 && state->sent != state->expected) {
+                appendActivity(state->sessionId, QString("文件下载 %1 失败：读取大小与预期不一致").arg(state->requestId.left(8)));
+                finishFileDownload(state, QStringLiteral("failed"), true);
+                return;
+            }
+            appendActivity(state->sessionId, QString("文件下载 %1 完成：%2 字节").arg(state->requestId.left(8)).arg(state->sent));
+            finishFileDownload(state, QStringLiteral("succeeded"), true);
+            return;
+        }
+        QTimer::singleShot(0, this, [this, state] { pumpFileDownload(state); });
+    }
+
+    void onPlatformFileDownloadRequested(const QString &sessionId, const QString &requestId,
+                                         const QString &remotePath) {
+        auto fail = [this, sessionId, requestId](const QString &message) {
+            appendActivity(sessionId, QString("文件下载 %1 被拒绝：%2").arg(requestId.left(8), message));
+            if (platform && platform->isConnected())
+                platform->sendFileDownloadResult(sessionId, requestId, QStringLiteral("failed"), QString(), 0, QString(), true);
+        };
+        if (requestId.isEmpty() || activeFileDownloads.contains(requestId)) return;
+        if (!sessionAllowsFileRead(sessionId)) {
+            fail(QStringLiteral("会话未获得 read_file 权限或已结束"));
+            return;
+        }
+        const QString path = remotePath.trimmed();
+        if (path.isEmpty() || path.size() > 4096) {
+            fail(QStringLiteral("远程路径为空或过长"));
+            return;
+        }
+        QFileInfo info(path);
+        if (!info.exists() || !info.isFile()) {
+            fail(QStringLiteral("远程路径不是可读取的普通文件"));
+            return;
+        }
+        constexpr qint64 maxDownloadBytes = 32LL * 1024 * 1024;
+        if (info.size() > maxDownloadBytes) {
+            fail(QStringLiteral("文件超过 32 MiB 下载上限"));
+            return;
+        }
+        auto *file = new QFile(path, this);
+        if (!file->open(QIODevice::ReadOnly)) {
+            const QString error = file->errorString();
+            file->deleteLater();
+            fail(QStringLiteral("无法打开文件：%1").arg(error));
+            return;
+        }
+        auto state = QSharedPointer<FileDownloadState>::create();
+        state->sessionId = sessionId;
+        state->requestId = requestId;
+        state->fileName = info.fileName();
+        state->file = file;
+        state->hash = new QCryptographicHash(QCryptographicHash::Sha256);
+        state->expected = info.size();
+        activeFileDownloads.insert(requestId, true);
+        appendActivity(sessionId, QString("Agent 请求下载文件 %1（%2 字节）").arg(state->fileName).arg(info.size()));
+        showActivityWindow(sessionId);
+        refreshActiveSessions();
+        QTimer::singleShot(0, this, [this, state] { pumpFileDownload(state); });
     }
 
     void onPlatformCommandRequested(const QString &sessionId, const QString &requestId, const QString &command,
@@ -1716,6 +1867,7 @@ private:
         if (tool == "request_connection") return requestLocalSession(input);
         if (tool == "get_session_status") return sessionStatus(input.value("session_id").toString());
         if (tool == "execute_command") return executeLocalCommand(input);
+        if (tool == "download_file") return downloadLocalFile(input);
         if (tool == "get_command_result") return commandResult(input);
         if (tool == "cancel_command") return cancelCommand(input);
         if (tool == "close_session") return closeSession(input.value("session_id").toString());
@@ -1827,9 +1979,9 @@ private:
         QMessageBox dialog(this);
         dialog.setWindowTitle("远程协助授权");
         dialog.setIcon(QMessageBox::Question);
-        dialog.setText("Agent 请求在本机执行远程命令");
+        dialog.setText("Agent 请求远程协助权限");
         const QString permissionText = jsonArrayText(session.value("permissions").toArray());
-        dialog.setInformativeText(QString("请求者：%1\n来源设备：%2\n请求时间：%3\n用途：%4\n请求权限：%5\n有效期至：%6\n\n批准后，Agent 可在当前 Windows 用户权限范围内执行多条 PowerShell 命令。普通用户权限不是沙箱。请求者身份尚未经过远程验证。")
+        dialog.setInformativeText(QString("请求者：%1\n来源设备：%2\n请求时间：%3\n用途：%4\n请求权限：%5\n有效期至：%6\n\n批准后，Agent 可在当前 Windows 用户权限范围内执行多条 PowerShell 命令，或按 read_file 权限下载远端文件。普通用户权限不是沙箱。请求者身份尚未经过远程验证。")
             .arg(session.value("requester").toString(), session.value("source_device").toString(),
                  session.value("created_at").toString(), session.value("purpose").toString(),
                  permissionText, session.value("expires_at").toString()));
@@ -1914,6 +2066,65 @@ private:
                 return "PowerShell 正在运行 (" + it.key().left(8) + ")";
         }
         return "无运行任务";
+    }
+
+    QJsonObject downloadLocalFile(const QJsonObject &input) {
+        const QString sessionId = input.value("session_id").toString();
+        expireSessionIfNeeded(sessionId);
+        if (!sessions.contains(sessionId)) return fail("SESSION_EXPIRED", "会话不存在或已过期");
+        const QJsonObject session = sessions.value(sessionId);
+        const QString status = session.value("status").toString();
+        if (status != "active" && status != "approved") return fail("PERMISSION_DENIED", "设备所有者尚未批准此会话");
+        bool canRead = false;
+        for (const QJsonValue &permission : session.value("permissions").toArray()) {
+            if (permission.toString() == QLatin1String("read_file")) canRead = true;
+        }
+        if (!canRead) return fail("PERMISSION_DENIED", "会话未获得 read_file 权限");
+        const QString remotePath = input.value("remote_path").toString().trimmed();
+        if (remotePath.isEmpty() || remotePath.size() > 4096) return fail("INVALID_ARGUMENT", "远程路径为空或过长");
+        QFileInfo remoteInfo(remotePath);
+        if (!remoteInfo.exists() || !remoteInfo.isFile()) return fail("FILE_NOT_FOUND", "远程路径不是可读取的普通文件");
+        constexpr qint64 maxDownloadBytes = 32LL * 1024 * 1024;
+        if (remoteInfo.size() > maxDownloadBytes) return fail("FILE_TOO_LARGE", "文件超过 32 MiB 下载上限");
+        QString destination = input.value("destination_path").toString().trimmed();
+        if (!destination.isEmpty()) {
+            if (!QFileInfo(destination).isAbsolute()) return fail("INVALID_ARGUMENT", "destination_path 必须是绝对路径");
+            if (QFileInfo::exists(destination)) return fail("LOCAL_PATH_EXISTS", "destination_path 已存在，拒绝覆盖");
+        } else {
+            const QString root = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+                .filePath(QString("yiuk-downloads/%1-%2").arg(QDateTime::currentMSecsSinceEpoch()).arg(remoteInfo.fileName()));
+            destination = root;
+        }
+        if (!QDir().mkpath(QFileInfo(destination).absolutePath())) return fail("LOCAL_WRITE_FAILED", "无法创建下载目录");
+        QFile source(remotePath);
+        if (!source.open(QIODevice::ReadOnly)) return fail("FILE_NOT_FOUND", "无法打开远程文件");
+        QSaveFile output(destination);
+        if (!output.open(QIODevice::WriteOnly)) return fail("LOCAL_WRITE_FAILED", "无法创建本地文件");
+        QCryptographicHash hash(QCryptographicHash::Sha256);
+        qint64 total = 0;
+        while (!source.atEnd()) {
+            const QByteArray chunk = source.read(64 * 1024);
+            if (chunk.isEmpty() && source.error() != QFile::NoError) {
+                output.cancelWriting();
+                return fail("FILE_READ_FAILED", "读取远程文件失败");
+            }
+            if (output.write(chunk) != chunk.size()) {
+                output.cancelWriting();
+                return fail("LOCAL_WRITE_FAILED", "写入本地文件失败");
+            }
+            hash.addData(chunk);
+            total += chunk.size();
+        }
+        if (remoteInfo.size() >= 0 && total != remoteInfo.size()) {
+            output.cancelWriting();
+            return fail("FILE_INTEGRITY_FAILED", "读取文件大小与预期不一致");
+        }
+        if (!output.commit()) return fail("LOCAL_WRITE_FAILED", "提交本地文件失败");
+        return ok(QJsonObject{{"session_id", sessionId}, {"remote_path", remotePath},
+                              {"file_name", remoteInfo.fileName()}, {"local_path", destination},
+                              {"size", static_cast<double>(total)},
+                              {"sha256", QString::fromLatin1(hash.result().toHex())},
+                              {"status", "succeeded"}});
     }
 
     QJsonObject executeLocalCommand(const QJsonObject &input) {

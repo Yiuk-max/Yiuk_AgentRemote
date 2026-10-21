@@ -9,11 +9,11 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"yiuk-switchboard/internal/agenttools"
+	"yiuk-switchboard/internal/userconfig"
 )
 
 const configFileName = "local-api.json"
@@ -30,11 +30,7 @@ type Client struct {
 }
 
 func ConfigPath() (string, error) {
-	root, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, "Yiuk", "DeviceAssist", configFileName), nil
+	return userconfig.Path(configFileName)
 }
 
 func NewFromUserConfig() (*Client, error) {
