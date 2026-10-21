@@ -87,10 +87,11 @@ void PlatformClient::connectToPlatform() {
             socket->ignoreSslErrors();
             return;
         }
-        // Let the handshake finish so onEncrypted() can make the same
-        // certificate decision on Schannel and OpenSSL backends.
-        Q_UNUSED(errors);
+        // Complete the transport handshake so onEncrypted() can make the
+        // certificate decision consistently on Schannel and OpenSSL. No
+        // application frame is sent until that decision has succeeded.
         sslErrorsSeen_ = true;
+        socket->ignoreSslErrors(errors);
     });
 
     setState(QStringLiteral("connecting"));

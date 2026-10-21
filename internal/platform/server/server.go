@@ -259,6 +259,11 @@ func (s *Server) readLoop(c *conn) {
 		_ = c.nc.SetReadDeadline(time.Now().Add(deadline))
 		m, err := s.codec.Read(r)
 		if err != nil {
+			if handshake {
+				s.log.Warn("platform TLS/protocol handshake failed", "remote", c.remoteString(), "error", err)
+			} else if !errors.Is(err, net.ErrClosed) {
+				s.log.Debug("platform connection read ended", "remote", c.remoteString(), "error", err)
+			}
 			return
 		}
 		c.lastSeen = time.Now()
