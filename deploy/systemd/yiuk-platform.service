@@ -1,0 +1,23 @@
+[Unit]
+Description=Yiuk Switchboard Platform Server (remote assist)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=yiukrelay
+Group=yiukrelay
+WorkingDirectory=/opt/yiuk-platform
+ExecStart=/opt/yiuk-platform/yiuk-platform -config /opt/yiuk-platform/platform.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/yiuk-platform
+
+[Install]
+WantedBy=multi-user.target
