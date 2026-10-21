@@ -3,22 +3,31 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"os/signal"
 	"syscall"
 
 	"yiuk-switchboard/internal/agenttools"
 	"yiuk-switchboard/internal/localbridge"
 	"yiuk-switchboard/internal/mcpadapter"
+	"yiuk-switchboard/internal/platformclient"
 )
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
 	var backend agenttools.Backend
-	local, err := localbridge.NewFromUserConfig()
-	if err == nil {
+	if platform, err := platformclient.NewFromUserConfig(); err == nil {
+		slog.Info("MCP backend: remote platform")
+		backend = platform
+	} else if local, err := localbridge.NewFromUserConfig(); err == nil {
+		slog.Info("MCP backend: local Qt bridge")
 		backend = local
+	} else {
+		slog.Warn("MCP backend is not configured; tools will return NOT_CONFIGURED")
 	}
+
 	if err := mcpadapter.Run(ctx, agenttools.NewCore(backend)); err != nil {
 		log.Print(err)
 	}

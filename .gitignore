@@ -2,8 +2,10 @@
 /bin/
 /dist/
 build/
-relay
-ops-agent
+build-*/
+/relay
+/ops-agent
+/platform
 *.exe
 *.dll
 *.so

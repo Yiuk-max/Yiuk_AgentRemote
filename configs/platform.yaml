@@ -1,0 +1,41 @@
+# Yiuk Switchboard 平台服务配置示例。
+#
+# 部署时复制为 platform.yaml 并设置为仅服务账户可读写。player_password 必须
+# 使用与 Minecraft relay 不同的独立随机强密码。devices 的临时密码永远不写
+# 入本文件。
+platform:
+  # 平台监听地址。应为 TLS 端口，不要与 Minecraft relay 端口重叠。
+  listen: ":25664"
+  tls_cert: "server.crt"
+  tls_key: "server.key"
+  # 仅本地开发/测试可设为 true 以启用明文监听；生产环境必须为 false。
+  allow_insecure: false
+  player_password: "REPLACE_WITH_A_LONG_RANDOM_PLAYER_SECRET"
+
+  max_connections: 1024
+  max_devices: 1024
+  max_sessions: 2048
+  max_sessions_per_device: 8
+  max_tasks_per_session: 2
+
+  session_timeout_sec: 600
+  approval_timeout_sec: 120
+  temp_password_ttl_sec: 600
+  temporary_password_min_sec: 60
+  temporary_password_max_sec: 86400
+  heartbeat_timeout_sec: 45
+  handshake_timeout_sec: 10
+  max_output_bytes: 2097152
+  max_frame_bytes: 262144
+  auth_rate_per_min: 10
+  offline_device_keep_sec: 86400
+
+  log_file: "platform.log"
+
+# Minecraft relay 由独立进程/配置运行，仅供业务边界参考，平台服务不读取。
+minecraft:
+  control_port: 25564
+  room_port_min: 25570
+  room_port_max: 25599
+  host_password: "REPLACE_WITH_A_LONG_RANDOM_HOST_SECRET"
+  player_password: "REPLACE_WITH_A_LONG_RANDOM_MINECRAFT_PLAYER_SECRET"

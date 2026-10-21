@@ -1,11 +1,15 @@
 #include "localbridge.h"
+#include "platformclient.h"
+#include "securestore.h"
 
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QComboBox>
 #include <QFrame>
 #include <QHash>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QLabel>
 #include <QIcon>
 #include <QLineEdit>
@@ -65,6 +69,18 @@ QString randomDigits(int count) {
     value.reserve(count);
     for (int i = 0; i < count; ++i)
         value += QString::number(QRandomGenerator::global()->bounded(10));
+    return value;
+}
+
+// randomPassword returns a 32-character base32 alphabet password. The alphabet
+// omits characters that are easy to confuse over a voice channel.
+QString randomPassword(int count) {
+    static const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    const int alphabetSize = static_cast<int>(sizeof(alphabet)) - 1;
+    QString value;
+    value.reserve(count);
+    for (int i = 0; i < count; ++i)
+        value += QLatin1Char(alphabet[QRandomGenerator::global()->bounded(alphabetSize)]);
     return value;
 }
 
@@ -292,6 +308,7 @@ public:
         setCentralWidget(root);
         setupSystemTray();
         startLocalBridge();
+        startPlatform();
         QTimer::singleShot(0, this, [this] {
             if (acceptingRequests && acceptingRequests->isChecked() && !QSettings().value("localDemoConsent", false).toBool())
                 confirmLocalDemoConsent();
@@ -300,7 +317,8 @@ public:
 
 private:
     QString deviceCode = loadOrCreateDeviceCode();
-    QString temporaryPassword = randomDigits(8);
+    QString temporaryPassword = randomPassword(32);
+    int passwordVersion = 1;
     QLabel *passwordValue = nullptr;
     QPushButton *togglePassword = nullptr;
     bool passwordVisible = false;
@@ -333,6 +351,17 @@ private:
     QLabel *deviceState = nullptr;
     QTimer *sessionTimer = nullptr;
     LocalBridge *bridge = nullptr;
+    PlatformClient *platform = nullptr;
+    QLineEdit *platformAddress = nullptr;
+    QLineEdit *platformPassword = nullptr;
+    QCheckBox *platformTls = nullptr;
+    QCheckBox *platformAllowInsecure = nullptr;
+    QCheckBox *platformEnabled = nullptr;
+    QComboBox *platformMode = nullptr;
+    QLabel *platformStatusValue = nullptr;
+    QPushButton *platformConnectButton = nullptr;
+    QHash<QString, quint64> platformOutputSequence;
+    QHash<QString, QString> platformTaskSession;
     QHash<QString, QJsonObject> sessions;
     QHash<QString, QJsonObject> tasks;
     QHash<QString, QProcess *> processes;
@@ -572,9 +601,17 @@ private:
         });
         connect(copyPassword, &QPushButton::clicked, this, [this] { copyToClipboard(temporaryPassword, "密码已复制"); });
         connect(refreshPassword, &QPushButton::clicked, this, [this] {
-            temporaryPassword = randomDigits(8);
+            temporaryPassword = randomPassword(32);
+            ++passwordVersion;
             passwordValue->setText(passwordVisible ? temporaryPassword : "********");
-            statusBar()->showMessage("密码已更新", 1800);
+            savePlatformConfig();
+            if (platform && platform->isConnected()) {
+                const QString mode = platformMode ? platformMode->currentData().toString() : QStringLiteral("approval");
+                platform->updateTemporaryPassword(temporaryPassword, passwordVersion, mode, platform->config().ttlSeconds);
+                statusBar()->showMessage("密码已更新，旧会话已失效", 2200);
+            } else {
+                statusBar()->showMessage("密码已更新", 1800);
+            }
         });
 
         layout->addSpacing(40);
@@ -652,7 +689,24 @@ private:
                 QMessageBox::warning(this, "设备码无效", "请输入完整的 9 位设备码。");
                 return;
             }
-            QMessageBox::information(this, "远程平台未连接", "设备码：" + spacedCode(digits) + "\n\n当前无法发起连接请求。");
+            if (!platform || !platform->isConnected()) {
+                QMessageBox::information(this, "远程平台未连接", "设备码：" + spacedCode(digits) + "\n\n请先在设置中连接平台服务器。");
+                return;
+            }
+            bool passwordOk = false;
+            const QString temporary = QInputDialog::getText(this, "输入临时密码",
+                "请输入对方设备所有者在安全渠道提供的 32 位临时密码：", QLineEdit::Password, QString(), &passwordOk).trimmed();
+            if (!passwordOk) return;
+            if (temporary.size() < 32) {
+                QMessageBox::warning(this, "临时密码无效", "临时密码至少需要 32 个字符。");
+                return;
+            }
+            bool purposeOk = false;
+            const QString purpose = QInputDialog::getText(this, "协助用途",
+                "简要说明本次协助用途：", QLineEdit::Normal, QStringLiteral("远程协助"), &purposeOk).trimmed();
+            if (!purposeOk || purpose.isEmpty()) return;
+            platform->requestSession(digits, purpose, QStringList{QStringLiteral("execute_command")}, temporary);
+            statusBar()->showMessage("已发送协助请求，等待对方批准", 4000);
         });
 
         layout->addSpacing(25);
@@ -825,6 +879,89 @@ private:
         securityLayout->addWidget(settingsStatusValue);
         layout->addWidget(security);
         layout->addSpacing(18);
+
+        auto *platformCard = new QFrame;
+        platformCard->setObjectName("identityPanel");
+        auto *platformLayout = new QVBoxLayout(platformCard);
+        platformLayout->setContentsMargins(18, 16, 18, 16);
+        platformLayout->setSpacing(10);
+        platformLayout->addWidget(makeLabel("平台服务", "font-size: 15px; font-weight: 650; color: #263446;"));
+        platformEnabled = new QCheckBox("启用平台服务连接");
+        platformEnabled->setStyleSheet("font-size: 13px; color: #435168;");
+        platformLayout->addWidget(platformEnabled);
+        auto *addressRow = new QHBoxLayout;
+        auto *addressLabel = makeLabel("服务器地址", "font-size: 12px; color: #69788d;");
+        addressLabel->setFixedWidth(84);
+        addressRow->addWidget(addressLabel);
+        platformAddress = new QLineEdit;
+        platformAddress->setPlaceholderText("switchboard.example.com:25664");
+        addressRow->addWidget(platformAddress, 1);
+        platformLayout->addLayout(addressRow);
+        auto *passwordRow = new QHBoxLayout;
+        auto *passwordLabel = makeLabel("Player 密码", "font-size: 12px; color: #69788d;");
+        passwordLabel->setFixedWidth(84);
+        passwordRow->addWidget(passwordLabel);
+        platformPassword = new QLineEdit;
+        platformPassword->setEchoMode(QLineEdit::Password);
+        passwordRow->addWidget(platformPassword, 1);
+        platformLayout->addLayout(passwordRow);
+        auto *optionsRow = new QHBoxLayout;
+        platformTls = new QCheckBox("使用 TLS");
+        platformTls->setChecked(true);
+        platformAllowInsecure = new QCheckBox("允许自签名证书（仅开发）");
+        optionsRow->addWidget(platformTls);
+        optionsRow->addWidget(platformAllowInsecure);
+        optionsRow->addStretch();
+        platformLayout->addLayout(optionsRow);
+        auto *modeRow = new QHBoxLayout;
+        auto *modeLabel = makeLabel("授权模式", "font-size: 12px; color: #69788d;");
+        modeLabel->setFixedWidth(84);
+        modeRow->addWidget(modeLabel);
+        platformMode = new QComboBox;
+        platformMode->addItem("等待对方同意", "approval");
+        platformMode->addItem("直接远程", "direct");
+        modeRow->addWidget(platformMode);
+        modeRow->addStretch();
+        platformLayout->addLayout(modeRow);
+        auto *platformActionRow = new QHBoxLayout;
+        platformConnectButton = makeButton("连接平台");
+        platformActionRow->addWidget(platformConnectButton);
+        platformStatusValue = makeLabel("状态：平台未连接", "font-size: 12px; color: #69788d;");
+        platformActionRow->addWidget(platformStatusValue);
+        platformActionRow->addStretch();
+        platformLayout->addLayout(platformActionRow);
+        layout->addWidget(platformCard);
+        layout->addSpacing(18);
+
+        connect(platformConnectButton, &QPushButton::clicked, this, [this] {
+            if (!platform) return;
+            savePlatformConfig();
+            const QString state = platform->state();
+            if (platform->isConnected() || state == "connecting" || state == "authenticating")
+                platform->disconnectFromPlatform();
+            else if (platformEnabled && platformEnabled->isChecked())
+                platform->connectToPlatform();
+            updatePlatformState(platform->state());
+        });
+        connect(platformEnabled, &QCheckBox::toggled, this, [this](bool enabled) {
+            savePlatformConfig();
+            if (!platform) return;
+            if (enabled) platform->connectToPlatform();
+            else platform->disconnectFromPlatform();
+            updatePlatformState(platform->state());
+        });
+        connect(platformAddress, &QLineEdit::editingFinished, this, [this] { savePlatformConfig(); });
+        connect(platformPassword, &QLineEdit::editingFinished, this, [this] { savePlatformConfig(); });
+        connect(platformTls, &QCheckBox::toggled, this, [this] { savePlatformConfig(); });
+        connect(platformAllowInsecure, &QCheckBox::toggled, this, [this] { savePlatformConfig(); });
+        connect(platformMode, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+            savePlatformConfig();
+            if (platform && platform->isConnected() && platformMode) {
+                platform->updateTemporaryPassword(temporaryPassword, passwordVersion, platformMode->currentData().toString(), platform->config().ttlSeconds);
+                statusBar()->showMessage("授权模式已同步到平台", 1800);
+            }
+        });
+
         layout->addWidget(makeLabel("本地数据", "font-size: 15px; font-weight: 650; color: #263446;"));
         layout->addSpacing(7);
         auto *historyInfo = makeLabel("最多保留 100 条会话和 300 条任务记录，仅保存在当前 Windows 用户配置目录。", "font-size: 12px; color: #69788d;");
@@ -872,7 +1009,8 @@ private:
 
     void refreshDevicesPage() {
         if (deviceIdValue) deviceIdValue->setText(deviceCode);
-        if (deviceStatusValue) deviceStatusValue->setText("平台未连接");
+        if (deviceStatusValue)
+            deviceStatusValue->setText(platform && platform->isConnected() ? "平台已连接 · 设备已注册" : "平台未连接");
         savedDevices = QSettings().value("savedDevices").toStringList();
         if (!deviceListLayout) return;
         while (QLayoutItem *item = deviceListLayout->takeAt(0)) {
@@ -928,9 +1066,11 @@ private:
     }
 
     QJsonObject deviceRecord() const {
+        const bool platformConnected = platform && platform->isConnected();
         return {{"device_id", deviceId()}, {"name", QSysInfo::machineHostName()},
-                {"online", false}, {"local_client_running", bridge && bridge->isListening()},
-                {"platform_connected", false}, {"platform", "windows"}, {"backend", "local-demo"}};
+                {"online", platformConnected}, {"local_client_running", bridge && bridge->isListening()},
+                {"platform_connected", platformConnected}, {"platform", "windows"},
+                {"backend", platformConnected ? "platform" : "local-demo"}};
     }
 
     void startLocalBridge() {
@@ -968,6 +1108,353 @@ private:
         platformState->setText("平台：未连接");
         deviceState->setText("设备：本机未注册");
         serviceFooter->setText("● MCP 已就绪；平台未连接");
+    }
+
+    QString platformConfigPath() const {
+        return QDir(qEnvironmentVariable("APPDATA")).filePath("Yiuk/DeviceAssist/platform.json");
+    }
+
+    void loadPlatformConfig() {
+        PlatformClient::Config cfg;
+        cfg.deviceId = deviceId();
+        cfg.deviceName = QSysInfo::machineHostName();
+        cfg.mode = "approval";
+        cfg.ttlSeconds = 600;
+        cfg.temporaryPassword = randomPassword(32);
+        QFile file(platformConfigPath());
+        if (file.open(QIODevice::ReadOnly)) {
+            const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
+            cfg.enabled = object.value("enabled").toBool(false);
+            cfg.address = object.value("address").toString();
+            cfg.tls = object.value("tls").toBool(true);
+            cfg.allowInsecure = object.value("allow_insecure").toBool(false);
+            cfg.caFile = object.value("ca_file").toString();
+            cfg.mode = object.value("mode").toString("approval");
+            cfg.passwordVersion = object.value("password_version").toInt(1);
+            cfg.playerPassword = SecureStore::unprotect(object.value("player_password").toString());
+            const QString storedPassword = SecureStore::unprotect(object.value("temporary_password").toString());
+            if (!storedPassword.isEmpty()) cfg.temporaryPassword = storedPassword;
+        }
+        temporaryPassword = cfg.temporaryPassword;
+        passwordVersion = cfg.passwordVersion;
+        platform->setConfig(cfg);
+        if (platformAddress) platformAddress->setText(cfg.address);
+        if (platformPassword) platformPassword->setText(cfg.playerPassword);
+        if (platformTls) platformTls->setChecked(cfg.tls);
+        if (platformAllowInsecure) platformAllowInsecure->setChecked(cfg.allowInsecure);
+        if (platformEnabled) platformEnabled->setChecked(cfg.enabled);
+        if (platformMode) {
+            const int index = platformMode->findData(cfg.mode);
+            platformMode->setCurrentIndex(index >= 0 ? index : 0);
+        }
+        if (passwordValue) passwordValue->setText(passwordVisible ? temporaryPassword : "********");
+    }
+
+    void savePlatformConfig() {
+        if (!platform) return;
+        PlatformClient::Config cfg = platform->config();
+        cfg.deviceId = deviceId();
+        cfg.deviceName = QSysInfo::machineHostName();
+        cfg.temporaryPassword = temporaryPassword;
+        cfg.passwordVersion = passwordVersion;
+        if (platformAddress) cfg.address = platformAddress->text().trimmed();
+        if (platformPassword) cfg.playerPassword = platformPassword->text();
+        if (platformTls) cfg.tls = platformTls->isChecked();
+        if (platformAllowInsecure) cfg.allowInsecure = platformAllowInsecure->isChecked();
+        if (platformEnabled) cfg.enabled = platformEnabled->isChecked();
+        if (platformMode) cfg.mode = platformMode->currentData().toString();
+        platform->setConfig(cfg);
+        QDir().mkpath(QFileInfo(platformConfigPath()).absolutePath());
+        const QJsonObject object{
+            {"enabled", cfg.enabled},
+            {"address", cfg.address},
+            {"tls", cfg.tls},
+            {"allow_insecure", cfg.allowInsecure},
+            {"ca_file", cfg.caFile},
+            {"mode", cfg.mode},
+            {"password_version", cfg.passwordVersion},
+            {"player_password", SecureStore::protect(cfg.playerPassword)},
+            {"temporary_password", SecureStore::protect(cfg.temporaryPassword)},
+        };
+        QFile file(platformConfigPath());
+        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            file.write(QJsonDocument(object).toJson(QJsonDocument::Compact));
+    }
+
+    void startPlatform() {
+        platform = new PlatformClient(this);
+        connect(platform, &PlatformClient::stateChanged, this, [this](const QString &state) { updatePlatformState(state); });
+        connect(platform, &PlatformClient::registered, this, [this](const QJsonObject &) {
+            serviceFooter->setText("● 平台在线，可接收协助请求");
+        });
+        connect(platform, &PlatformClient::sessionRequested, this, &MainWindow::onPlatformSessionRequested);
+        connect(platform, &PlatformClient::sessionUpdated, this, &MainWindow::onPlatformSessionUpdated);
+        connect(platform, &PlatformClient::sessionCreated, this, &MainWindow::onPlatformSessionCreated);
+        connect(platform, &PlatformClient::commandRequested, this, &MainWindow::onPlatformCommandRequested);
+        connect(platform, &PlatformClient::cancelRequested, this, &MainWindow::onPlatformCancelRequested);
+        connect(platform, &PlatformClient::closeRequested, this, &MainWindow::onPlatformCloseRequested);
+        connect(platform, &PlatformClient::temporaryPasswordUpdated, this, [this](int version, qint64) {
+            passwordVersion = version;
+            savePlatformConfig();
+            statusBar()->showMessage("临时密码已在平台更新", 1800);
+        });
+        connect(platform, &PlatformClient::platformError, this, [this](const QString &code, const QString &message) {
+            statusBar()->showMessage(QString("平台错误：%1 %2").arg(code, message), 4000);
+        });
+        connect(platform, &PlatformClient::connectionError, this, [this](const QString &message) {
+            statusBar()->showMessage("平台连接：" + message, 4000);
+            serviceFooter->setText("● 平台连接异常");
+        });
+        loadPlatformConfig();
+        if (platform->config().enabled && !platform->config().address.isEmpty())
+            platform->connectToPlatform();
+        updatePlatformState(platform->state());
+    }
+
+    void updatePlatformState(const QString &state) {
+        const bool connected = state == "connected";
+        const bool connecting = state == "connecting" || state == "authenticating";
+        if (platformState) {
+            platformState->setText(connected ? "平台：已连接" : (connecting ? "平台：连接中" : "平台：未连接"));
+            platformState->setStyleSheet(connected ? "font-size: 11px; color: #16825d; padding: 2px 5px;"
+                                                   : "font-size: 11px; color: #687588; padding: 2px 5px;");
+        }
+        if (deviceState) deviceState->setText(connected ? "设备：平台在线" : "设备：未注册");
+        if (deviceStatusValue) deviceStatusValue->setText(connected ? "平台已连接 · 设备已注册" : "平台未连接");
+        if (platformStatusValue) platformStatusValue->setText(connected ? "状态：平台已连接" : (connecting ? "状态：正在连接平台…" : "状态：平台未连接"));
+        if (platformConnectButton) platformConnectButton->setText(connected || connecting ? "断开平台" : "连接平台");
+        if (!connected && serviceFooter && !serviceFooter->text().contains("协助请求"))
+            serviceFooter->setText("● 平台未连接");
+        refreshDevicesPage();
+    }
+
+    void onPlatformSessionRequested(const QJsonObject &session) {
+        if (acceptingRequests && !acceptingRequests->isChecked()) {
+            platform->rejectSession(session.value("session_id").toString());
+            return;
+        }
+        const QString id = session.value("session_id").toString();
+        if (id.isEmpty()) return;
+        QJsonObject record = session;
+        record.insert("source", "platform");
+        if (!record.contains("expires_at_ms") && record.value("expires_at").isDouble())
+            record.insert("expires_at_ms", record.value("expires_at").toDouble() * 1000.0);
+        if (!record.contains("requester")) record.insert("requester", session.value("operator").toString("平台操作者"));
+        if (!record.contains("source_device")) record.insert("source_device", session.value("operator_device").toString());
+        sessions.insert(id, record);
+        persistSessionState();
+        refreshPendingRequests();
+        refreshSessionsPage();
+        serviceFooter->setText("● 平台有待批准的协助请求");
+        notificationSessions.insert(id, record.value("purpose").toString());
+        if (trayIcon && QSystemTrayIcon::supportsMessages()) {
+            trayIcon->showMessage("需要批准远程协助", record.value("purpose").toString() + "\n点击此通知查看并批准或拒绝。",
+                                  QSystemTrayIcon::Information, 10000);
+        } else {
+            QTimer::singleShot(0, this, [this, id] { showApprovalDialog(id); });
+        }
+    }
+
+    void onPlatformSessionUpdated(const QJsonObject &session) {
+        const QString id = session.value("session_id").toString();
+        if (id.isEmpty()) return;
+        QJsonObject record = session;
+        const QJsonObject existing = sessions.value(id);
+        if (!record.contains("source") && existing.contains("source"))
+            record.insert("source", existing.value("source"));
+        if (!record.contains("expires_at_ms") && record.value("expires_at").isDouble())
+            record.insert("expires_at_ms", record.value("expires_at").toDouble() * 1000.0);
+        sessions.insert(id, record);
+        persistSessionState();
+        const QString status = session.value("status").toString();
+        if (status != "active" && status != "approved" && status != "pending_approval")
+            stopTasksForSession(id, status == "closed" ? "cancelled" : "result_unknown");
+        refreshPendingRequests();
+        refreshActiveSessions();
+        refreshSessionsPage();
+    }
+
+    void onPlatformSessionCreated(const QJsonObject &session) {
+        const QString id = session.value("session_id").toString();
+        if (id.isEmpty()) return;
+        QJsonObject record = session;
+        record.insert("source", "platform-operator");
+        if (!record.contains("expires_at_ms") && record.value("expires_at").isDouble())
+            record.insert("expires_at_ms", record.value("expires_at").toDouble() * 1000.0);
+        sessions.insert(id, record);
+        persistSessionState();
+        refreshSessionsPage();
+        const QString status = session.value("status").toString();
+        statusBar()->showMessage(status == "approved" ? "会话已批准" : "已发送协助请求，等待对方批准", 4000);
+    }
+
+    void onPlatformCloseRequested(const QString &sessionId) {
+        stopTasksForSession(sessionId, "cancelled");
+        QJsonObject session = sessions.value(sessionId);
+        session.insert("status", "closed");
+        sessions.insert(sessionId, session);
+        persistSessionState();
+        refreshPendingRequests();
+        refreshActiveSessions();
+        refreshSessionsPage();
+    }
+
+    void onPlatformCancelRequested(const QString &sessionId, const QString &requestId) {
+        if (processes.contains(requestId)) {
+            QProcess *process = processes.take(requestId);
+            process->kill();
+            process->deleteLater();
+            QFile::remove(taskFiles.take(requestId));
+        }
+        QJsonObject task = tasks.value(requestId);
+        task.insert("status", "cancelled");
+        task.insert("exit_code", QJsonValue(QJsonValue::Null));
+        tasks.insert(requestId, task);
+        persistSessionState();
+        platformOutputSequence.remove(requestId);
+        platformTaskSession.remove(requestId);
+        if (platform && platform->isConnected())
+            platform->sendCommandResult(sessionId, requestId, "cancelled", QJsonValue(), true, false);
+        refreshSessionsPage();
+        refreshActiveSessions();
+    }
+
+    void onPlatformCommandRequested(const QString &sessionId, const QString &requestId, const QString &command,
+                                    const QString &workingDirectory, int timeoutSeconds) {
+        executePlatformCommand(sessionId, requestId, command, workingDirectory, timeoutSeconds);
+    }
+
+    void executePlatformCommand(const QString &sessionId, const QString &requestId, const QString &command,
+                                const QString &workingDirectory, int timeoutSeconds) {
+        auto sendFailure = [this, sessionId, requestId](const QString &message) {
+            QJsonObject task{{"session_id", sessionId}, {"request_id", requestId}, {"status", "failed"},
+                             {"stdout", ""}, {"stderr", message}, {"exit_code", QJsonValue(QJsonValue::Null)}, {"truncated", false}};
+            tasks.insert(requestId, task);
+            if (platform && platform->isConnected())
+                platform->sendCommandResult(sessionId, requestId, "failed", QJsonValue(), true, false);
+            refreshSessionsPage();
+        };
+        if (command.trimmed().isEmpty() || command.size() > 32768) {
+            sendFailure("命令为空或超过 32 KiB");
+            return;
+        }
+        const int timeout = qBound(1, timeoutSeconds, 3600);
+        auto *process = new QProcess(this);
+        process->setProcessChannelMode(QProcess::SeparateChannels);
+        const QString scriptPath = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).filePath("yiuk-" + requestId + ".ps1");
+        QFile script(scriptPath);
+        if (!script.open(QIODevice::WriteOnly)) {
+            process->deleteLater();
+            sendFailure("无法创建临时 PowerShell 脚本");
+            return;
+        }
+        script.write(QByteArray::fromHex("efbbbf"));
+        script.write("[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false\r\n$OutputEncoding = [Console]::OutputEncoding\r\n");
+        script.write(command.toUtf8());
+        script.close();
+        QString program = QStandardPaths::findExecutable("pwsh.exe");
+        if (program.isEmpty()) program = QStandardPaths::findExecutable("powershell.exe");
+        if (program.isEmpty()) {
+            QFile::remove(scriptPath);
+            process->deleteLater();
+            sendFailure("未找到 PowerShell 可执行程序");
+            return;
+        }
+        process->setProgram(program);
+        process->setArguments({"-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath});
+        if (!workingDirectory.isEmpty() && QDir(workingDirectory).exists()) process->setWorkingDirectory(workingDirectory);
+        tasks.insert(requestId, {{"session_id", sessionId}, {"request_id", requestId}, {"status", "running"},
+                                 {"stdout", ""}, {"stderr", ""}, {"exit_code", QJsonValue(QJsonValue::Null)}, {"truncated", false}});
+        processes.insert(requestId, process);
+        taskFiles.insert(requestId, scriptPath);
+        platformTaskSession.insert(requestId, sessionId);
+        platformOutputSequence.insert(requestId, 1);
+        auto appendOutput = [this, requestId, sessionId](QProcess *p, bool standardError) {
+            QByteArray bytes = standardError ? p->readAllStandardError() : p->readAllStandardOutput();
+            if (bytes.isEmpty()) return;
+            QJsonObject task = tasks.value(requestId);
+            const QString key = standardError ? "stderr" : "stdout";
+            QString current = task.value(key).toString();
+            constexpr qsizetype limit = 1 << 20;
+            const qsizetype available = qMax<qsizetype>(0, limit - current.toUtf8().size());
+            bool truncated = task.value("truncated").toBool();
+            if (bytes.size() > available) {
+                bytes.truncate(available);
+                truncated = true;
+            }
+            current += QString::fromUtf8(bytes);
+            task.insert(key, current);
+            task.insert("truncated", truncated);
+            tasks.insert(requestId, task);
+            if (platform && platform->isConnected() && !bytes.isEmpty()) {
+                const quint64 sequence = platformOutputSequence.value(requestId, 1);
+                platformOutputSequence.insert(requestId, sequence + 1);
+                platform->sendCommandOutput(sessionId, requestId, standardError ? "stderr" : "stdout", QString::fromUtf8(bytes), sequence);
+            }
+        };
+        connect(process, &QProcess::readyReadStandardOutput, this, [appendOutput, process] { appendOutput(process, false); });
+        connect(process, &QProcess::readyReadStandardError, this, [appendOutput, process] { appendOutput(process, true); });
+        connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+                [this, requestId, sessionId, process, appendOutput](int exitCode, QProcess::ExitStatus exitStatus) {
+            appendOutput(process, false);
+            appendOutput(process, true);
+            QJsonObject task = tasks.value(requestId);
+            const QString currentStatus = task.value("status").toString();
+            QFile::remove(taskFiles.take(requestId));
+            processes.remove(requestId);
+            process->deleteLater();
+            if (currentStatus == "cancelled" || currentStatus == "timed_out") {
+                platformOutputSequence.remove(requestId);
+                platformTaskSession.remove(requestId);
+                return;
+            }
+            const bool success = exitStatus == QProcess::NormalExit && exitCode == 0;
+            task.insert("status", success ? "succeeded" : "failed");
+            task.insert("exit_code", exitCode);
+            tasks.insert(requestId, task);
+            persistSessionState();
+            if (platform && platform->isConnected())
+                platform->sendCommandResult(sessionId, requestId, success ? "succeeded" : "failed", exitCode, true, task.value("truncated").toBool());
+            platformOutputSequence.remove(requestId);
+            platformTaskSession.remove(requestId);
+            refreshSessionsPage();
+            refreshActiveSessions();
+            serviceFooter->setText("● 平台命令任务完成");
+        });
+        connect(process, &QProcess::errorOccurred, this, [this, requestId, sessionId, process](QProcess::ProcessError) {
+            if (process->state() != QProcess::NotRunning) return;
+            QJsonObject task = tasks.value(requestId);
+            task.insert("status", "failed");
+            task.insert("stderr", task.value("stderr").toString() + process->errorString());
+            tasks.insert(requestId, task);
+            persistSessionState();
+            QFile::remove(taskFiles.take(requestId));
+            processes.remove(requestId);
+            process->deleteLater();
+            if (platform && platform->isConnected())
+                platform->sendCommandResult(sessionId, requestId, "failed", QJsonValue(), true, false);
+            platformOutputSequence.remove(requestId);
+            platformTaskSession.remove(requestId);
+        });
+        process->start();
+        QTimer::singleShot(timeout * 1000, this, [this, requestId, sessionId] {
+            if (!processes.contains(requestId)) return;
+            QProcess *process = processes.value(requestId);
+            if (process->state() == QProcess::NotRunning) return;
+            QJsonObject task = tasks.value(requestId);
+            task.insert("status", "timed_out");
+            tasks.insert(requestId, task);
+            persistSessionState();
+            process->kill();
+            QFile::remove(taskFiles.take(requestId));
+            processes.remove(requestId);
+            platformOutputSequence.remove(requestId);
+            platformTaskSession.remove(requestId);
+            if (platform && platform->isConnected())
+                platform->sendCommandResult(sessionId, requestId, "timed_out", QJsonValue(), false, task.value("truncated").toBool());
+        });
+        serviceFooter->setText("● 正在执行平台下发任务");
+        refreshActiveSessions();
     }
 
     QJsonObject invokeLocalTool(const QString &tool, const QJsonObject &input) {
@@ -1027,7 +1514,7 @@ private:
         QJsonObject session = sessions.value(id);
         const QString status = session.value("status").toString();
         const qint64 expiresAt = static_cast<qint64>(session.value("expires_at_ms").toDouble());
-        if ((status == "pending_approval" || status == "active") && expiresAt > 0 && QDateTime::currentMSecsSinceEpoch() >= expiresAt) {
+        if ((status == "pending_approval" || status == "approved" || status == "active") && expiresAt > 0 && QDateTime::currentMSecsSinceEpoch() >= expiresAt) {
             session.insert("status", "expired");
             sessions.insert(id, session);
             persistSessionState();
@@ -1119,7 +1606,11 @@ private:
         refreshPendingRequests();
         refreshActiveSessions();
         refreshSessionsPage();
-        serviceFooter->setText(approved ? "● 本机会话已批准" : "● 连接申请已拒绝");
+        const bool platformSession = session.value("source").toString() == "platform";
+        if (platformSession && platform && platform->isConnected()) {
+            if (approved) platform->approveSession(id); else platform->rejectSession(id);
+        }
+        serviceFooter->setText(approved ? "● 会话已批准" : "● 连接申请已拒绝");
     }
 
     void refreshActiveSessions() {
@@ -1132,7 +1623,8 @@ private:
         for (const QString &sessionId : sessionIds) {
             expireSessionIfNeeded(sessionId);
             const QJsonObject session = sessions.value(sessionId);
-            if (session.value("status").toString() != "active") continue;
+            const QString status = session.value("status").toString();
+            if (status != "active" && status != "approved") continue;
             hasActive = true;
             const QString id = sessionId;
             auto *card = new QFrame;
@@ -1302,6 +1794,7 @@ private:
     QJsonObject closeSession(const QString &id) {
         if (!sessions.contains(id)) return fail("SESSION_EXPIRED", "会话不存在或已过期");
         QJsonObject session = sessions.value(id);
+        const bool platformSession = session.value("source").toString().startsWith(QStringLiteral("platform"));
         session.insert("status", "closed");
         sessions.insert(id, session);
         persistSessionState();
@@ -1310,7 +1803,8 @@ private:
         refreshActiveSessions();
         refreshSessionsPage();
         notificationSessions.remove(id);
-        serviceFooter->setText("● 本机会话已关闭");
+        if (platformSession && platform && platform->isConnected()) platform->closeSession(id);
+        serviceFooter->setText("● 会话已关闭");
         return ok(session);
     }
 

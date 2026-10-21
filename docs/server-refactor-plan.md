@@ -1,7 +1,7 @@
 # 服务器改造计划
 
 版本：1.0  
-状态：待实施计划  
+状态：P0/P1/P2、Agent operator backend 与 Qt 设备端协议对接已实施；真实 Windows 验证、Job Object 进程树清理、P5 Minecraft 回归和 P6 发布前检查待完成（实施状态见 [backend-status.md](backend-status.md)）  
 范围：Go 平台服务器、Minecraft 中转边界、Qt 设备连接协议  
 存储基线：完全内存化，不使用数据库或文件持久化业务状态
 
