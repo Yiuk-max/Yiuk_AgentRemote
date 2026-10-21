@@ -853,9 +853,25 @@ func unixOrZero(t time.Time) int64 {
 	return t.Unix()
 }
 
+// errorCode maps internal errors to the stable protocol error code used in
+// audit logs. Logs must never contain free-form internal error text.
 func errorCode(err error) string {
-	if err == nil {
+	switch {
+	case err == nil:
 		return ""
+	case errors.Is(err, auth.ErrRateLimited):
+		return "RATE_LIMITED"
+	case errors.Is(err, auth.ErrBadPassword):
+		return "BAD_PASSWORD"
+	case errors.Is(err, device.ErrDeviceNotFound):
+		return "DEVICE_NOT_FOUND"
+	case errors.Is(err, device.ErrBadPassword):
+		return "BAD_TEMPORARY_PASSWORD"
+	case errors.Is(err, device.ErrPasswordExpiry):
+		return "TEMPORARY_PASSWORD_EXPIRED"
+	case errors.Is(err, device.ErrPasswordRevoke):
+		return "TEMPORARY_PASSWORD_REVOKED"
+	default:
+		return "INTERNAL"
 	}
-	return err.Error()
 }

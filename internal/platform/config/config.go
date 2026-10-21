@@ -17,6 +17,15 @@ import (
 
 const examplePassword = "REPLACE_WITH_A_LONG_RANDOM_PLAYER_SECRET"
 
+// MinPlayerPasswordLen is the hard floor accepted by configuration
+// validation. Passwords shorter than RecommendedPlayerPasswordLen are allowed
+// but logged as a warning at startup, because the player password only gates
+// relay usage and never grants device access on its own.
+const (
+	MinPlayerPasswordLen         = 8
+	RecommendedPlayerPasswordLen = 16
+)
+
 // Config is the platform server configuration. All fields map to the
 // `platform:` section of the YAML file.
 type Config struct {
@@ -202,8 +211,8 @@ func (c Config) Validate() error {
 	if invalidPassword(c.PlayerPassword) {
 		return errors.New("player_password must be a non-example secret")
 	}
-	if len(c.PlayerPassword) < 16 {
-		return errors.New("player_password must be at least 16 characters")
+	if len(c.PlayerPassword) < MinPlayerPasswordLen {
+		return fmt.Errorf("player_password must be at least %d characters", MinPlayerPasswordLen)
 	}
 	if c.MaxConnections < 1 || c.MaxConnections > 1_000_000 {
 		return errors.New("max_connections must be between 1 and 1000000")

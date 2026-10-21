@@ -95,3 +95,16 @@ func TestValidateRejectsInconsistentLimits(t *testing.T) {
 		t.Fatal("expected slow client buffer validation error")
 	}
 }
+
+func TestPlayerPasswordLengthFloor(t *testing.T) {
+	cfg := Default()
+	cfg.AllowInsecure = true
+	cfg.PlayerPassword = "short"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected too-short player password to be rejected")
+	}
+	cfg.PlayerPassword = "Yiuk29564"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("8-character password should be accepted with a warning: %v", err)
+	}
+}

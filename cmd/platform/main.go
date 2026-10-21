@@ -42,6 +42,10 @@ func main() {
 		logger.Error("could not start platform listener", "error", err)
 		os.Exit(1)
 	}
+	if len(cfg.PlayerPassword) < config.RecommendedPlayerPasswordLen {
+		logger.Warn("player_password is shorter than recommended; use a longer random secret for public deployments",
+			"length", len(cfg.PlayerPassword), "recommended", config.RecommendedPlayerPasswordLen)
+	}
 	logger.Info("platform server listening", "listen", cfg.Listen, "tls", cfg.TLSCert != "", "insecure", cfg.AllowInsecure)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

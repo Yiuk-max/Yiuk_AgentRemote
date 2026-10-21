@@ -133,6 +133,15 @@ sudo ./deploy/install-platform.sh /path/to/server.crt /path/to/server.key
 
 已存在 `/opt/yiuk-platform/platform.yaml` 时不会覆盖，避免重新部署导致密码变化。
 
+### player 密码长度
+
+`player_password` 最少 8 个字符，少于 16 个字符时启动日志会输出警告。该密码只用于
+证明连接方可以使用平台中转，不会直接授予任何设备访问权；但公开部署仍建议使用
+20 个字符以上的随机值，避免被暴力尝试。
+
+如果自行指定短密码，请同时确认 `/etc/ssh`、云控制台等入口已限制来源 IP，并关注
+`player_auth_failed` 审计事件。
+
 ### 端口说明
 
 平台默认监听 `:29564`。部署前请确认云主机安全组/防火墙已放行该端口；如果服务在
