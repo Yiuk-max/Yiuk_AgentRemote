@@ -178,7 +178,8 @@ void MainWindow::startPlatform() {
     connect(platform, &PlatformClient::fileDownloadRequested, this, &MainWindow::onPlatformFileDownloadRequested);
     connect(platform, &PlatformClient::fileDownloadCanceled, this, [this](const QString &sessionId, const QString &requestId) {
         activeFileDownloads.remove(requestId);
-        appendActivity(sessionId, QString("平台已取消文件下载 %1").arg(requestId.left(8)));
+        appendActivity(sessionId, QString("平台已取消文件下载 %1").arg(requestId.left(8)),
+                       ActivityKind::Download);
     });
     connect(platform, &PlatformClient::cancelRequested, this, &MainWindow::onPlatformCancelRequested);
     connect(platform, &PlatformClient::closeRequested, this, &MainWindow::onPlatformCloseRequested);

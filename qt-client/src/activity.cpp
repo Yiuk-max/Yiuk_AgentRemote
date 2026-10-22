@@ -3,105 +3,109 @@
 #include "yiukdialog.h"
 
 
-void MainWindow::appendActivity(const QString &sessionId, const QString &message) {
-    if (sessionId.isEmpty() || message.isEmpty()) return;
-    QStringList &lines = activityLogs[sessionId];
-    const QString timestamp = QDateTime::currentDateTime().toString("HH:mm:ss");
-    for (const QString &line : message.split('\n'))
-        lines.append(QString("[%1] %2").arg(timestamp, line));
-    while (lines.size() > 500) lines.removeFirst();
-    if (activityWindow && activityWindow->isVisible() && activitySessionSelector &&
-        activitySessionSelector->currentData().toString() == sessionId) {
-        activityLog->setPlainText(lines.join('\n'));
-        activityLog->moveCursor(QTextCursor::End);
-        activityStatusValue->setText(sessionStatusText(sessionId));
+// The panel always follows the session the owner is part of right now: a live
+// session wins over the most recent finished one, and the newest of each.
+QString MainWindow::currentActivitySession() const {
+    QString liveId;
+    QString recentId;
+    qint64 liveCreated = -1;
+    qint64 recentCreated = -1;
+    for (auto it = sessions.cbegin(); it != sessions.cend(); ++it) {
+        const QJsonObject session = it.value();
+        if (session.value("source").toString() != QLatin1String("platform")) continue;
+        const qint64 created = static_cast<qint64>(session.value("created_at_ms").toDouble());
+        const QString status = session.value("status").toString();
+        if (status == QLatin1String("active") || status == QLatin1String("approved") ||
+            status == QLatin1String("pending_approval")) {
+            if (created >= liveCreated) {
+                liveCreated = created;
+                liveId = it.key();
+            }
+        }
+        if (created >= recentCreated) {
+            recentCreated = created;
+            recentId = it.key();
+        }
     }
+    return liveId.isEmpty() ? recentId : liveId;
 }
 
 
-void MainWindow::refreshActivityWindow() {
-    if (!activityWindow || !activitySessionSelector || !activityLog) return;
-    const QString selected = activitySessionSelector->currentData().toString();
-    activitySessionSelector->blockSignals(true);
-    activitySessionSelector->clear();
-    for (auto it = sessions.cbegin(); it != sessions.cend(); ++it) {
-        const QJsonObject session = it.value();
-        if (session.value("source").toString() != "platform") continue;
-        const QString label = QString("%1 · %2 · %3")
-            .arg(session.value("purpose").toString("远程协助"),
-                 session.value("requester").toString("Agent"),
-                 sessionStatusText(it.key()));
-        activitySessionSelector->addItem(label, it.key());
+QString MainWindow::activitySessionLabel(const QString &sessionId) const {
+    if (sessionId.isEmpty() || !sessions.contains(sessionId)) return QStringLiteral("当前没有会话");
+    const QJsonObject session = sessions.value(sessionId);
+    QString name = session.value("requester").toString().trimmed();
+    if (name.isEmpty()) name = QStringLiteral("Agent");
+    QString device = session.value("source_device").toString().trimmed();
+    if (device.isEmpty()) device = session.value("operator_device").toString().trimmed();
+    if (device.isEmpty()) return name;
+    QString digits;
+    for (const QChar ch : device) if (ch.isDigit()) digits += ch;
+    return name + QStringLiteral(" · ") + (digits.size() == 9 ? spacedCode(digits) : device);
+}
+
+
+QString MainWindow::activitySessionState(const QString &sessionId) const {
+    if (sessionId.isEmpty() || !sessions.contains(sessionId)) return QStringLiteral("none");
+    const QString status = sessions.value(sessionId).value("status").toString();
+    if (status == QLatin1String("active") || status == QLatin1String("approved"))
+        return QStringLiteral("active");
+    if (status == QLatin1String("pending_approval")) return QStringLiteral("pending");
+    return QStringLiteral("closed");
+}
+
+
+void MainWindow::appendActivity(const QString &sessionId, const QString &message, ActivityKind kind) {
+    if (sessionId.isEmpty() || message.isEmpty()) return;
+    QVector<ActivityEntry> &log = activityLogs[sessionId];
+    ActivityEntry entry;
+    entry.kind = kind;
+    entry.time = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"));
+    entry.text = message;
+    log.append(entry);
+    while (log.size() > 400) log.removeFirst();
+    // A closed panel is never reopened or raised by activity: only the owner
+    // opens it, from the active-session card or the tray menu.
+    if (!activityPanel || !activityPanel->isOpen() || activityPanel->sessionId() != sessionId) return;
+    activityPanel->append(entry);
+    activityPanel->setStatus(activitySessionState(sessionId), sessionStatusText(sessionId));
+}
+
+
+void MainWindow::syncActivityPanel() {
+    if (!activityPanel || !activityPanel->isOpen()) return;
+    const QString id = currentActivitySession();
+    if (id.isEmpty()) {
+        activityPanel->setStatus(QStringLiteral("none"), QStringLiteral("当前没有远程协助会话"));
+        return;
     }
-    int index = activitySessionSelector->findData(selected);
-    if (index < 0 && activitySessionSelector->count() > 0) index = 0;
-    if (index >= 0) activitySessionSelector->setCurrentIndex(index);
-    activitySessionSelector->blockSignals(false);
-    const QString id = activitySessionSelector->currentData().toString();
-    activityLog->setPlainText(activityLogs.value(id).join('\n'));
-    activityLog->moveCursor(QTextCursor::End);
-    const QString status = id.isEmpty() ? QString() : sessions.value(id).value("status").toString();
-    activityStatusValue->setText(sessionStatusText(id));
-    // The green state belongs to a live session only.
-    activityStatusValue->setStyleSheet(status == "active" || status == "approved"
-        ? "font-size: 12px; color: #16825d;"
-        : "font-size: 12px; color: #687588;");
-    activityDisconnectButton->setEnabled(!id.isEmpty() && (status == "active" || status == "approved"));
+    // Switching content is a data update; the window keeps its z-order and focus
+    // so new activity never pulls it in front of the owner's work.
+    if (activityPanel->sessionId() != id) {
+        activityPanel->setSessionId(id);
+        activityPanel->reset(activitySessionLabel(id), activitySessionState(id), sessionStatusText(id),
+                             activityLogs.value(id));
+        return;
+    }
+    activityPanel->setStatus(activitySessionState(id), sessionStatusText(id));
 }
 
 
 void MainWindow::showActivityWindow(const QString &sessionId) {
-    if (!activityWindow) {
-        // Same frameless white sheet as the main window: title on the shared
-        // title bar, close with the main window's own glyph.
-        auto *dialog = new YiukDialog(this, QStringLiteral("远程协助活动"));
-        activityWindow = dialog;
-        activityWindow->setModal(false);
-        activityWindow->setAttribute(Qt::WA_DeleteOnClose, false);
-        activityWindow->resize(720, 460);
-
-        auto *sessionRow = new QHBoxLayout;
-        sessionRow->setSpacing(10);
-        sessionRow->addWidget(makeLabel("当前 Agent", "font-size: 12px; color: #69788d;"));
-        activitySessionSelector = new QComboBox;
-        // Reuse the settings field look instead of the Fusion default combo.
-        activitySessionSelector->setObjectName("settingsField");
-        activitySessionSelector->setMinimumHeight(32);
-        sessionRow->addWidget(activitySessionSelector, 1);
-        activityStatusValue = makeLabel("无活动会话", "font-size: 12px; color: #687588;");
-        sessionRow->addWidget(activityStatusValue);
-        dialog->content()->addLayout(sessionRow);
-
-        activityLog = new QPlainTextEdit;
-        activityLog->setReadOnly(true);
-        activityLog->setLineWrapMode(QPlainTextEdit::NoWrap);
-        activityLog->setStyleSheet("QPlainTextEdit { background: #ffffff; color: #263446; border: 1px solid #e1e7ef; "
-                                   "border-radius: 8px; padding: 10px; font-family: Consolas, monospace; font-size: 12px; }"
-                                   "QPlainTextEdit:focus { border-color: #1479ed; }");
-        dialog->content()->addWidget(activityLog, 1);
-
-        auto *hint = makeLabel("此窗口仅用于查看活动，关闭窗口不会断开会话。需要停止 Agent 控制，请点击“断开会话”。",
-                               "font-size: 12px; color: #69788d;");
-        hint->setWordWrap(true);
-        dialog->content()->addWidget(hint);
-
-        auto *closeButton = dialog->addButton(QStringLiteral("关闭"));
-        activityDisconnectButton = dialog->addButton(QStringLiteral("断开会话"), YiukDialog::ButtonKind::Danger);
-        connect(closeButton, &QPushButton::clicked, activityWindow, &QWidget::close);
-        connect(activitySessionSelector, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] { refreshActivityWindow(); });
-        connect(activityDisconnectButton, &QPushButton::clicked, this, [this] {
-            const QString id = activitySessionSelector->currentData().toString();
-            if (id.isEmpty()) return;
-            if (askConfirm(this, "断开远程协助", "断开后 Agent 将无法继续控制本机，正在运行的任务也会停止。", "断开会话"))
-                closeSession(id);
-        });
+    const QString id = sessionId.isEmpty() ? currentActivitySession() : sessionId;
+    if (!activityPanel) activityPanel = new ActivityPanel(this);
+    if (activityPanel->isOpen()) {
+        syncActivityPanel();
+        activityPanel->activate();
+        return;
     }
-    refreshActivityWindow();
-    if (!sessionId.isEmpty()) {
-        const int index = activitySessionSelector->findData(sessionId);
-        if (index >= 0) activitySessionSelector->setCurrentIndex(index);
+    const QString label = id.isEmpty() ? QStringLiteral("当前没有会话") : activitySessionLabel(id);
+    const QString state = activitySessionState(id);
+    const QString status = id.isEmpty() ? QStringLiteral("当前没有远程协助会话") : sessionStatusText(id);
+    activityPanel->setSessionId(id);
+    if (!activityPanel->open(QStringLiteral("远程协助活动"), label, state, status, activityLogs.value(id))) {
+        showInfoMessage(this, QStringLiteral("信息面板无法启动"),
+                        QStringLiteral("找不到 yiuk-activity-panel.exe。请重新安装客户端，"
+                                       "或确认它与主程序位于同一目录。"));
     }
-    activityWindow->show();
-    activityWindow->raise();
-    activityWindow->activateWindow();
 }

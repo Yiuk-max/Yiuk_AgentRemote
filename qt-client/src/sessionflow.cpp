@@ -122,8 +122,9 @@ void MainWindow::decideSession(const QString &id, bool approved) {
     if (platformSession && platform && platform->isConnected()) {
         if (approved) platform->approveSession(id); else platform->rejectSession(id);
     }
-    appendActivity(id, approved ? "本机用户已批准 Agent 会话" : "本机用户已拒绝 Agent 会话");
-    if (approved && platformSession) showActivityWindow(id);
+    appendActivity(id, approved ? "本机用户已批准 Agent 会话" : "本机用户已拒绝 Agent 会话",
+                   ActivityKind::Session);
+    if (approved && platformSession) syncActivityPanel();
     showStatusMessage(approved ? "会话已批准" : "连接申请已拒绝", 4000);
 }
 
@@ -171,6 +172,9 @@ void MainWindow::refreshActiveSessions() {
         activeLayout->addWidget(card);
     }
     activePanel->setVisible(hasActive);
+    // Session changes are the only thing that may update the activity panel; the
+    // panel itself is opened by the owner, never by this refresh.
+    syncActivityPanel();
 }
 
 
@@ -196,8 +200,7 @@ QJsonObject MainWindow::closeSession(const QString &id) {
     refreshSessionsPage();
     notificationSessions.remove(id);
     if (platformSession && platform && platform->isConnected()) platform->closeSession(id);
-    appendActivity(id, "本机会话已断开，远程控制已停止");
-    if (activitySessionSelector) refreshActivityWindow();
+    appendActivity(id, "本机会话已断开，远程控制已停止", ActivityKind::Session);
     showStatusMessage("会话已关闭", 3000);
     return ok(session);
 }

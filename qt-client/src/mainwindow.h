@@ -1,5 +1,6 @@
 #pragma once
 
+#include "activitypanel.h"
 #include "localbridge.h"
 #include "platformclient.h"
 #include "securestore.h"
@@ -47,7 +48,6 @@
 #include <QSharedPointer>
 #include <QDateTime>
 #include <QDialog>
-#include <QPlainTextEdit>
 #include <QScrollArea>
 #include <QSaveFile>
 #include <QTimer>
@@ -116,12 +116,11 @@ private:
     QSystemTrayIcon *trayIcon = nullptr;
     QStatusBar *statusFooter = nullptr;
     QHash<QString, QString> notificationSessions;
-    QDialog *activityWindow = nullptr;
-    QComboBox *activitySessionSelector = nullptr;
-    QLabel *activityStatusValue = nullptr;
-    QPlainTextEdit *activityLog = nullptr;
-    QPushButton *activityDisconnectButton = nullptr;
-    QHash<QString, QStringList> activityLogs;
+    // The remote-session log is kept for the panel process, which the owner can
+    // close and reopen at any time. The panel is an independent window; nothing
+    // in this class may raise it on its own.
+    ActivityPanel *activityPanel = nullptr;
+    QHash<QString, QVector<ActivityEntry>> activityLogs;
     void setupSystemTray();
     static QString loadOrCreateDeviceCode();
     QWidget *createSidebar();
@@ -203,9 +202,13 @@ private:
     QJsonObject commandResult(const QJsonObject &input) const;
     QJsonObject cancelCommand(const QJsonObject &input);
     QJsonObject closeSession(const QString &id);
-    void appendActivity(const QString &sessionId, const QString &message);
+    void appendActivity(const QString &sessionId, const QString &message,
+                        ActivityKind kind = ActivityKind::Info);
     QString sessionStatusText(const QString &sessionId) const;
-    void refreshActivityWindow();
+    QString currentActivitySession() const;
+    QString activitySessionLabel(const QString &sessionId) const;
+    QString activitySessionState(const QString &sessionId) const;
+    void syncActivityPanel();
     void showActivityWindow(const QString &sessionId = QString());
     void copyToClipboard(const QString &text, const QString &message);
     void showStatusMessage(const QString &message, int timeout = 0);

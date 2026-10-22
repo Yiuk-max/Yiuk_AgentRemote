@@ -2,7 +2,7 @@
 //
 // The platform server intentionally uses a separate configuration section from
 // the legacy Minecraft relay so player passwords, ports and limits can be
-// isolated as required by docs/server-refactor-plan.md.
+// isolated, as required by docs/architecture.md.
 package config
 
 import (

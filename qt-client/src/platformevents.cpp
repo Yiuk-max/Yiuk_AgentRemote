@@ -21,14 +21,14 @@ void MainWindow::adoptDeviceSession(const QJsonObject &session, bool approved) {
     if (fresh) {
         appendActivity(id, approved
             ? QString("Agent 已直接连接（无需批准）：%1").arg(record.value("purpose").toString())
-            : QString("收到 Agent 协助请求：%1").arg(record.value("purpose").toString()));
+            : QString("收到 Agent 协助请求：%1").arg(record.value("purpose").toString()),
+            ActivityKind::Session);
         notificationSessions.insert(id, record.value("purpose").toString());
     }
     persistSessionState();
     refreshPendingRequests();
     refreshActiveSessions();
     refreshSessionsPage();
-    if (activitySessionSelector) refreshActivityWindow();
     showStatusMessage(approved ? "已建立直接连接会话" : "有待批准的协助请求", 4000);
     if (fresh && trayIcon && QSystemTrayIcon::supportsMessages()) {
         trayIcon->showMessage(approved ? "远程协助已连接" : "需要批准远程协助",
@@ -73,7 +73,8 @@ void MainWindow::onPlatformSessionUpdated(const QJsonObject &session) {
             record.insert("source_device", record.value("operator_device").toString());
     }
     sessions.insert(id, record);
-    appendActivity(id, QString("平台会话状态：%1").arg(session.value("status").toString()));
+    appendActivity(id, QString("平台会话状态：%1").arg(session.value("status").toString()),
+                   ActivityKind::Session);
     persistSessionState();
     const QString status = session.value("status").toString();
     if (status != "active" && status != "approved" && status != "pending_approval")
@@ -81,7 +82,6 @@ void MainWindow::onPlatformSessionUpdated(const QJsonObject &session) {
     refreshPendingRequests();
     refreshActiveSessions();
     refreshSessionsPage();
-    if (activitySessionSelector) refreshActivityWindow();
 }
 
 
@@ -105,7 +105,7 @@ void MainWindow::onPlatformSessionCreated(const QJsonObject &session) {
 
 
 void MainWindow::onPlatformCloseRequested(const QString &sessionId) {
-    appendActivity(sessionId, "平台已请求结束会话");
+    appendActivity(sessionId, "平台已请求结束会话", ActivityKind::Session);
     stopTasksForSession(sessionId, "cancelled");
     QJsonObject session = sessions.value(sessionId);
     session.insert("status", "closed");
@@ -114,7 +114,6 @@ void MainWindow::onPlatformCloseRequested(const QString &sessionId) {
     refreshPendingRequests();
     refreshActiveSessions();
     refreshSessionsPage();
-    if (activitySessionSelector) refreshActivityWindow();
 }
 
 
@@ -181,7 +180,8 @@ void MainWindow::pumpFileDownload(const QSharedPointer<FileDownloadState> &state
         return;
     }
     if (!sessionAllowsFileRead(state->sessionId)) {
-        appendActivity(state->sessionId, QString("文件下载 %1 已停止：会话不再授权读取").arg(state->requestId.left(8)));
+        appendActivity(state->sessionId, QString("文件下载 %1 已停止：会话不再授权读取").arg(state->requestId.left(8)),
+                       ActivityKind::Error);
         finishFileDownload(state, QStringLiteral("cancelled"), true);
         return;
     }
@@ -192,13 +192,15 @@ void MainWindow::pumpFileDownload(const QSharedPointer<FileDownloadState> &state
     constexpr qint64 chunkSize = 64 * 1024;
     const QByteArray chunk = state->file->read(chunkSize);
     if (chunk.isEmpty() && state->file->error() != QFile::NoError) {
-        appendActivity(state->sessionId, QString("文件下载 %1 读取失败：%2").arg(state->requestId.left(8), state->file->errorString()));
+        appendActivity(state->sessionId, QString("文件下载 %1 读取失败：%2").arg(state->requestId.left(8), state->file->errorString()),
+                       ActivityKind::Error);
         finishFileDownload(state, QStringLiteral("failed"), true);
         return;
     }
     constexpr qint64 maxDownloadBytes = 32LL * 1024 * 1024;
     if (state->sent + chunk.size() > maxDownloadBytes) {
-        appendActivity(state->sessionId, QString("文件下载 %1 已停止：文件超过 32 MiB 上限").arg(state->requestId.left(8)));
+        appendActivity(state->sessionId, QString("文件下载 %1 已停止：文件超过 32 MiB 上限").arg(state->requestId.left(8)),
+                       ActivityKind::Error);
         finishFileDownload(state, QStringLiteral("failed"), true);
         return;
     }
@@ -210,11 +212,13 @@ void MainWindow::pumpFileDownload(const QSharedPointer<FileDownloadState> &state
     }
     if (eof) {
         if (state->expected >= 0 && state->sent != state->expected) {
-            appendActivity(state->sessionId, QString("文件下载 %1 失败：读取大小与预期不一致").arg(state->requestId.left(8)));
+            appendActivity(state->sessionId, QString("文件下载 %1 失败：读取大小与预期不一致").arg(state->requestId.left(8)),
+                           ActivityKind::Error);
             finishFileDownload(state, QStringLiteral("failed"), true);
             return;
         }
-        appendActivity(state->sessionId, QString("文件下载 %1 完成：%2 字节").arg(state->requestId.left(8)).arg(state->sent));
+        appendActivity(state->sessionId, QString("文件下载 %1 完成：%2 字节").arg(state->requestId.left(8)).arg(state->sent),
+                       ActivityKind::Success);
         finishFileDownload(state, QStringLiteral("succeeded"), true);
         return;
     }
@@ -225,7 +229,8 @@ void MainWindow::pumpFileDownload(const QSharedPointer<FileDownloadState> &state
 void MainWindow::onPlatformFileDownloadRequested(const QString &sessionId, const QString &requestId,
                                      const QString &remotePath) {
     auto fail = [this, sessionId, requestId](const QString &message) {
-        appendActivity(sessionId, QString("文件下载 %1 被拒绝：%2").arg(requestId.left(8), message));
+        appendActivity(sessionId, QString("文件下载 %1 被拒绝：%2").arg(requestId.left(8), message),
+                       ActivityKind::Error);
         if (platform && platform->isConnected())
             platform->sendFileDownloadResult(sessionId, requestId, QStringLiteral("failed"), QString(), 0, QString(), true);
     };
@@ -264,8 +269,8 @@ void MainWindow::onPlatformFileDownloadRequested(const QString &sessionId, const
     state->hash = new QCryptographicHash(QCryptographicHash::Sha256);
     state->expected = info.size();
     activeFileDownloads.insert(requestId, true);
-    appendActivity(sessionId, QString("Agent 请求下载文件 %1（%2 字节）").arg(state->fileName).arg(info.size()));
-    showActivityWindow(sessionId);
+    appendActivity(sessionId, QString("Agent 请求下载文件 %1（%2 字节）").arg(state->fileName).arg(info.size()),
+                   ActivityKind::Download);
     refreshActiveSessions();
     QTimer::singleShot(0, this, [this, state] { pumpFileDownload(state); });
 }
@@ -273,8 +278,8 @@ void MainWindow::onPlatformFileDownloadRequested(const QString &sessionId, const
 
 void MainWindow::onPlatformCommandRequested(const QString &sessionId, const QString &requestId, const QString &command,
                                 const QString &workingDirectory, int timeoutSeconds) {
-    appendActivity(sessionId, QString("Agent 开始执行任务 %1\nPowerShell> %2").arg(requestId.left(8), command));
-    showActivityWindow(sessionId);
+    appendActivity(sessionId, QString("Agent 开始执行任务 %1\nPowerShell> %2").arg(requestId.left(8), command),
+                   ActivityKind::Execute);
     executePlatformCommand(sessionId, requestId, command, workingDirectory, timeoutSeconds);
 }
 
@@ -304,7 +309,8 @@ void MainWindow::executePlatformCommand(const QString &sessionId, const QString 
         task.insert(key, task.value(key).toString() + output);
         task.insert("truncated", truncated);
         tasks.insert(requestId, task);
-        appendActivity(sessionId, QString("%1> %2").arg(standardError ? "stderr" : "stdout", output.left(4000)));
+        appendActivity(sessionId, output.left(4000),
+                       standardError ? ActivityKind::Error : ActivityKind::Output);
         if (platform && platform->isConnected() && !accepted.isEmpty()) {
             const quint64 sequence = platformOutputSequence.value(requestId, 1);
             platformOutputSequence.insert(requestId, sequence + 1);
@@ -319,7 +325,8 @@ void MainWindow::executePlatformCommand(const QString &sessionId, const QString 
         if (status == QLatin1String("timed_out")) {
             task.insert("status", "timed_out");
             tasks.insert(requestId, task);
-            appendActivity(sessionId, QString("任务 %1 已超时，正在停止 PowerShell").arg(requestId.left(8)));
+            appendActivity(sessionId, QString("任务 %1 已超时，正在停止 PowerShell").arg(requestId.left(8)),
+                           ActivityKind::Error);
             persistSessionState();
             if (platform && platform->isConnected())
                 platform->sendCommandResult(sessionId, requestId, "timed_out", QJsonValue(), false, task.value("truncated").toBool());

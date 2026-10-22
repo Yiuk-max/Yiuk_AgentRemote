@@ -13,6 +13,7 @@
 - **命令任务**：单次 PowerShell 执行，返回 stdout、stderr、退出码、状态与截断标记；支持工作目录、超时、取消、输出上限。
 - **远端文件读取**：独立 `read_file` 权限，64 KiB 分块，单文件上限 32 MiB，SHA-256 校验后落盘。
 - **Agent 工具**：`list_devices`、`get_device_status`、`request_connection`、`run_command`、`get_session_status`、`execute_command`、`get_command_result`、`download_file`、`cancel_command`、`close_session`，附 MCP stdio 适配器。
+- **只读活动面板**：远程协助过程由独立进程 `yiuk-activity-panel` 展示——半透明悬浮终端，按操作类型着色（读取 / 执行命令 / 下载 / 输出 / 错误）。随时可关、随时可开，新操作不会把它弹到前台。
 - **TLS 中转**：远程协助与 Minecraft 联机使用独立业务类型、端口、密码与资源限制。
 - **错误与幂等**：稳定错误码、不可复用请求 ID、断线不自动重放。
 
@@ -52,6 +53,7 @@
 | Agent 平台 backend | 已完成 |
 | Windows Qt 客户端平台对接 | 已完成 |
 | Qt↔Go 互操作测试 | 已通过 |
+| 只读活动面板（独立子进程 / 逐像素透明） | 已完成 |
 | 真实 Windows 安装包与 TLS 端到端验收 | 进行中 |
 | Windows 进程树清理、安装升级、发布前安全检查 | 进行中 |
 | Minecraft 联机回归与冻结清单验证 | 待执行 |
@@ -63,8 +65,8 @@
 ## 文档
 
 - [产品需求](docs/product-requirements.md)：范围、功能与验收标准。
-- [技术选型](docs/technical-selection.md)：技术基线与待决项。
-- [实现方案](docs/implementation.md)：模块边界、协议与状态机。
-- [开发与构建](docs/development.md)：环境、构建、测试与部署。
-- [后端实施状态](docs/backend-status.md)：已完成范围、测试与剩余工作。
-- [服务器改造计划](docs/server-refactor-plan.md)：内存化服务器与密码授权模型。
+- [架构与实现](docs/architecture.md)：选型、模块边界、授权模型、协议、状态机、MCP 契约。
+- [开发与构建](docs/development.md)：环境、构建、测试、打包发布、服务器部署。
+- [本机开发环境](docs/local-dev.md)：**仅限本机**的工具链路径、快捷命令与已知坑。
+
+发布说明：`docs/release-notes-0.1.3.txt`；`release/` 下为构建好的 Windows x64 压缩包与 SHA-256（不进仓库）。

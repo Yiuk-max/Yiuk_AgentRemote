@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(YiukDeviceAssist VERSION 0.1.2 LANGUAGES CXX)
+project(YiukDeviceAssist VERSION 0.1.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,10 +27,12 @@ qt_add_executable(yiuk-device-assist WIN32
     src/platformlink.cpp
     src/platformevents.cpp
     src/sessionflow.cpp
+    src/activity.cpp
+    src/activitypanel.cpp
+    src/activitypanel.h
     src/localtools.cpp
     src/powershellrunner.cpp
     src/powershellrunner.h
-    src/activity.cpp
     src/localbridge.cpp
     src/localbridge.h
     src/platformclient.cpp
@@ -43,6 +45,28 @@ qt_add_executable(yiuk-device-assist WIN32
 if(WIN32)
     target_link_libraries(yiuk-device-assist PRIVATE crypt32)
 endif()
+
+# The receive-only activity log runs in its own Qt-free process: a native
+# per-pixel translucent Win32 window the owner can close and reopen at will
+# without touching the session. The client streams protocol lines to its stdin.
+add_executable(yiuk-activity-panel WIN32
+    src/panel/main.cpp
+    src/panel/panelpipe.cpp
+    src/panel/panelpipe.h
+    src/panel/paneltext.cpp
+    src/panel/paneltext.h
+    src/panel/paneltypes.h
+    src/panel/panelwindow.cpp
+    src/panel/panelwindow.h
+)
+target_compile_definitions(yiuk-activity-panel PRIVATE
+    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+target_link_libraries(yiuk-activity-panel PRIVATE gdiplus shell32 user32 gdi32)
+if(MINGW)
+    # Keep the panel free of the MinGW runtime DLLs: it only needs system DLLs.
+    target_link_options(yiuk-activity-panel PRIVATE -static-libgcc -static-libstdc++)
+endif()
+add_dependencies(yiuk-device-assist yiuk-activity-panel)
 
 target_link_libraries(yiuk-device-assist PRIVATE Qt6::Widgets Qt6::Network)
 
