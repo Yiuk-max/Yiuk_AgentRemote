@@ -1,5 +1,7 @@
 #include "mainwindow.h"
 
+#include "yiukdialog.h"
+
 
 QWidget *MainWindow::createSettingsPage() {
     QVBoxLayout *layout = nullptr;
@@ -98,10 +100,8 @@ QWidget *MainWindow::createSettingsPage() {
     auto *platformActionRow = new QHBoxLayout;
     platformActionRow->setContentsMargins(110, 1, 0, 0);
     platformActionRow->setSpacing(12);
-    platformConnectButton = makeButton("连接平台");
-    platformConnectButton->setObjectName("primary");
-    platformConnectButton->setFixedHeight(40);
-    platformConnectButton->setStyleSheet("QPushButton#primary { padding: 4px 16px; }");
+    platformConnectButton = makePrimaryButton(QStringLiteral("连接平台"), 40);
+    platformConnectButton->setMinimumWidth(120);
     platformActionRow->addWidget(platformConnectButton);
     platformStatusValue = makeLabel("状态：平台未连接", "font-size: 12px; color: #69788d;");
     platformActionRow->addWidget(platformStatusValue);
@@ -116,8 +116,7 @@ QWidget *MainWindow::createSettingsPage() {
     auto *agentTitle = makeLabel("Agent 集成", "font-size: 16px; font-weight: 650; color: #263446;");
     agentLayout->addWidget(agentTitle);
     agentLayout->addStretch();
-    auto *copyMcpConfig = makeButton("复制 Agent 配置");
-    copyMcpConfig->setObjectName("primary");
+    auto *copyMcpConfig = makePrimaryButton(QStringLiteral("复制 Agent 配置"));
     agentLayout->addWidget(copyMcpConfig);
     settingsContentLayout->addWidget(agentSection);
     connect(copyMcpConfig, &QPushButton::clicked, this, [this] { copyMcpAgentConfig(); });
@@ -129,9 +128,7 @@ QWidget *MainWindow::createSettingsPage() {
     auto *dataTitle = makeLabel("本地数据", "font-size: 16px; font-weight: 650; color: #263446;");
     dataLayout->addWidget(dataTitle);
     dataLayout->addStretch();
-    auto *clearHistory = makeButton("清除本地会话和任务记录");
-    clearHistory->setObjectName("subtle");
-    clearHistory->setStyleSheet("QPushButton { color: #a52b2b; border: 1px solid #e8bcbc; border-radius: 6px; padding: 8px 12px; background: white; } QPushButton:hover { background: #fff0f0; }");
+    auto *clearHistory = makeDangerButton(QStringLiteral("清除本地会话和任务记录"));
     dataLayout->addWidget(clearHistory);
     settingsContentLayout->addWidget(dataSection);
     settingsContentLayout->addStretch();
@@ -169,14 +166,10 @@ QWidget *MainWindow::createSettingsPage() {
         }
     });
     connect(clearHistory, &QPushButton::clicked, this, [this] {
-        QMessageBox confirm(this);
-        confirm.setWindowTitle("清除本地记录");
-        confirm.setIcon(QMessageBox::Warning);
-        confirm.setText("清除所有本机会话和任务记录？");
-        confirm.setInformativeText("正在运行的任务不会因此停止。清除后无法恢复。");
-        confirm.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
-        confirm.setDefaultButton(QMessageBox::Cancel);
-        if (confirm.exec() != QMessageBox::Yes) return;
+        if (!askConfirm(this, "清除本地记录",
+                        "清除所有本机会话和任务记录？\n\n正在运行的任务不会因此停止。清除后无法恢复。",
+                        "清除记录"))
+            return;
         sessions.clear();
         tasks.clear();
         persistSessionState();

@@ -14,10 +14,18 @@ MainWindow::MainWindow() {
     resize(960, 600);
     setMinimumSize(960, 600);
     setStyleSheet(R"(
-            QMainWindow, QWidget#root, QDialog, QMessageBox { background: #ffffff; color: #182230; }
-            QDialog QLabel, QMessageBox QLabel { color: #182230; background: transparent; }
-            QDialog QPushButton, QMessageBox QPushButton { background: #ffffff; color: #263446; border: 1px solid #cfd7e2; border-radius: 6px; padding: 7px 14px; min-width: 72px; }
-            QDialog QPushButton:hover, QMessageBox QPushButton:hover { background: #f2f6fb; }
+            /* One sheet for the main window and every popup. Popups are frameless
+               and reuse this window's self-drawn title bar, so nothing falls back
+               to the native Windows chrome. The dialog window itself is
+               transparent: #dialogCard paints the white surface and its hairline
+               border, which leaves room for the drop shadow around it. */
+            QMainWindow, QWidget#root { background: #ffffff; color: #182230; }
+            QDialog { background: transparent; color: #182230; }
+            QWidget#dialogCard { background: #ffffff; border: 1px solid #d5dde8; }
+            QDialog QLabel { color: #182230; background: transparent; }
+            QDialog QPushButton { background: #ffffff; color: #263446; border: 1px solid #cfd7e2; border-radius: 6px; padding: 7px 14px; min-width: 72px; }
+            QDialog QPushButton:hover { background: #f2f6fb; }
+            QDialog QLineEdit#settingsField, QDialog QComboBox#settingsField { min-height: 20px; }
             QLabel { background: transparent; }
             QFrame#sidebar { background: #f1f4f8; border: none; }
             QLabel#muted { color: #687588; }
@@ -70,6 +78,14 @@ MainWindow::MainWindow() {
             QRadioButton::indicator { width: 15px; height: 15px; }
             QRadioButton::indicator:unchecked { border: 1px solid #b7c1ce; border-radius: 8px; background: white; }
             QRadioButton::indicator:checked { border: 4px solid #1977eb; border-radius: 8px; background: white; }
+            /* Popup surfaces (tray menu, row context menu, combo lists) follow the
+               same white sheet and blue highlight as the pages. Tooltips are top
+               level popups, so their rule lives on QApplication in main.cpp. */
+            QMenu { background: #ffffff; border: 1px solid #e1e7ef; border-radius: 8px; padding: 4px; }
+            QMenu::item { padding: 7px 20px; border-radius: 6px; color: #263446; font-size: 13px; }
+            QMenu::item:selected { background: #e8f1fd; color: #126fe0; }
+            QMenu::separator { height: 1px; background: #eef1f5; margin: 4px 8px; }
+            QComboBox QAbstractItemView { background: #ffffff; border: 1px solid #e1e7ef; border-radius: 8px; padding: 4px; outline: 0; selection-background-color: #e8f1fd; selection-color: #126fe0; }
         )");
 
     auto *root = new QWidget;
@@ -300,38 +316,41 @@ QWidget *MainWindow::deviceRow(const QString &code, const QString &name, bool lo
     auto *details = new QVBoxLayout;
     details->setSpacing(3);
     auto *nameLabel = makeLabel(name, "font-size: 14px; font-weight: 650; color: #263446;");
-    auto *codeLabel = makeLabel(code + (local ? "  ·  Windows · 当前用户" : "  ·  等待平台连接"), "font-size: 12px; color: #687588;");
+    auto *codeLabel = makeLabel(code + (local ? "  ·  Windows · 当前用户" : "  ·  未建立会话"), "font-size: 12px; color: #687588;");
     details->addWidget(nameLabel);
     details->addWidget(codeLabel);
     layout->addLayout(details, 1);
     auto *action = makeButton(local ? "复制" : "发起协助");
     action->setToolTip(local ? "复制设备码" : "发起协助");
-    action->setEnabled(local || platformState->text() == "平台：已连接");
     layout->addWidget(action);
     if (local) {
         connect(action, &QPushButton::clicked, this, [this] { copyToClipboard(deviceCode, "设备码已复制"); });
     } else {
-        connect(action, &QPushButton::clicked, this, [this, code] {
+        // Always clickable. The row used to be enabled from the sidebar status
+        // label, which is stale for rows built before the platform connected, so
+        // "发起协助" stayed greyed out. The lookup already tells the user when
+        // the platform is offline.
+        auto startAssist = [this, code] {
+            QString digits;
+            for (const QChar ch : code) if (ch.isDigit()) digits += ch;
             remoteCode->setText(code);
             showPage(0);
             remoteCode->setFocus();
-        });
-        auto showContextMenu = [this, row, code] {
+            lookupDeviceBeforeConnecting(digits);
+        };
+        connect(action, &QPushButton::clicked, this, startAssist);
+        auto showContextMenu = [this, row, code, startAssist] {
             QMenu menu(row);
             auto *connectAction = menu.addAction("发起连接");
             auto *deleteAction = menu.addAction("删除设备");
             QAction *chosen = menu.exec(QCursor::pos());
             if (chosen == connectAction) {
-                QString digits;
-                for (const QChar ch : code) if (ch.isDigit()) digits += ch;
-                remoteCode->setText(code);
-                showPage(0);
-                remoteCode->setFocus();
-                lookupDeviceBeforeConnecting(digits);
+                startAssist();
             } else if (chosen == deleteAction) {
                 savedDevices.removeAll(code);
                 QSettings().setValue("savedDevices", savedDevices);
                 refreshDevicesPage();
+                refreshFavoriteState();
                 showStatusMessage("设备已从列表删除", 1800);
             }
         };
@@ -356,6 +375,9 @@ void MainWindow::showPage(int index) {
     navDevices->setChecked(index == 1);
     navHistory->setChecked(index == 2);
     navSettings->setChecked(index == 3);
+    // The saved list can change on other pages (add, delete), so re-evaluate the
+    // favourite star whenever the home page comes back into view.
+    if (index == 0) refreshFavoriteState();
     if (index == 3 && settingsPage) {
         // Text fields loaded while the page is hidden can auto-scroll the
         // settings view; always present the page from its heading.
@@ -379,6 +401,7 @@ void MainWindow::refreshDevicesPage() {
     for (const QString &code : savedDevices)
         deviceListLayout->addWidget(deviceRow(code, "已添加设备", false));
     deviceListLayout->addStretch(1);
+    refreshFavoriteState();
 }
 
 

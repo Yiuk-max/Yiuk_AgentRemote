@@ -13,13 +13,11 @@
 #include <QFrame>
 #include <QHash>
 #include <QHBoxLayout>
-#include <QInputDialog>
 #include <QLabel>
 #include <QIcon>
 #include <QLineEdit>
 #include <QMainWindow>
 #include <QMouseEvent>
-#include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
 #include <QtMath>
@@ -73,6 +71,7 @@ private:
     QPushButton *togglePassword = nullptr;
     bool passwordVisible = false;
     QLineEdit *remoteCode = nullptr;
+    QPushButton *favoriteButton = nullptr;
     QStackedWidget *pages = nullptr;
     QPushButton *navHome = nullptr;
     QPushButton *navDevices = nullptr;
@@ -139,6 +138,9 @@ private:
     QWidget *createSettingsPage();
     void showPage(int index);
     void refreshDevicesPage();
+    // Star on the home page: outlined when the typed device code is not saved
+    // yet, filled amber once it is.
+    void refreshFavoriteState();
     void refreshSessionsPage();
     QString sessionConnectorCode(const QJsonObject &session) const;
     QString sessionTargetCode(const QJsonObject &session) const;

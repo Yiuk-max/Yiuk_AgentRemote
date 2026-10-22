@@ -1,5 +1,7 @@
 #include "mainwindow.h"
 
+#include "yiukdialog.h"
+
 
 void MainWindow::startLocalBridge() {
     bridge = new LocalBridge([this](const QString &tool, const QJsonObject &input) {
@@ -197,18 +199,31 @@ void MainWindow::startPlatform() {
     });
     connect(platform, &PlatformClient::certificateUntrusted, this,
             [this](const QString &fingerprint, const QString &subject, const QString &details, bool changed) {
-        QMessageBox box(this);
-        box.setWindowTitle(changed ? "服务器证书已变更" : "服务器证书不受信任");
-        box.setIcon(QMessageBox::Warning);
-        box.setText(changed ? "服务器证书与之前记录的不一致，可能存在中间人攻击。"
-                            : "服务器使用了自签名证书，系统无法验证其身份。");
-        box.setInformativeText(QString("证书名称：%1\nSHA-256 指纹：%2\n\n%3\n\n仅当你能确认这是自己的服务器时，才选择“信任此证书”。")
-            .arg(subject, fingerprint, details));
-        auto *trust = box.addButton("信任此证书", QMessageBox::AcceptRole);
-        auto *cancel = box.addButton("取消", QMessageBox::RejectRole);
-        box.setDefaultButton(changed ? cancel : trust);
-        box.exec();
-        if (box.clickedButton() != trust) {
+        // Frameless security prompt on the shared white sheet; the amber banner
+        // reuses the warning style the settings page already uses.
+        YiukDialog dialog(this, changed ? QStringLiteral("服务器证书已变更") : QStringLiteral("服务器证书不受信任"));
+        dialog.setFixedWidth(560);
+        auto *banner = makeLabel(changed ? QStringLiteral("服务器证书与之前记录的不一致，可能存在中间人攻击。")
+                                         : QStringLiteral("服务器使用了自签名证书，系统无法验证其身份。"),
+                                 "font-size: 12px; color: #8a5b14; background: #fff6e5; "
+                                 "border: 1px solid #f3dfb0; border-radius: 6px; padding: 7px 9px;");
+        banner->setWordWrap(true);
+        dialog.content()->addWidget(banner);
+        auto *detailsLabel = makeLabel(QString("证书名称：%1\nSHA-256 指纹：%2\n\n%3\n\n仅当你能确认这是自己的服务器时，才选择“信任此证书”。")
+            .arg(subject, fingerprint, details),
+            "font-size: 12px; color: #49566a;");
+        detailsLabel->setTextFormat(Qt::PlainText);
+        detailsLabel->setWordWrap(true);
+        detailsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        dialog.content()->addWidget(detailsLabel);
+        dialog.content()->addStretch();
+        auto *cancel = dialog.addButton(QStringLiteral("取消"));
+        auto *trust = dialog.addButton(QStringLiteral("信任此证书"), YiukDialog::ButtonKind::Primary);
+        (changed ? cancel : trust)->setDefault(true);
+        QObject::connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+        QObject::connect(trust, &QPushButton::clicked, &dialog, &QDialog::accept);
+        dialog.adjustSize();
+        if (dialog.exec() != QDialog::Accepted) {
             showStatusMessage("已取消连接：服务器证书未被信任", 5000);
             return;
         }
@@ -244,12 +259,12 @@ void MainWindow::onDeviceListReceived(const QJsonArray &devices, const QString &
         }
     }
     if (found.isEmpty()) {
-        QMessageBox::warning(this, "设备不存在",
+        showWarningMessage(this, "设备不存在",
             "后端没有找到设备码 " + spacedCode(deviceId) + "，请确认对方设备已在平台注册。");
         return;
     }
     if (!found.value("online").toBool()) {
-        QMessageBox::warning(this, "设备不在线",
+        showWarningMessage(this, "设备不在线",
             "后端找到了设备码 " + spacedCode(deviceId) + "，但该设备当前不在线。");
         return;
     }
@@ -261,7 +276,7 @@ void MainWindow::onPlatformRequestFailed(const QString &requestId, const QString
     if (pendingDeviceLookupId.isEmpty() || requestId != pendingDeviceLookupId) return;
     pendingDeviceLookupId.clear();
     pendingDeviceLookupCode.clear();
-    QMessageBox::warning(this, "设备查询失败",
+    showWarningMessage(this, "设备查询失败",
         QString("后端返回错误：%1\n%2").arg(code, message));
 }
 

@@ -17,6 +17,8 @@ qt_add_executable(yiuk-device-assist WIN32
     src/glyph.h
     src/titlebar.cpp
     src/titlebar.h
+    src/yiukdialog.cpp
+    src/yiukdialog.h
     src/mainwindow.cpp
     src/mainwindow.h
     src/pages_home.cpp

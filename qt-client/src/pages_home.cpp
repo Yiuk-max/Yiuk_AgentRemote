@@ -1,5 +1,7 @@
 #include "mainwindow.h"
 
+#include "yiukdialog.h"
+
 
 QWidget *MainWindow::createHomePage() {
     auto *content = new QWidget;
@@ -95,15 +97,13 @@ QWidget *MainWindow::createHomePage() {
     remoteCode->setPlaceholderText("例如 123 456 789");
     remoteCode->setMaxLength(11);
     fieldLayout->addWidget(remoteCode, 1);
-    auto *favoriteButton = iconButton(Glyph::Star, "添加设备");
-    favoriteButton->setFixedSize(38, 38);
-    favoriteButton->setIconSize(QSize(22, 22));
+    favoriteButton = iconButton(Glyph::Star, "添加设备");
+    favoriteButton->setFixedSize(40, 40);
+    favoriteButton->setIconSize(QSize(28, 28));
     fieldLayout->addWidget(favoriteButton);
     connectRow->addWidget(field, 1);
-    auto *connectButton = makeButton("申请连接");
-    connectButton->setObjectName("primary");
+    auto *connectButton = makePrimaryButton(QStringLiteral("申请连接"), 48);
     connectButton->setMinimumWidth(145);
-    connectButton->setMinimumHeight(48);
     connectRow->addWidget(connectButton);
     layout->addLayout(connectRow);
     connect(remoteCode, &QLineEdit::textChanged, this, [this](const QString &text) {
@@ -131,11 +131,12 @@ QWidget *MainWindow::createHomePage() {
             remoteCode->blockSignals(false);
         }
     });
+    connect(remoteCode, &QLineEdit::textChanged, this, [this](const QString &) { refreshFavoriteState(); });
     connect(favoriteButton, &QPushButton::clicked, this, [this] {
         QString digits;
         for (const QChar ch : remoteCode->text()) if (ch.isDigit()) digits += ch;
         if (digits.size() != 9) {
-            QMessageBox::warning(this, "设备码无效", "请输入完整的 9 位设备码后添加。");
+            showWarningMessage(this, "设备码无效", "请输入完整的 9 位设备码后添加。");
             return;
         }
         const QString formatted = spacedCode(digits);
@@ -143,6 +144,7 @@ QWidget *MainWindow::createHomePage() {
             savedDevices.append(formatted);
             QSettings().setValue("savedDevices", savedDevices);
             refreshDevicesPage();
+            refreshFavoriteState();
             showStatusMessage("设备已添加", 1800);
         } else {
             showStatusMessage("设备已在列表中", 1800);
@@ -152,7 +154,7 @@ QWidget *MainWindow::createHomePage() {
         QString digits;
         for (const QChar ch : remoteCode->text()) if (ch.isDigit()) digits += ch;
         if (digits.size() != 9) {
-            QMessageBox::warning(this, "设备码无效", "请输入完整的 9 位设备码。");
+            showWarningMessage(this, "设备码无效", "请输入完整的 9 位设备码。");
             return;
         }
         lookupDeviceBeforeConnecting(digits);
@@ -180,9 +182,21 @@ QWidget *MainWindow::createHomePage() {
 }
 
 
+void MainWindow::refreshFavoriteState() {
+    if (!favoriteButton) return;
+    QString digits;
+    if (remoteCode) {
+        for (const QChar ch : remoteCode->text()) if (ch.isDigit()) digits += ch;
+    }
+    const bool saved = digits.size() == 9 && savedDevices.contains(spacedCode(digits));
+    favoriteButton->setIcon(starIcon(saved));
+    favoriteButton->setToolTip(saved ? "已在收藏列表" : "添加设备");
+}
+
+
 void MainWindow::lookupDeviceBeforeConnecting(const QString &deviceId) {
     if (!platform || !platform->isConnected()) {
-        QMessageBox::information(this, "远程平台未连接", "设备码：" + spacedCode(deviceId) + "\n\n请先在设置中连接平台服务器。");
+        showInfoMessage(this, "远程平台未连接", "设备码：" + spacedCode(deviceId) + "\n\n请先在设置中连接平台服务器。");
         return;
     }
     if (!pendingDeviceLookupId.isEmpty()) return;
@@ -195,25 +209,26 @@ void MainWindow::lookupDeviceBeforeConnecting(const QString &deviceId) {
         if (pendingDeviceLookupId != requestId) return;
         pendingDeviceLookupId.clear();
         pendingDeviceLookupCode.clear();
-        QMessageBox::warning(this, "设备查询超时", "后端没有响应，请稍后重试。");
+        showWarningMessage(this, "设备查询超时", "后端没有响应，请稍后重试。");
     });
 }
 
 
 void MainWindow::promptAndRequestConnection(const QString &deviceId) {
     if (!platform || !platform->isConnected()) return;
-    bool passwordOk = false;
-    const QString temporary = QInputDialog::getText(this, "输入临时密码",
-        "请输入对方设备所有者在安全渠道提供的 32 位临时密码：", QLineEdit::Password, QString(), &passwordOk).trimmed();
-    if (!passwordOk) return;
+    QString temporary;
+    if (!askText(this, "输入临时密码",
+                 "请输入对方设备所有者在安全渠道提供的 32 位临时密码：",
+                 QLineEdit::Password, QString(), &temporary))
+        return;
     if (temporary.size() < 32) {
-        QMessageBox::warning(this, "临时密码无效", "临时密码至少需要 32 个字符。");
+        showWarningMessage(this, "临时密码无效", "临时密码至少需要 32 个字符。");
         return;
     }
-    bool purposeOk = false;
-    const QString purpose = QInputDialog::getText(this, "协助用途",
-        "简要说明本次协助用途：", QLineEdit::Normal, QStringLiteral("远程协助"), &purposeOk).trimmed();
-    if (!purposeOk || purpose.isEmpty()) return;
+    QString purpose;
+    if (!askText(this, "协助用途", "简要说明本次协助用途：", QLineEdit::Normal,
+                 QStringLiteral("远程协助"), &purpose) || purpose.isEmpty())
+        return;
     platform->requestSession(deviceId, purpose, QStringList{QStringLiteral("execute_command")}, temporary);
     showStatusMessage("已发送协助请求，等待对方批准", 4000);
 }

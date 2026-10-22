@@ -4,6 +4,36 @@
 #include <QPainterPath>
 #include <QtMath>
 
+namespace {
+
+QPainterPath starPath() {
+    QPainterPath path;
+    for (int i = 0; i < 10; ++i) {
+        const qreal angle = -3.14159265358979323846 / 2 + i * 3.14159265358979323846 / 5;
+        const qreal radius = i % 2 == 0 ? 7.2 : 3.2;
+        const QPointF point(9 + qCos(angle) * radius, 9 + qSin(angle) * radius);
+        if (i == 0) path.moveTo(point); else path.lineTo(point);
+    }
+    path.closeSubpath();
+    return path;
+}
+
+// A single-colour icon rendered at the sizes the UI asks for, so a 27px star is
+// drawn instead of a stretched 18px pixmap.
+static QIcon stateIcon(Glyph glyph, const QColor &normal, const QColor &active, const QColor &disabled) {
+    static const int sizes[] = {16, 20, 24, 28, 32, 40, 48};
+    QIcon icon;
+    for (const int size : sizes) {
+        icon.addPixmap(glyphPixmap(glyph, normal, size), QIcon::Normal, QIcon::Off);
+        icon.addPixmap(glyphPixmap(glyph, active, size), QIcon::Active, QIcon::Off);
+        icon.addPixmap(glyphPixmap(glyph, active, size), QIcon::Normal, QIcon::On);
+        icon.addPixmap(glyphPixmap(glyph, disabled, size), QIcon::Disabled, QIcon::Off);
+    }
+    return icon;
+}
+
+}  // namespace
+
 
 
 void paintGlyph(QPainter &painter, Glyph glyph, const QColor &color) {
@@ -38,16 +68,16 @@ void paintGlyph(QPainter &painter, Glyph glyph, const QColor &color) {
         painter.drawArc(QRectF(3, 3, 12, 12), 40 * 16, 245 * 16);
         painter.drawLine(QPointF(13, 3), QPointF(16, 3)); painter.drawLine(QPointF(16, 3), QPointF(16, 6));
         painter.drawLine(QPointF(5, 15), QPointF(2, 15)); painter.drawLine(QPointF(2, 15), QPointF(2, 12)); break;
-    case Glyph::Star: {
-        QPainterPath path;
-        for (int i = 0; i < 10; ++i) {
-            const qreal angle = -3.14159265358979323846 / 2 + i * 3.14159265358979323846 / 5;
-            const qreal radius = i % 2 == 0 ? 7.2 : 3.2;
-            const QPointF point(9 + qCos(angle) * radius, 9 + qSin(angle) * radius);
-            if (i == 0) path.moveTo(point); else path.lineTo(point);
+    case Glyph::Star:
+    case Glyph::StarFilled: {
+        const QPainterPath path = starPath();
+        if (glyph == Glyph::StarFilled) {
+            // Solid star for the "already saved" state.
+            painter.setPen(QPen(color, 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.setBrush(color);
         }
-        path.closeSubpath();
         painter.drawPath(path);
+        painter.setBrush(Qt::NoBrush);
         break;
     }
     case Glyph::Eye:
@@ -67,13 +97,15 @@ void paintGlyph(QPainter &painter, Glyph glyph, const QColor &color) {
     }
 }
 
-QPixmap glyphPixmap(Glyph glyph, const QColor &color) {
-    QPixmap pixmap(18, 18);
+QPixmap glyphPixmap(Glyph glyph, const QColor &color, int size) {
+    QPixmap pixmap(size, size);
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.translate(2.0, 2.0);
-    painter.scale(0.78, 0.78);
+    // Same 18x18 grid and 2px inset as before, scaled to the requested size.
+    const qreal factor = size / 18.0;
+    painter.translate(2.0 * factor, 2.0 * factor);
+    painter.scale(0.78 * factor, 0.78 * factor);
     paintGlyph(painter, glyph, color);
     return pixmap;
 }
@@ -85,5 +117,12 @@ QIcon glyphIcon(Glyph glyph) {
     icon.addPixmap(glyphPixmap(glyph, QColor("#1479ed")), QIcon::Normal, QIcon::On);
     icon.addPixmap(glyphPixmap(glyph, QColor("#aab4c1")), QIcon::Disabled, QIcon::Off);
     return icon;
+}
+
+QIcon starIcon(bool filled) {
+    if (!filled) return stateIcon(Glyph::Star, QColor("#66758a"), QColor("#1479ed"), QColor("#aab4c1"));
+    // Amber from the same family the warning banners use, so the filled state
+    // reads as "saved" without introducing a new colour.
+    return stateIcon(Glyph::StarFilled, QColor("#f0ad2a"), QColor("#d99314"), QColor("#e4d4ab"));
 }
 

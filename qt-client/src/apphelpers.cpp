@@ -19,6 +19,25 @@ QPushButton *makeButton(const QString &text, const QString &style) {
     return button;
 }
 
+QPushButton *makePrimaryButton(const QString &text, int height) {
+    auto *button = makeButton(text);
+    button->setObjectName("primary");
+    if (height > 0) {
+        // #primary is tuned for the 48px hero button; only the box changes.
+        button->setStyleSheet("QPushButton#primary { padding: 4px 16px; }");
+        button->setFixedHeight(height);
+    }
+    return button;
+}
+
+QPushButton *makeDangerButton(const QString &text, int height) {
+    auto *button = makeButton(text,
+        "QPushButton { color: #a52b2b; border: 1px solid #e8bcbc; border-radius: 6px; "
+        "padding: 7px 12px; background: #ffffff; } QPushButton:hover { background: #fff0f0; }");
+    if (height > 0) button->setFixedHeight(height);
+    return button;
+}
+
 QString yiukConfigRoot() {
     QString root = qEnvironmentVariable("LOCALAPPDATA");
     if (root.isEmpty()) root = qEnvironmentVariable("APPDATA");

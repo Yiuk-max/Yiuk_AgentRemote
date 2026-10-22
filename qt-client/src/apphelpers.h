@@ -12,6 +12,11 @@
 QLabel *makeLabel(const QString &text, const QString &style = {});
 QPushButton *makeButton(const QString &text, const QString &style = {});
 
+// The two action flavours the pages and dialogs share. `height` only resizes
+// the box; the blue primary and the red destructive looks stay defined once.
+QPushButton *makePrimaryButton(const QString &text, int height = 0);
+QPushButton *makeDangerButton(const QString &text, int height = 0);
+
 // Configuration root: %LOCALAPPDATA%/Yiuk/DeviceAssist, with the legacy
 // %APPDATA% location still honoured for reading.
 QString yiukConfigRoot();
