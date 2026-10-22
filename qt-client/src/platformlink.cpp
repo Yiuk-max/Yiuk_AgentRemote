@@ -226,8 +226,13 @@ void MainWindow::startPlatform() {
         platform->connectToPlatform();
     });
     loadPlatformConfig();
-    if (!platform->config().address.isEmpty())
-        platform->connectToPlatform();
+    if (!platform->config().address.isEmpty()) {
+        if (serviceFooter) serviceFooter->setText("● 启动后自动连接平台…");
+        // 等窗口首帧渲染后再连接，避免启动时 TLS 握手与证书弹框抢在界面出现前。
+        QTimer::singleShot(0, this, [this] {
+            if (platform && platform->state() == "disconnected") platform->connectToPlatform();
+        });
+    }
     updatePlatformState(platform->state());
 }
 

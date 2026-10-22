@@ -156,6 +156,7 @@ private:
     void copyMcpAgentConfig();
     void startPlatform();
     void updatePlatformState(const QString &state);
+    void adoptDeviceSession(const QJsonObject &session, bool approved);
     void onPlatformSessionRequested(const QJsonObject &session);
     void onPlatformSessionUpdated(const QJsonObject &session);
     void onPlatformSessionCreated(const QJsonObject &session);

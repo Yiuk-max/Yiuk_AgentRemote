@@ -3,6 +3,41 @@
 #include "powershellrunner.h"
 
 
+// adoptDeviceSession records a session where this client is the assisted device,
+// including direct mode where the platform skips the approval request.
+void MainWindow::adoptDeviceSession(const QJsonObject &session, bool approved) {
+    const QString id = session.value("session_id").toString();
+    if (id.isEmpty()) return;
+    const bool fresh = !sessions.contains(id);
+    QJsonObject record = session;
+    record.insert("source", "platform");
+    if (!record.contains("expires_at_ms") && record.value("expires_at").isDouble())
+        record.insert("expires_at_ms", record.value("expires_at").toDouble() * 1000.0);
+    if (record.value("requester").toString().isEmpty())
+        record.insert("requester", session.value("operator").toString("平台操作者"));
+    if (record.value("source_device").toString().isEmpty())
+        record.insert("source_device", session.value("operator_device").toString());
+    sessions.insert(id, record);
+    if (fresh) {
+        appendActivity(id, approved
+            ? QString("Agent 已直接连接（无需批准）：%1").arg(record.value("purpose").toString())
+            : QString("收到 Agent 协助请求：%1").arg(record.value("purpose").toString()));
+        notificationSessions.insert(id, record.value("purpose").toString());
+    }
+    persistSessionState();
+    refreshPendingRequests();
+    refreshActiveSessions();
+    refreshSessionsPage();
+    if (activitySessionSelector) refreshActivityWindow();
+    serviceFooter->setText(approved ? "● 已建立直接连接会话" : "● 平台有待批准的协助请求");
+    if (fresh && trayIcon && QSystemTrayIcon::supportsMessages()) {
+        trayIcon->showMessage(approved ? "远程协助已连接" : "需要批准远程协助",
+                              record.value("purpose").toString(),
+                              QSystemTrayIcon::Information, 10000);
+    }
+}
+
+
 void MainWindow::onPlatformSessionRequested(const QJsonObject &session) {
     if (acceptingRequests && !acceptingRequests->isChecked()) {
         platform->rejectSession(session.value("session_id").toString());
@@ -10,37 +45,37 @@ void MainWindow::onPlatformSessionRequested(const QJsonObject &session) {
     }
     const QString id = session.value("session_id").toString();
     if (id.isEmpty()) return;
-    QJsonObject record = session;
-    record.insert("source", "platform");
-    if (!record.contains("expires_at_ms") && record.value("expires_at").isDouble())
-        record.insert("expires_at_ms", record.value("expires_at").toDouble() * 1000.0);
-    if (!record.contains("requester")) record.insert("requester", session.value("operator").toString("平台操作者"));
-    if (!record.contains("source_device")) record.insert("source_device", session.value("operator_device").toString());
-    sessions.insert(id, record);
-    appendActivity(id, QString("收到 Agent 协助请求：%1").arg(record.value("purpose").toString()));
-    persistSessionState();
-    refreshPendingRequests();
-    refreshSessionsPage();
-    serviceFooter->setText("● 平台有待批准的协助请求");
-    notificationSessions.insert(id, record.value("purpose").toString());
-    if (trayIcon && QSystemTrayIcon::supportsMessages()) {
-        trayIcon->showMessage("需要批准远程协助", record.value("purpose").toString() + "\n点击此通知查看并批准或拒绝。",
-                              QSystemTrayIcon::Information, 10000);
-    } else {
-        QTimer::singleShot(0, this, [this, id] { showApprovalDialog(id); });
-    }
+    adoptDeviceSession(session, false);
+    if (trayIcon && QSystemTrayIcon::supportsMessages()) return;
+    QTimer::singleShot(0, this, [this, id] { showApprovalDialog(id); });
 }
 
 
 void MainWindow::onPlatformSessionUpdated(const QJsonObject &session) {
     const QString id = session.value("session_id").toString();
     if (id.isEmpty()) return;
-    QJsonObject record = session;
     const QJsonObject existing = sessions.value(id);
-    if (!record.contains("source") && existing.contains("source"))
-        record.insert("source", existing.value("source"));
+    const bool known = existing.contains("source");
+    QJsonObject record = session;
+    if (!record.contains("source")) {
+        if (known) {
+            record.insert("source", existing.value("source"));
+        } else if (session.value("device_id").toString() == deviceId()) {
+            // direct 模式：平台直接下发已批准会话，没有 session_request 阶段。
+            adoptDeviceSession(session, session.value("status").toString() == "approved");
+            return;
+        } else {
+            record.insert("source", "platform-operator");
+        }
+    }
     if (!record.contains("expires_at_ms") && record.value("expires_at").isDouble())
         record.insert("expires_at_ms", record.value("expires_at").toDouble() * 1000.0);
+    if (record.value("source").toString() == QLatin1String("platform")) {
+        if (record.value("requester").toString().isEmpty())
+            record.insert("requester", record.value("operator").toString("平台操作者"));
+        if (record.value("source_device").toString().isEmpty())
+            record.insert("source_device", record.value("operator_device").toString());
+    }
     sessions.insert(id, record);
     appendActivity(id, QString("平台会话状态：%1").arg(session.value("status").toString()));
     persistSessionState();
@@ -55,6 +90,10 @@ void MainWindow::onPlatformSessionUpdated(const QJsonObject &session) {
 
 
 void MainWindow::onPlatformSessionCreated(const QJsonObject &session) {
+    if (session.value("device_id").toString() == deviceId()) {
+        adoptDeviceSession(session, session.value("status").toString() == "approved");
+        return;
+    }
     const QString id = session.value("session_id").toString();
     if (id.isEmpty()) return;
     QJsonObject record = session;

@@ -29,7 +29,7 @@ platform:
   # 单次远端文件下载上限（字节）。设备端和 MCP 客户端同样按 32 MiB 限制。
   max_download_bytes: 33554432
   max_frame_bytes: 262144
-  auth_rate_per_min: 10
+  auth_rate_per_min: 30
   offline_device_keep_sec: 86400
 
   log_file: "platform.log"

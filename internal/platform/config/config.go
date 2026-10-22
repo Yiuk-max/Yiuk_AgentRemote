@@ -83,7 +83,7 @@ func Default() Config {
 		MaxOutputBytes:        2 << 20,
 		MaxDownloadBytes:      32 << 20,
 		MaxFrameBytes:         256 << 10,
-		AuthRatePerMin:        10,
+		AuthRatePerMin:        30,
 		TemporaryPasswordMin:  60,
 		TemporaryPasswordMax:  24 * 3600,
 		OfflineDeviceKeepSec:  24 * 3600,
