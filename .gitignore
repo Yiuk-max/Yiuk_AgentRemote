@@ -32,6 +32,15 @@ tmp-*
 *.ps1
 !deploy/*.sh
 
+# Qt/CMake 构建树与 IDE 本地状态
+# 注意：.gitignore 对已跟踪文件无效，新增规则前先确认文件未被跟踪
+.qtcreator/
+CMakeLists.txt.user
+*.user
+
+# 发布打包产物（走 GitHub Release 或网盘，不进仓库）
+/release/
+
 # IDE files
 .idea/
 .vscode/*.local.json

@@ -1,6 +1,6 @@
 # Go Operations Agent
 
-`ops/server` contains a Go service that manages a relay process on a server. It is separate from the Windows device client and remote execution agent described in [`../111.md`](../111.md); neither of those product components is implemented here yet.
+`ops/server` contains a Go service that manages a relay process on a server. It is separate from the Windows device client and remote execution agent described in [`../docs/product-requirements.md`](../docs/product-requirements.md).
 
 ## Capabilities and protocol
 

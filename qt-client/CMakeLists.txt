@@ -11,6 +11,24 @@ find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets Network)
 
 qt_add_executable(yiuk-device-assist WIN32
     src/main.cpp
+    src/apphelpers.cpp
+    src/apphelpers.h
+    src/glyph.cpp
+    src/glyph.h
+    src/titlebar.cpp
+    src/titlebar.h
+    src/mainwindow.cpp
+    src/mainwindow.h
+    src/pages_home.cpp
+    src/pages_devices.cpp
+    src/pages_settings.cpp
+    src/platformlink.cpp
+    src/platformevents.cpp
+    src/sessionflow.cpp
+    src/localtools.cpp
+    src/powershellrunner.cpp
+    src/powershellrunner.h
+    src/activity.cpp
     src/localbridge.cpp
     src/localbridge.h
     src/platformclient.cpp

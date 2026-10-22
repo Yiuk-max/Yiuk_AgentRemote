@@ -1,16 +1,14 @@
 package server
 
 import (
-	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
-	"log/slog"
 	"net"
 	"sync"
 	"time"
 
+	"crypto/rand"
+	"encoding/hex"
+	"log/slog"
 	"yiuk-switchboard/internal/platform/audit"
 	"yiuk-switchboard/internal/platform/auth"
 	"yiuk-switchboard/internal/platform/config"
@@ -50,23 +48,6 @@ type Server struct {
 	closeOnce sync.Once
 	done      chan struct{}
 	wg        sync.WaitGroup
-}
-
-type conn struct {
-	id        string
-	nc        net.Conn
-	remote    net.Addr
-	srv       *Server
-	send      chan protocol.Message
-	done      chan struct{}
-	closeOnce sync.Once
-	writeMu   sync.Mutex
-
-	role     role
-	business string
-	deviceID string
-	label    string
-	lastSeen time.Time
 }
 
 // New creates a platform server and binds its configured listener.
@@ -263,224 +244,6 @@ func (s *Server) cleanupOperator(c *conn) {
 	}
 }
 
-func (s *Server) readLoop(c *conn) {
-	r := bufio.NewReaderSize(c.nc, s.cfg.MaxFrameBytes+4)
-	deadline := s.cfg.HandshakeTimeout()
-	handshake := true
-	for {
-		_ = c.nc.SetReadDeadline(time.Now().Add(deadline))
-		m, err := s.codec.Read(r)
-		if err != nil {
-			if handshake {
-				s.log.Warn("platform TLS/protocol handshake failed", "remote", c.remoteString(), "error", err)
-			} else if !errors.Is(err, net.ErrClosed) {
-				s.log.Debug("platform connection read ended", "remote", c.remoteString(), "error", err)
-			}
-			return
-		}
-		c.lastSeen = time.Now()
-		if err := s.handle(c, m); err != nil {
-			var pe *protoError
-			if errors.As(err, &pe) {
-				errMsg := protocol.ErrorMessage(pe.code, pe.message)
-				errMsg.CorrelationID = m.CorrelationID
-				// Fatal errors are written synchronously so the peer observes the
-				// error code before the connection is torn down.
-				if pe.fatal {
-					_ = c.writeRaw(errMsg)
-					return
-				}
-				s.send(c, errMsg)
-			} else {
-				s.log.Error("platform request failed", "connection", audit.RedactID(c.id), "error", err)
-				errMsg := protocol.ErrorMessage("INTERNAL", "request failed")
-				errMsg.CorrelationID = m.CorrelationID
-				_ = c.writeRaw(errMsg)
-				return
-			}
-		}
-		if handshake && c.role != roleAnonymous {
-			handshake = false
-			deadline = s.cfg.HeartbeatTimeout()
-		}
-	}
-}
-
-func (c *conn) writeLoop() {
-	defer c.close("write_loop")
-	for {
-		select {
-		case m := <-c.send:
-			if err := c.writeRaw(m); err != nil {
-				return
-			}
-		case <-c.done:
-			return
-		}
-	}
-}
-
-// writeRaw serializes writes from the writer goroutine and the fatal-error
-// path so protocol frames cannot interleave.
-func (c *conn) writeRaw(m protocol.Message) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	_ = c.nc.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	return c.srv.codec.Write(c.nc, m)
-}
-
-func (c *conn) close(reason string) {
-	c.closeOnce.Do(func() {
-		close(c.done)
-		_ = c.nc.Close()
-	})
-}
-
-func (c *conn) remoteString() string {
-	if c.remote == nil {
-		return ""
-	}
-	return c.remote.String()
-}
-
-func (s *Server) send(c *conn, m protocol.Message) bool {
-	if c == nil {
-		return false
-	}
-	select {
-	case <-c.done:
-		return false
-	default:
-	}
-	if m.Version == 0 {
-		m.Version = protocol.Version
-	}
-	if m.BusinessType == "" {
-		m.BusinessType = protocol.BusinessAgentAssist
-	}
-	select {
-	case c.send <- m:
-		return true
-	case <-c.done:
-		return false
-	default:
-		s.audit.Warn("slow_client_disconnected", "connection", audit.RedactID(c.id))
-		c.close("slow_client")
-		return false
-	}
-}
-
-func (s *Server) lookupConn(id string) *conn {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.conns[id]
-}
-
-func (s *Server) sendToConnection(id string, m protocol.Message) bool {
-	if id == "" {
-		return false
-	}
-	return s.send(s.lookupConn(id), m)
-}
-
-func (s *Server) sendToDevice(deviceID string, m protocol.Message) bool {
-	connID, ok := s.devices.OnlineConnection(deviceID)
-	if !ok {
-		return false
-	}
-	return s.sendToConnection(connID, m)
-}
-
-func (s *Server) notifySession(ses *session.Session) {
-	if ses == nil {
-		return
-	}
-	info := sessionInfo(ses)
-	msg := protocol.Message{
-		Type:      protocol.TypeSessionStatus,
-		SessionID: ses.ID,
-		DeviceID:  ses.DeviceID,
-		Status:    string(ses.Status),
-		Session:   &info,
-	}
-	seen := make(map[string]struct{}, 2)
-	for _, id := range []string{ses.OperatorConnectionID, ses.DeviceConnectionID} {
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		s.sendToConnection(id, msg)
-	}
-}
-
-func (s *Server) janitor(ctx context.Context) {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			s.sweep()
-		}
-	}
-}
-
-func (s *Server) sweep() {
-	expired := s.sessions.Expire()
-	for _, ses := range expired {
-		s.devices.RemoveSession(ses.DeviceID, ses.ID)
-		// Expiry is also a device-side control event. Stop remote processes
-		// before finalizing the task records so every client gets a chance to
-		// terminate work that is still running locally.
-		s.sendToConnection(ses.DeviceConnectionID, protocol.Message{
-			Type:      protocol.TypeCloseSession,
-			SessionID: ses.ID,
-			DeviceID:  ses.DeviceID,
-			Code:      "SESSION_EXPIRED",
-			Message:   "session expired",
-		})
-		finished := s.tasks.FinishSession(ses.ID, task.StatusCancelled)
-		s.notifySession(ses)
-		for _, t := range finished {
-			s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
-		}
-		for _, t := range s.transfers.FinishSession(ses.ID, transfer.StatusCancelled) {
-			s.sendToConnection(ses.OperatorConnectionID, transferResultMessage(t))
-		}
-	}
-	for _, t := range s.transfers.Expire() {
-		ses, ok := s.sessions.Get(t.SessionID)
-		if !ok {
-			continue
-		}
-		s.sendToConnection(ses.OperatorConnectionID, transferResultMessage(t))
-		s.sendToConnection(ses.DeviceConnectionID, protocol.Message{
-			Type: protocol.TypeCancelFileDownload, SessionID: t.SessionID, RequestID: t.RequestID,
-		})
-		s.audit.Event("file_download_timed_out", "session", audit.RedactID(t.SessionID), "request", audit.RedactID(t.RequestID))
-	}
-	for _, t := range s.tasks.Expire() {
-		ses, ok := s.sessions.Get(t.SessionID)
-		if !ok {
-			continue
-		}
-		s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
-		s.sendToConnection(ses.DeviceConnectionID, protocol.Message{
-			Type:      protocol.TypeCancelCommand,
-			SessionID: t.SessionID,
-			RequestID: t.RequestID,
-		})
-		s.audit.Event("command_timed_out", "session", audit.RedactID(t.SessionID), "request", audit.RedactID(t.RequestID))
-	}
-	if removed := s.devices.Cleanup(time.Duration(s.cfg.OfflineDeviceKeepSec) * time.Second); removed > 0 {
-		s.audit.Event("offline_devices_cleaned", "count", removed)
-	}
-}
-
 func newID() string {
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
@@ -488,30 +251,4 @@ func newID() string {
 		panic("platform: crypto/rand unavailable: " + err.Error())
 	}
 	return hex.EncodeToString(raw[:])
-}
-
-// protoError is a client-visible protocol error. Fatal errors close the
-// connection after the error frame is written.
-type protoError struct {
-	code    string
-	message string
-	fatal   bool
-}
-
-func (e *protoError) Error() string { return e.code + ": " + e.message }
-
-func perr(code, message string) error {
-	return &protoError{code: code, message: message}
-}
-
-func ferr(code, message string) error {
-	return &protoError{code: code, message: message, fatal: true}
-}
-
-// sendOK sends a direct response and echoes the caller's correlation id.
-// Asynchronous events do not pass through this helper.
-func (s *Server) sendOK(c *conn, req, resp protocol.Message) error {
-	resp.CorrelationID = req.CorrelationID
-	s.send(c, resp)
-	return nil
 }

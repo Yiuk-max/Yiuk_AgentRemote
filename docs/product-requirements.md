@@ -3,7 +3,7 @@
 版本：1.1  
 阶段：MVP 开发中  
 目标平台：Windows 10/11 x64  
-关联文档：[技术选型](technical-selection.md)、[实现方案](implementation.md)、[工期估算](schedule.md)、[后端实施状态](backend-status.md)
+关联文档：[技术选型](technical-selection.md)、[实现方案](implementation.md)、[后端实施状态](backend-status.md)
 
 ## 1. 产品定义
 

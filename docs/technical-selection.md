@@ -2,7 +2,7 @@
 
 版本：1.0  
 状态：建议基线，阶段一原型验证后冻结  
-关联文档：[产品需求](product-requirements.md)、[实现方案](implementation.md)、[工期估算](schedule.md)、[后端实施状态](backend-status.md)
+关联文档：[产品需求](product-requirements.md)、[实现方案](implementation.md)、[后端实施状态](backend-status.md)
 
 ## 1. 选型目标
 
@@ -69,13 +69,11 @@ PowerShell 命令执行本质上允许该 Windows 用户权限范围内的任意
 
 ## 8. 技术栈版本基线
 
-- Qt 6.8 LTS 或项目可获得的受支持 Qt 6 LTS；Windows x64。
-- C++17，CMake；Qt Core、Widgets、Network、Test。
-- Go 当前稳定版本；模块版本与 CI 镜像固定，升级单独评审。
-- MCP SDK/实现按目标 Agent 兼容性评估后固定具体版本；MCP 协议版本纳入兼容测试。
-- TLS 1.3 优先，必要时 TLS 1.2；证书校验不可关闭。
-
-版本应在阶段一根据 Windows 支持周期、Qt 授权/分发方式、MCP SDK 状况和 CI 可用性确认。
+- Qt 6.11.1（mingw1310_64），Windows x64；CMake 3.21+、Ninja。
+- C++17；Qt Core、Widgets、Network。
+- Go 1.27.3；`go.mod` 固定模块版本。
+- `github.com/modelcontextprotocol/go-sdk` v1.4.1 及以上。
+- TLS 1.2 及以上；证书校验不可关闭。
 
 ## 9. 决策门槛
 
