@@ -2,6 +2,7 @@
 
 #include <QAbstractSocket>
 #include <QObject>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QStringList>
 #include <QTimer>
@@ -73,6 +74,7 @@ public:
     void cancelCommand(const QString &sessionId, const QString &requestId);
 
     // Operator actions.
+    void listDevices(const QString &requestId);
     void requestSession(const QString &deviceId, const QString &purpose,
                         const QStringList &permissions, const QString &temporaryPassword);
     void executeCommand(const QString &sessionId, const QString &requestId, const QString &command,
@@ -81,6 +83,8 @@ public:
 signals:
     void stateChanged(const QString &state);
     void registered(const QJsonObject &device);
+    void deviceListReceived(const QJsonArray &devices, const QString &requestId);
+    void requestFailed(const QString &requestId, const QString &code, const QString &message);
     void sessionRequested(const QJsonObject &session);
     void sessionUpdated(const QJsonObject &session);
     void sessionCreated(const QJsonObject &session);

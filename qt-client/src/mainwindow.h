@@ -8,7 +8,6 @@
 
 #include <QApplication>
 #include <QCheckBox>
-#include <QButtonGroup>
 #include <QClipboard>
 #include <QComboBox>
 #include <QFrame>
@@ -64,6 +63,8 @@ class PowerShellRunner;
 class MainWindow final : public QMainWindow {
 public:
     MainWindow();
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
 private:
     QString deviceCode = loadOrCreateDeviceCode();
     QString temporaryPassword = randomPassword(32);
@@ -72,25 +73,21 @@ private:
     QPushButton *togglePassword = nullptr;
     bool passwordVisible = false;
     QLineEdit *remoteCode = nullptr;
-    QCheckBox *acceptingRequests = nullptr;
     QStackedWidget *pages = nullptr;
     QPushButton *navHome = nullptr;
     QPushButton *navDevices = nullptr;
     QPushButton *navHistory = nullptr;
     QPushButton *navSettings = nullptr;
     QLabel *deviceIdValue = nullptr;
-    QLabel *deviceStatusValue = nullptr;
     QLabel *sessionSummaryValue = nullptr;
-    QLabel *settingsStatusValue = nullptr;
     QVBoxLayout *deviceListLayout = nullptr;
     QStringList savedDevices;
-    QLabel *sessionsHistory = nullptr;
+    QVBoxLayout *sessionsListLayout = nullptr;
     QWidget *homePage = nullptr;
     QWidget *devicesPage = nullptr;
     QWidget *sessionsPage = nullptr;
     QWidget *settingsPage = nullptr;
     QLabel *serviceState = nullptr;
-    QLabel *serviceFooter = nullptr;
     QWidget *pendingPanel = nullptr;
     QVBoxLayout *pendingLayout = nullptr;
     QWidget *activePanel = nullptr;
@@ -107,6 +104,8 @@ private:
     QComboBox *platformMode = nullptr;
     QLabel *platformStatusValue = nullptr;
     QPushButton *platformConnectButton = nullptr;
+    QString pendingDeviceLookupId;
+    QString pendingDeviceLookupCode;
     QHash<QString, quint64> platformOutputSequence;
     QHash<QString, QString> platformTaskSession;
     QHash<QString, QJsonObject> sessions;
@@ -116,6 +115,7 @@ private:
     QHash<QString, PowerShellRunner *> runs;
     QHash<QString, bool> activeFileDownloads;
     QSystemTrayIcon *trayIcon = nullptr;
+    QStatusBar *statusFooter = nullptr;
     QHash<QString, QString> notificationSessions;
     QDialog *activityWindow = nullptr;
     QComboBox *activitySessionSelector = nullptr;
@@ -131,7 +131,6 @@ private:
     QString sessionStatePath() const;
     void loadSessionState();
     void persistSessionState();
-    bool confirmLocalDemoConsent();
     QWidget *createHomePage();
     QWidget *pageShell(const QString &title, const QString &subtitle, QVBoxLayout **outLayout);
     QWidget *deviceRow(const QString &code, const QString &name, bool local);
@@ -141,7 +140,8 @@ private:
     void showPage(int index);
     void refreshDevicesPage();
     void refreshSessionsPage();
-    void refreshSettingsPage();
+    QString sessionConnectorCode(const QJsonObject &session) const;
+    QString sessionTargetCode(const QJsonObject &session) const;
     static QJsonObject ok(const QJsonValue &data = {});
     static QJsonObject fail(const QString &code, const QString &message);
     QString deviceId() const;
@@ -156,6 +156,10 @@ private:
     void copyMcpAgentConfig();
     void startPlatform();
     void updatePlatformState(const QString &state);
+    void lookupDeviceBeforeConnecting(const QString &deviceId);
+    void promptAndRequestConnection(const QString &deviceId);
+    void onDeviceListReceived(const QJsonArray &devices, const QString &requestId);
+    void onPlatformRequestFailed(const QString &requestId, const QString &code, const QString &message);
     void adoptDeviceSession(const QJsonObject &session, bool approved);
     void onPlatformSessionRequested(const QJsonObject &session);
     void onPlatformSessionUpdated(const QJsonObject &session);
@@ -202,4 +206,5 @@ private:
     void refreshActivityWindow();
     void showActivityWindow(const QString &sessionId = QString());
     void copyToClipboard(const QString &text, const QString &message);
+    void showStatusMessage(const QString &message, int timeout = 0);
 };

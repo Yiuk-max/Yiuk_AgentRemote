@@ -11,11 +11,8 @@ TitleBar::TitleBar(QWidget *parent) : QWidget(parent) {
     setFixedHeight(42);
     setStyleSheet("background: #ffffff;");
     auto *layout = new QHBoxLayout(this);
-    layout->setContentsMargins(20, 0, 6, 0);
+    layout->setContentsMargins(12, 0, 6, 0);
     layout->setSpacing(2);
-    layout->addWidget(makeLabel("YIUK", "font-size: 15px; font-weight: 800; color: #1479ed;"));
-    layout->addSpacing(10);
-    layout->addWidget(makeLabel("设备协助", "font-size: 13px; font-weight: 600; color: #435168;"));
     layout->addStretch();
     auto *minimize = windowButton(Glyph::Minimize, "minimize", "最小化");
     auto *maximize = windowButton(Glyph::Maximize, "maximize", "最大化");
@@ -23,7 +20,7 @@ TitleBar::TitleBar(QWidget *parent) : QWidget(parent) {
     layout->addWidget(minimize);
     layout->addWidget(maximize);
     layout->addWidget(close);
-    connect(minimize, &QPushButton::clicked, this, [this] { window()->showMinimized(); });
+    connect(minimize, &QPushButton::clicked, this, [this] { window()->hide(); });
     connect(maximize, &QPushButton::clicked, this, [this] {
         window()->isMaximized() ? window()->showNormal() : window()->showMaximized();
     });

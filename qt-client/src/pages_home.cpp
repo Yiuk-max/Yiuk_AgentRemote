@@ -70,14 +70,14 @@ QWidget *MainWindow::createHomePage() {
     connect(copyPassword, &QPushButton::clicked, this, [this] { copyToClipboard(temporaryPassword, "密码已复制"); });
     connect(refreshPassword, &QPushButton::clicked, this, [this] {
         if (!platform || !platform->isConnected()) {
-            statusBar()->showMessage("请先连接平台，再手动更新连接密码", 2500);
+            showStatusMessage("请先连接平台，再手动更新连接密码", 2500);
             return;
         }
         temporaryPassword = randomPassword(32);
         ++passwordVersion;
         const QString mode = platformMode ? platformMode->currentData().toString() : QStringLiteral("approval");
         platform->updateTemporaryPassword(temporaryPassword, passwordVersion, mode, platform->config().ttlSeconds);
-        statusBar()->showMessage("正在手动更新连接密码", 1800);
+        showStatusMessage("正在手动更新连接密码", 1800);
     });
 
     layout->addSpacing(40);
@@ -143,9 +143,9 @@ QWidget *MainWindow::createHomePage() {
             savedDevices.append(formatted);
             QSettings().setValue("savedDevices", savedDevices);
             refreshDevicesPage();
-            statusBar()->showMessage("设备已添加", 1800);
+            showStatusMessage("设备已添加", 1800);
         } else {
-            statusBar()->showMessage("设备已在列表中", 1800);
+            showStatusMessage("设备已在列表中", 1800);
         }
     });
     connect(connectButton, &QPushButton::clicked, this, [this] {
@@ -155,24 +155,7 @@ QWidget *MainWindow::createHomePage() {
             QMessageBox::warning(this, "设备码无效", "请输入完整的 9 位设备码。");
             return;
         }
-        if (!platform || !platform->isConnected()) {
-            QMessageBox::information(this, "远程平台未连接", "设备码：" + spacedCode(digits) + "\n\n请先在设置中连接平台服务器。");
-            return;
-        }
-        bool passwordOk = false;
-        const QString temporary = QInputDialog::getText(this, "输入临时密码",
-            "请输入对方设备所有者在安全渠道提供的 32 位临时密码：", QLineEdit::Password, QString(), &passwordOk).trimmed();
-        if (!passwordOk) return;
-        if (temporary.size() < 32) {
-            QMessageBox::warning(this, "临时密码无效", "临时密码至少需要 32 个字符。");
-            return;
-        }
-        bool purposeOk = false;
-        const QString purpose = QInputDialog::getText(this, "协助用途",
-            "简要说明本次协助用途：", QLineEdit::Normal, QStringLiteral("远程协助"), &purposeOk).trimmed();
-        if (!purposeOk || purpose.isEmpty()) return;
-        platform->requestSession(digits, purpose, QStringList{QStringLiteral("execute_command")}, temporary);
-        statusBar()->showMessage("已发送协助请求，等待对方批准", 4000);
+        lookupDeviceBeforeConnecting(digits);
     });
 
     layout->addSpacing(25);
@@ -191,23 +174,46 @@ QWidget *MainWindow::createHomePage() {
     connect(sessionTimer, &QTimer::timeout, this, [this] { refreshActiveSessions(); });
     sessionTimer->start();
 
-    auto *notice = new QFrame;
-    notice->setStyleSheet("background: #f6f9fc; border: 1px solid #e7edf3; border-radius: 7px;");
-    auto *noticeLayout = new QHBoxLayout(notice);
-    noticeLayout->setContentsMargins(15, 12, 15, 12);
-    noticeLayout->addWidget(makeLabel("i", "color: #1977eb; font-size: 15px; font-weight: 700;"));
-    noticeLayout->addSpacing(5);
-    noticeLayout->addWidget(makeLabel("每次远程协助都需要设备所有者明确批准；会话期间可随时停止。", "color: #647286; font-size: 12px;"));
-    noticeLayout->addStretch();
-    layout->addWidget(notice);
     layout->addStretch();
-
-    auto *footer = new QHBoxLayout;
-    serviceFooter = makeLabel("等待 MCP 调用", "color: #16825d; font-size: 12px;");
-    footer->addWidget(serviceFooter);
-    footer->addStretch();
-    footer->addWidget(makeLabel("远程平台未连接", "color: #929dad; font-size: 12px;"));
-    layout->addLayout(footer);
     homePage = content;
     return content;
+}
+
+
+void MainWindow::lookupDeviceBeforeConnecting(const QString &deviceId) {
+    if (!platform || !platform->isConnected()) {
+        QMessageBox::information(this, "远程平台未连接", "设备码：" + spacedCode(deviceId) + "\n\n请先在设置中连接平台服务器。");
+        return;
+    }
+    if (!pendingDeviceLookupId.isEmpty()) return;
+    pendingDeviceLookupId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    pendingDeviceLookupCode = deviceId;
+    platform->listDevices(pendingDeviceLookupId);
+    showStatusMessage("正在向后端查询设备…", 2000);
+    const QString requestId = pendingDeviceLookupId;
+    QTimer::singleShot(6000, this, [this, requestId] {
+        if (pendingDeviceLookupId != requestId) return;
+        pendingDeviceLookupId.clear();
+        pendingDeviceLookupCode.clear();
+        QMessageBox::warning(this, "设备查询超时", "后端没有响应，请稍后重试。");
+    });
+}
+
+
+void MainWindow::promptAndRequestConnection(const QString &deviceId) {
+    if (!platform || !platform->isConnected()) return;
+    bool passwordOk = false;
+    const QString temporary = QInputDialog::getText(this, "输入临时密码",
+        "请输入对方设备所有者在安全渠道提供的 32 位临时密码：", QLineEdit::Password, QString(), &passwordOk).trimmed();
+    if (!passwordOk) return;
+    if (temporary.size() < 32) {
+        QMessageBox::warning(this, "临时密码无效", "临时密码至少需要 32 个字符。");
+        return;
+    }
+    bool purposeOk = false;
+    const QString purpose = QInputDialog::getText(this, "协助用途",
+        "简要说明本次协助用途：", QLineEdit::Normal, QStringLiteral("远程协助"), &purposeOk).trimmed();
+    if (!purposeOk || purpose.isEmpty()) return;
+    platform->requestSession(deviceId, purpose, QStringList{QStringLiteral("execute_command")}, temporary);
+    showStatusMessage("已发送协助请求，等待对方批准", 4000);
 }

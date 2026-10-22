@@ -47,7 +47,6 @@ QJsonObject MainWindow::invokeLocalTool(const QString &tool, const QJsonObject &
 QJsonObject MainWindow::requestLocalSession(const QJsonObject &input) {
     const QString target = input.value("device_id").toString();
     if (target != deviceId()) return fail("DEVICE_NOT_FOUND", "只能连接当前设备");
-    if (!acceptingRequests->isChecked()) return fail("DEVICE_UNAVAILABLE", "本机未开启协助请求；请在设置中启用后重试");
     const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const QDateTime createdAt = QDateTime::currentDateTimeUtc();
     const QDateTime expiresAt = createdAt.addSecs(600);
@@ -60,7 +59,7 @@ QJsonObject MainWindow::requestLocalSession(const QJsonObject &input) {
     persistSessionState();
     refreshPendingRequests();
     refreshSessionsPage();
-    serviceFooter->setText("● 有待批准的协助请求");
+    showStatusMessage("有待批准的协助请求", 4000);
     QTimer::singleShot(600000, this, [this, id] { expireSessionIfNeeded(id); });
     notificationSessions.insert(id, input.value("purpose").toString());
     if (trayIcon && QSystemTrayIcon::supportsMessages()) {
@@ -184,9 +183,9 @@ QJsonObject MainWindow::executeLocalCommand(const QJsonObject &input) {
         refreshSessionsPage();
         refreshActiveSessions();
         if (status == QLatin1String("timed_out"))
-            serviceFooter->setText("● PowerShell 任务已超时");
+            showStatusMessage("PowerShell 任务已超时", 4000);
         else if (status != QLatin1String("cancelled"))
-            serviceFooter->setText("● PowerShell 任务完成");
+            showStatusMessage("PowerShell 任务完成", 3000);
     };
 
     auto *runner = new PowerShellRunner(this, requestId, command, cwd, timeout, hooks);
@@ -198,7 +197,7 @@ QJsonObject MainWindow::executeLocalCommand(const QJsonObject &input) {
         tasks.remove(requestId);
         return fail("EXECUTION_FAILED", startError);
     }
-    serviceFooter->setText("● 正在执行本机 PowerShell 任务");
+    showStatusMessage("正在执行本机 PowerShell 任务", 3000);
     refreshActiveSessions();
     return ok(QJsonObject{{"session_id", sessionId}, {"request_id", requestId}, {"status", "running"}});
 }

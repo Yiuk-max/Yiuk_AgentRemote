@@ -7,28 +7,22 @@ QWidget *MainWindow::createDevicesPage() {
     auto *identity = new QFrame;
     identity->setObjectName("identityPanel");
     auto *card = new QVBoxLayout(identity);
-    card->setContentsMargins(16, 12, 16, 12);
-    card->setSpacing(8);
-    card->addWidget(makeLabel("本机设备", "font-size: 15px; font-weight: 650; color: #263446;"));
-    deviceIdValue = makeLabel(deviceCode, "font-size: 24px; color: #172435;");
-    deviceStatusValue = makeLabel("平台未连接", "font-size: 12px; color: #a45f13;");
-    card->addWidget(deviceIdValue);
-    card->addWidget(deviceStatusValue);
-    auto *row = new QHBoxLayout;
-    auto *copy = makeButton("复制设备码");
-    auto *forget = makeButton("更换设备码");
-    row->addWidget(copy);
-    row->addWidget(forget);
-    row->addStretch();
-    card->addLayout(row);
+    card->setContentsMargins(16, 10, 16, 10);
+    card->setSpacing(4);
+    auto *titleRow = new QHBoxLayout;
+    titleRow->setContentsMargins(0, 0, 0, 0);
+    titleRow->addWidget(makeLabel("本机设备", "font-size: 14px; font-weight: 650; color: #263446;"));
+    titleRow->addStretch();
+    card->addLayout(titleRow);
+    auto *codeRow = new QHBoxLayout;
+    codeRow->setContentsMargins(0, 0, 0, 0);
+    deviceIdValue = makeLabel(deviceCode, "font-size: 20px; color: #172435;");
+    codeRow->addWidget(deviceIdValue);
+    codeRow->addStretch();
+    auto *copy = iconButton(Glyph::Copy, "复制设备码");
+    codeRow->addWidget(copy);
+    card->addLayout(codeRow);
     connect(copy, &QPushButton::clicked, this, [this] { copyToClipboard(deviceCode, "设备码已复制"); });
-    connect(forget, &QPushButton::clicked, this, [this] {
-        if (QMessageBox::question(this, "更换设备码", "更换后将生成新的设备码。") != QMessageBox::Yes) return;
-        const QString path = yiukConfigPath("device.json");
-        QFile::remove(path);
-        deviceCode = loadOrCreateDeviceCode();
-        refreshDevicesPage();
-    });
     layout->addWidget(identity);
     layout->addSpacing(18);
 
@@ -48,10 +42,8 @@ QWidget *MainWindow::createDevicesPage() {
     deviceScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     deviceScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
     deviceScroll->setMinimumHeight(0);
-    deviceScroll->setMaximumHeight(260);
-    layout->addWidget(deviceScroll, 0);
-    layout->addStretch(1);
-    connect(refresh, &QPushButton::clicked, this, [this] { refreshDevicesPage(); statusBar()->showMessage("设备列表已刷新", 1800); });
+    layout->addWidget(deviceScroll, 1);
+    connect(refresh, &QPushButton::clicked, this, [this] { refreshDevicesPage(); showStatusMessage("设备列表已刷新", 1800); });
     refreshDevicesPage();
     return devicesPage;
 }
@@ -59,13 +51,19 @@ QWidget *MainWindow::createDevicesPage() {
 
 QWidget *MainWindow::createSessionsPage() {
     QVBoxLayout *layout = nullptr;
-    sessionsPage = pageShell("会话记录", "本机记录授权决定和命令任务。记录保存在此客户端的用户配置中。", &layout);
-    sessionsHistory = new QLabel;
-    sessionsHistory->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-    sessionsHistory->setWordWrap(true);
-    sessionsHistory->setStyleSheet("color: #435168; background: #f5f7fa; border: 1px solid #edf0f4; border-radius: 7px; padding: 16px;");
-    layout->addWidget(sessionsHistory);
-    layout->addStretch();
+    sessionsPage = pageShell("会话记录", "按时间记录每一笔连接及其双方设备码。", &layout);
+    auto *scroll = new QScrollArea;
+    scroll->setObjectName("sessionsScroll");
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto *container = new QWidget;
+    sessionsListLayout = new QVBoxLayout(container);
+    sessionsListLayout->setContentsMargins(0, 0, 0, 0);
+    sessionsListLayout->setSpacing(8);
+    scroll->setWidget(container);
+    layout->addWidget(scroll, 1);
     refreshSessionsPage();
     return sessionsPage;
 }

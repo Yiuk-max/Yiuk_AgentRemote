@@ -29,7 +29,7 @@ void MainWindow::adoptDeviceSession(const QJsonObject &session, bool approved) {
     refreshActiveSessions();
     refreshSessionsPage();
     if (activitySessionSelector) refreshActivityWindow();
-    serviceFooter->setText(approved ? "● 已建立直接连接会话" : "● 平台有待批准的协助请求");
+    showStatusMessage(approved ? "已建立直接连接会话" : "有待批准的协助请求", 4000);
     if (fresh && trayIcon && QSystemTrayIcon::supportsMessages()) {
         trayIcon->showMessage(approved ? "远程协助已连接" : "需要批准远程协助",
                               record.value("purpose").toString(),
@@ -39,10 +39,6 @@ void MainWindow::adoptDeviceSession(const QJsonObject &session, bool approved) {
 
 
 void MainWindow::onPlatformSessionRequested(const QJsonObject &session) {
-    if (acceptingRequests && !acceptingRequests->isChecked()) {
-        platform->rejectSession(session.value("session_id").toString());
-        return;
-    }
     const QString id = session.value("session_id").toString();
     if (id.isEmpty()) return;
     adoptDeviceSession(session, false);
@@ -104,7 +100,7 @@ void MainWindow::onPlatformSessionCreated(const QJsonObject &session) {
     persistSessionState();
     refreshSessionsPage();
     const QString status = session.value("status").toString();
-    statusBar()->showMessage(status == "approved" ? "会话已批准" : "已发送协助请求，等待对方批准", 4000);
+    showStatusMessage(status == "approved" ? "会话已批准" : "已发送协助请求，等待对方批准", 4000);
 }
 
 
@@ -360,7 +356,7 @@ void MainWindow::executePlatformCommand(const QString &sessionId, const QString 
             platform->sendCommandResult(sessionId, requestId, status, exitCode, true, task.value("truncated").toBool());
         refreshSessionsPage();
         refreshActiveSessions();
-        serviceFooter->setText("● 平台命令任务完成");
+        showStatusMessage("平台命令任务完成", 3000);
     };
 
     tasks.insert(requestId, {{"session_id", sessionId}, {"request_id", requestId}, {"status", "running"},
@@ -381,6 +377,6 @@ void MainWindow::executePlatformCommand(const QString &sessionId, const QString 
         sendFailure(startError);
         return;
     }
-    serviceFooter->setText("● 正在执行平台下发任务");
+    showStatusMessage("正在执行平台下发任务", 3000);
     refreshActiveSessions();
 }

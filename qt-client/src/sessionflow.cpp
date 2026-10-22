@@ -113,7 +113,7 @@ void MainWindow::decideSession(const QString &id, bool approved) {
     }
     appendActivity(id, approved ? "本机用户已批准 Agent 会话" : "本机用户已拒绝 Agent 会话");
     if (approved && platformSession) showActivityWindow(id);
-    serviceFooter->setText(approved ? "● 会话已批准" : "● 连接申请已拒绝");
+    showStatusMessage(approved ? "会话已批准" : "连接申请已拒绝", 4000);
 }
 
 
@@ -188,7 +188,7 @@ QJsonObject MainWindow::closeSession(const QString &id) {
     if (platformSession && platform && platform->isConnected()) platform->closeSession(id);
     appendActivity(id, "本机会话已断开，远程控制已停止");
     if (activitySessionSelector) refreshActivityWindow();
-    serviceFooter->setText("● 会话已关闭");
+    showStatusMessage("会话已关闭", 3000);
     return ok(session);
 }
 

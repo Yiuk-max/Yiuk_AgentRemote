@@ -9,25 +9,21 @@ void MainWindow::startLocalBridge() {
     if (!bridge->start(&error)) {
         serviceState->setText("● 本机 MCP 桥接启动失败");
         serviceState->setStyleSheet("font-size: 11px; color: #b42318; padding: 0 5px;");
-        serviceFooter->setText("● 本机 API 启动失败");
         return;
     }
     const QString configRoot = yiukConfigRoot();
     if (!QDir().mkpath(configRoot)) {
         serviceState->setText("● MCP 配置目录创建失败");
-        serviceFooter->setText("● 无法创建本机配置目录");
         return;
     }
     QFile config(QDir(configRoot).filePath("local-api.json"));
     if (!config.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         serviceState->setText("● MCP 配置写入失败");
-        serviceFooter->setText(config.errorString());
         return;
     }
     const QJsonObject configObject{{"url", bridge->endpoint()}, {"token", bridge->token()}};
     if (config.write(QJsonDocument(configObject).toJson(QJsonDocument::Compact)) < 0) {
         serviceState->setText("● MCP 配置写入失败");
-        serviceFooter->setText(config.errorString());
         return;
     }
     config.close();
@@ -35,7 +31,6 @@ void MainWindow::startLocalBridge() {
     serviceState->setStyleSheet("font-size: 11px; color: #16825d; padding: 2px 5px;");
     platformState->setText("平台：未连接");
     deviceState->setText("设备：本机未注册");
-    serviceFooter->setText("● MCP 已就绪；平台未连接");
 }
 
 
@@ -157,16 +152,13 @@ bool MainWindow::syncMcpClientConfig(const PlatformClient::Config &cfg) {
 
 void MainWindow::copyMcpAgentConfig() {
     copyToClipboard(mcpAgentConfigText(), "Agent MCP 配置已复制");
-    statusBar()->showMessage("把配置粘贴到 Agent 的 MCP 设置中即可", 4000);
+    showStatusMessage("把配置粘贴到 Agent 的 MCP 设置中即可", 4000);
 }
 
 
 void MainWindow::startPlatform() {
     platform = new PlatformClient(this);
     connect(platform, &PlatformClient::stateChanged, this, [this](const QString &state) { updatePlatformState(state); });
-    connect(platform, &PlatformClient::registered, this, [this](const QJsonObject &) {
-        serviceFooter->setText("● 平台在线，可接收协助请求");
-    });
     connect(platform, &PlatformClient::credentialsRenewed, this,
             [this](const QString &password, int version) {
         temporaryPassword = password;
@@ -175,6 +167,8 @@ void MainWindow::startPlatform() {
             passwordValue->setText(passwordVisible ? groupedPassword(password) : "********");
         savePlatformConfig();
     });
+    connect(platform, &PlatformClient::deviceListReceived, this, &MainWindow::onDeviceListReceived);
+    connect(platform, &PlatformClient::requestFailed, this, &MainWindow::onPlatformRequestFailed);
     connect(platform, &PlatformClient::sessionRequested, this, &MainWindow::onPlatformSessionRequested);
     connect(platform, &PlatformClient::sessionUpdated, this, &MainWindow::onPlatformSessionUpdated);
     connect(platform, &PlatformClient::sessionCreated, this, &MainWindow::onPlatformSessionCreated);
@@ -193,14 +187,13 @@ void MainWindow::startPlatform() {
         if (passwordValue)
             passwordValue->setText(passwordVisible ? groupedPassword(temporaryPassword) : "********");
         savePlatformConfig();
-        statusBar()->showMessage("连接密码已更新", 1800);
+        showStatusMessage("连接密码已更新", 1800);
     });
     connect(platform, &PlatformClient::platformError, this, [this](const QString &code, const QString &message) {
-        statusBar()->showMessage(QString("平台错误：%1 %2").arg(code, message), 4000);
+        showStatusMessage(QString("平台错误：%1 %2").arg(code, message), 4000);
     });
     connect(platform, &PlatformClient::connectionError, this, [this](const QString &message) {
-        statusBar()->showMessage("平台连接：" + message, 4000);
-        serviceFooter->setText("● 平台连接异常");
+        showStatusMessage("平台连接：" + message, 4000);
     });
     connect(platform, &PlatformClient::certificateUntrusted, this,
             [this](const QString &fingerprint, const QString &subject, const QString &details, bool changed) {
@@ -216,7 +209,7 @@ void MainWindow::startPlatform() {
         box.setDefaultButton(changed ? cancel : trust);
         box.exec();
         if (box.clickedButton() != trust) {
-            statusBar()->showMessage("已取消连接：服务器证书未被信任", 5000);
+            showStatusMessage("已取消连接：服务器证书未被信任", 5000);
             return;
         }
         PlatformClient::Config cfg = platform->config();
@@ -227,13 +220,49 @@ void MainWindow::startPlatform() {
     });
     loadPlatformConfig();
     if (!platform->config().address.isEmpty()) {
-        if (serviceFooter) serviceFooter->setText("● 启动后自动连接平台…");
+        showStatusMessage("启动后自动连接平台…", 3000);
         // 等窗口首帧渲染后再连接，避免启动时 TLS 握手与证书弹框抢在界面出现前。
         QTimer::singleShot(0, this, [this] {
             if (platform && platform->state() == "disconnected") platform->connectToPlatform();
         });
     }
     updatePlatformState(platform->state());
+}
+
+
+void MainWindow::onDeviceListReceived(const QJsonArray &devices, const QString &requestId) {
+    if (pendingDeviceLookupId.isEmpty() || requestId != pendingDeviceLookupId) return;
+    const QString deviceId = pendingDeviceLookupCode;
+    pendingDeviceLookupId.clear();
+    pendingDeviceLookupCode.clear();
+    QJsonObject found;
+    for (const QJsonValue &value : devices) {
+        const QJsonObject device = value.toObject();
+        if (device.value("device_id").toString() == deviceId) {
+            found = device;
+            break;
+        }
+    }
+    if (found.isEmpty()) {
+        QMessageBox::warning(this, "设备不存在",
+            "后端没有找到设备码 " + spacedCode(deviceId) + "，请确认对方设备已在平台注册。");
+        return;
+    }
+    if (!found.value("online").toBool()) {
+        QMessageBox::warning(this, "设备不在线",
+            "后端找到了设备码 " + spacedCode(deviceId) + "，但该设备当前不在线。");
+        return;
+    }
+    promptAndRequestConnection(deviceId);
+}
+
+
+void MainWindow::onPlatformRequestFailed(const QString &requestId, const QString &code, const QString &message) {
+    if (pendingDeviceLookupId.isEmpty() || requestId != pendingDeviceLookupId) return;
+    pendingDeviceLookupId.clear();
+    pendingDeviceLookupCode.clear();
+    QMessageBox::warning(this, "设备查询失败",
+        QString("后端返回错误：%1\n%2").arg(code, message));
 }
 
 
@@ -246,10 +275,7 @@ void MainWindow::updatePlatformState(const QString &state) {
                                                : "font-size: 11px; color: #687588; padding: 2px 5px;");
     }
     if (deviceState) deviceState->setText(connected ? "设备：平台在线" : "设备：未注册");
-    if (deviceStatusValue) deviceStatusValue->setText(connected ? "平台已连接 · 设备已注册" : "平台未连接");
     if (platformStatusValue) platformStatusValue->setText(connected ? "状态：平台已连接" : (connecting ? "状态：正在连接平台…" : "状态：平台未连接"));
     if (platformConnectButton) platformConnectButton->setText(connected || connecting ? "断开平台" : "连接平台");
-    if (!connected && serviceFooter && !serviceFooter->text().contains("协助请求"))
-        serviceFooter->setText("● 平台未连接");
     refreshDevicesPage();
 }

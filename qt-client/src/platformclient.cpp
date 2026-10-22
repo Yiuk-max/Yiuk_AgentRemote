@@ -426,6 +426,11 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
         emit registered(device);
         return;
     }
+    if (type == QLatin1String("device_list")) {
+        emit deviceListReceived(message.value(QStringLiteral("devices")).toArray(),
+                                message.value(QStringLiteral("correlation_id")).toString());
+        return;
+    }
     if (type == QLatin1String("session_request")) {
         emit sessionRequested(message.value(QStringLiteral("session")).toObject());
         return;
@@ -500,6 +505,8 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
     if (type == QLatin1String("error")) {
         const QString code = message.value(QStringLiteral("code")).toString();
         const QString text = message.value(QStringLiteral("message")).toString();
+        const QString requestId = message.value(QStringLiteral("correlation_id")).toString();
+        if (!requestId.isEmpty()) emit requestFailed(requestId, code, text);
         emit platformError(code, text);
         if (code == QLatin1String("BAD_PASSWORD") || code == QLatin1String("BAD_IDENTITY") ||
             code == QLatin1String("BUSINESS_TYPE_NOT_SUPPORTED") || code == QLatin1String("BAD_VERSION") ||
@@ -594,6 +601,13 @@ void PlatformClient::cancelCommand(const QString &sessionId, const QString &requ
                      {QStringLiteral("session_id"), sessionId},
                      {QStringLiteral("request_id"), requestId}});
 }
+
+void PlatformClient::listDevices(const QString &requestId) {
+    send(QJsonObject{{QStringLiteral("type"), QStringLiteral("list_devices")},
+                     {QStringLiteral("request_id"), requestId},
+                     {QStringLiteral("correlation_id"), requestId}});
+}
+
 
 void PlatformClient::requestSession(const QString &deviceId, const QString &purpose,
                                     const QStringList &permissions, const QString &temporaryPassword) {
