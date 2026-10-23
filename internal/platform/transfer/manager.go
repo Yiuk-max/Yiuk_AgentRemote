@@ -4,6 +4,7 @@
 // forwarding each chunk to the operator.
 package transfer
 
+//文件下载、块序号连续性、累计字节/块数上限、Base64 校验
 import (
 	"encoding/base64"
 	"errors"

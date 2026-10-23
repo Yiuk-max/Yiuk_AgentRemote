@@ -1,5 +1,6 @@
 package server
 
+//基本信息转换、时间戳、设备信息、会话信息
 import (
 	"time"
 

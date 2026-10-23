@@ -2,8 +2,11 @@
 // proves that a connection may use platform relay resources; it never grants
 // access to a device. Device access always requires a separate temporary
 // password and, in approval mode, an explicit owner decision.
+// 玩家密码仅用于验证连接是否可以使用平台中继资源；它永远不会授予对设备的访问权限。
+// 设备访问始终需要单独的临时密码，并且在审批模式下，需要设备所有者的明确决定。
 package auth
 
+//player 密码常量时间比较 + 按 IP 限流
 import (
 	"crypto/subtle"
 	"errors"

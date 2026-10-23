@@ -1,11 +1,13 @@
 package server
 
+//send/sendToConnection/sendToDevice/notifySession；有界发送队列满就直接断开慢客户端；sendOK 回显 correlation_id
 import (
 	"yiuk-switchboard/internal/platform/audit"
 	"yiuk-switchboard/internal/platform/protocol"
 	"yiuk-switchboard/internal/platform/session"
 )
 
+// 发送信息
 func (s *Server) send(c *conn, m protocol.Message) bool {
 	if c == nil {
 		return false
@@ -33,12 +35,14 @@ func (s *Server) send(c *conn, m protocol.Message) bool {
 	}
 }
 
+// 发送信息到指定连接，找到连接，上锁，发送信息
 func (s *Server) lookupConn(id string) *conn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conns[id]
 }
 
+// 发送信息到指定连接，找到连接，上锁，发送信息
 func (s *Server) sendToConnection(id string, m protocol.Message) bool {
 	if id == "" {
 		return false
@@ -46,6 +50,7 @@ func (s *Server) sendToConnection(id string, m protocol.Message) bool {
 	return s.send(s.lookupConn(id), m)
 }
 
+// 发送信息到指定设备，找到设备的在线连接，发送信息
 func (s *Server) sendToDevice(deviceID string, m protocol.Message) bool {
 	connID, ok := s.devices.OnlineConnection(deviceID)
 	if !ok {
@@ -54,6 +59,7 @@ func (s *Server) sendToDevice(deviceID string, m protocol.Message) bool {
 	return s.sendToConnection(connID, m)
 }
 
+// 通知会话状态变化，向操作者和设备发送会话状态消息
 func (s *Server) notifySession(ses *session.Session) {
 	if ses == nil {
 		return

@@ -12,6 +12,7 @@ import (
 // Status is the task lifecycle state.
 type Status string
 
+// 命令任务、request_id 幂等、输出字节预算、deadline、游标分页
 const (
 	StatusQueued        Status = "queued"
 	StatusRunning       Status = "running"

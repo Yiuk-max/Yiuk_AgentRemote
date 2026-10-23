@@ -10,6 +10,7 @@ import (
 	"yiuk-switchboard/internal/platform/transfer"
 )
 
+// 处理文件下载请求
 func (s *Server) handleDownloadFile(c *conn, m protocol.Message) error {
 	if err := s.validID("session_id", m.SessionID); err != nil {
 		return perr("INVALID_ARGUMENT", err.Error())
@@ -52,6 +53,7 @@ func (s *Server) handleDownloadFile(c *conn, m protocol.Message) error {
 	return nil
 }
 
+// 处理文件下载分片
 func (s *Server) handleFileChunk(c *conn, m protocol.Message) error {
 	if c.role != roleDevice {
 		return perr("NOT_DEVICE", "only the target device can send file chunks")
@@ -88,6 +90,7 @@ func (s *Server) handleFileChunk(c *conn, m protocol.Message) error {
 	return nil
 }
 
+// 处理文件下载结果
 func (s *Server) handleFileDownloadResult(c *conn, m protocol.Message) error {
 	if c.role != roleDevice {
 		return perr("NOT_DEVICE", "only the target device can report a file download result")
@@ -120,6 +123,7 @@ func (s *Server) handleFileDownloadResult(c *conn, m protocol.Message) error {
 	return nil
 }
 
+// 传输终端状态
 func transferResultMessage(t *transfer.Transfer) protocol.Message {
 	if t == nil {
 		return protocol.Message{Type: protocol.TypeFileDownloadResult}

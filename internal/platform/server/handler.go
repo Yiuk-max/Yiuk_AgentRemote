@@ -1,5 +1,6 @@
 package server
 
+//消息分发
 import (
 	"errors"
 	"sort"
@@ -108,6 +109,7 @@ func (s *Server) handleAuthenticate(c *conn, m protocol.Message) error {
 	})
 }
 
+// 处理注册设备
 func (s *Server) handleRegisterDevice(c *conn, m protocol.Message) error {
 	if c.role != rolePlayer {
 		if c.role == roleDevice {
@@ -193,6 +195,7 @@ func (s *Server) handleRegisterDevice(c *conn, m protocol.Message) error {
 	})
 }
 
+// 处理心跳包
 func (s *Server) handleHeartbeat(c *conn, m protocol.Message) error {
 	if c.role != roleDevice {
 		return perr("NOT_DEVICE", "only a registered device can send heartbeats")
@@ -209,6 +212,7 @@ func (s *Server) handleHeartbeat(c *conn, m protocol.Message) error {
 	})
 }
 
+// 处理更新密码
 func (s *Server) handleUpdatePassword(c *conn, m protocol.Message) error {
 	if c.role != roleDevice {
 		return perr("NOT_DEVICE", "only a registered device can rotate its temporary password")
@@ -257,6 +261,7 @@ func (s *Server) handleUpdatePassword(c *conn, m protocol.Message) error {
 	})
 }
 
+// 获取设备列表
 func (s *Server) handleListDevices(c *conn, m protocol.Message) error {
 	infos := s.devices.List()
 	sort.Slice(infos, func(i, j int) bool { return infos[i].ID < infos[j].ID })

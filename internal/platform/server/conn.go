@@ -1,5 +1,7 @@
 package server
 
+//conn 结构 + readLoop（握手期用 handshake_timeout，
+//认证后切 heartbeat_timeout 作读 deadline）+ writeLoop + writeMu 保证帧不交错
 import (
 	"bufio"
 	"errors"

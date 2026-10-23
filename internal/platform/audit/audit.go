@@ -2,6 +2,7 @@
 // Passwords, command bodies and full output must never be passed to it.
 package audit
 
+//脱敏日志包装，只有 ID/状态/错误码，永不写密码、命令正文、完整输出
 import (
 	"log/slog"
 )

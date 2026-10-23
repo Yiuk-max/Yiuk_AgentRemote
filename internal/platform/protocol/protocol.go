@@ -24,7 +24,7 @@ const (
 	BusinessMinecraft   = "minecraft"
 )
 
-// Message types.
+// 信息类型
 const (
 	TypeAuthenticatePlayer = "authenticate_player"
 	TypeAuthenticated      = "authenticated"
@@ -67,6 +67,7 @@ const (
 )
 
 // Session status values. They are mirrored in internal/platform/session.
+// 连接状态值，它们在 internal/platform/session 中被镜像。
 const (
 	StatusRequested       = "requested"
 	StatusPendingApproval = "pending_approval"
@@ -79,6 +80,7 @@ const (
 )
 
 // Task status values. They are mirrored in internal/platform/task.
+// 任务状态值，它们在 internal/platform/task 中被镜像。
 const (
 	TaskQueued        = "queued"
 	TaskRunning       = "running"
@@ -90,6 +92,7 @@ const (
 )
 
 // Modes for temporary-password authorization.
+// 临时密码授权模式
 const (
 	ModeDirect   = "direct"
 	ModeApproval = "approval"
@@ -97,6 +100,7 @@ const (
 
 // DefaultMaxFrameBytes bounds every control frame. Command output is chunked
 // well below this value by the device client.
+// 默认最大帧字节数限制每个控制帧。设备客户端将命令输出分块，远低于此值。
 const DefaultMaxFrameBytes = 256 << 10
 
 // ErrFrameTooLarge is returned when a peer sends an oversized frame.
@@ -105,6 +109,7 @@ var ErrFrameTooLarge = errors.New("protocol frame exceeds configured maximum")
 // Message is the common envelope for every platform message. Fields are only
 // populated for the message types that need them. Password fields are only
 // valid on authentication/device-registration messages and are never logged.
+// Message 是每个平台消息的通用信封。字段仅在需要它们的消息类型中填充。密码字段仅在身份验证/设备注册消息中有效，且从不记录。
 type Message struct {
 	Version      int    `json:"version"`
 	BusinessType string `json:"business_type,omitempty"`
@@ -210,6 +215,7 @@ type Codec struct {
 
 // NewCodec returns a codec with the given frame limit, falling back to the
 // package default when the limit is not positive.
+// NewCodec 返回具有给定帧限制的编解码器，当限制不是正数时，回退到包默认值。
 func NewCodec(max int) Codec {
 	if max <= 0 {
 		max = DefaultMaxFrameBytes

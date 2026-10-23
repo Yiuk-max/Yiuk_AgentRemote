@@ -3,6 +3,8 @@
 // The platform server intentionally uses a separate configuration section from
 // the legacy Minecraft relay so player passwords, ports and limits can be
 // isolated, as required by docs/architecture.md.
+// 平台服务器故意使用与传统 Minecraft 中继不同的配置部分，以便可以隔离玩家密码、端口和限制，正如 docs/architecture.md 所要求的那样。
+// YAML → 结构体 + ApplyDefaults/Validate + 派生 TTL 方法
 package config
 
 import (

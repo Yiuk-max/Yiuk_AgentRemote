@@ -10,6 +10,7 @@ import (
 	"yiuk-switchboard/internal/platform/transfer"
 )
 
+// 申请会话
 func (s *Server) handleRequestSession(c *conn, m protocol.Message) error {
 	if err := s.validID("device_id", m.DeviceID); err != nil {
 		return perr("INVALID_ARGUMENT", err.Error())
@@ -76,6 +77,7 @@ func (s *Server) handleRequestSession(c *conn, m protocol.Message) error {
 	})
 }
 
+// 批准会话
 func (s *Server) handleApproveSession(c *conn, m protocol.Message) error {
 	if c.role != roleDevice {
 		return perr("NOT_DEVICE", "only the target device can approve a session")
@@ -104,6 +106,7 @@ func (s *Server) handleApproveSession(c *conn, m protocol.Message) error {
 	})
 }
 
+// 拒绝会话
 func (s *Server) handleRejectSession(c *conn, m protocol.Message) error {
 	if c.role != roleDevice {
 		return perr("NOT_DEVICE", "only the target device can reject a session")
@@ -140,6 +143,7 @@ func (s *Server) handleRejectSession(c *conn, m protocol.Message) error {
 	})
 }
 
+// 获取会话状态
 func (s *Server) handleGetSessionStatus(c *conn, m protocol.Message) error {
 	if err := s.validID("session_id", m.SessionID); err != nil {
 		return perr("INVALID_ARGUMENT", err.Error())
@@ -159,6 +163,7 @@ func (s *Server) handleGetSessionStatus(c *conn, m protocol.Message) error {
 	})
 }
 
+// 打开会话通道
 func (s *Server) handleOpenSessionChannel(c *conn, m protocol.Message) error {
 	if err := s.validID("session_id", m.SessionID); err != nil {
 		return perr("INVALID_ARGUMENT", err.Error())
@@ -185,6 +190,7 @@ func (s *Server) handleOpenSessionChannel(c *conn, m protocol.Message) error {
 	})
 }
 
+// 关闭会话
 func (s *Server) handleCloseSession(c *conn, m protocol.Message) error {
 	if err := s.validID("session_id", m.SessionID); err != nil {
 		return perr("INVALID_ARGUMENT", err.Error())
@@ -233,6 +239,7 @@ func (s *Server) handleCloseSession(c *conn, m protocol.Message) error {
 	})
 }
 
+// 撤销设备的所有会话
 func (s *Server) revokeDeviceSessions(deviceID, reason string) {
 	interrupted := s.sessions.RevokeByDevice(deviceID, reason)
 	for _, ses := range interrupted {
@@ -248,6 +255,7 @@ func (s *Server) revokeDeviceSessions(deviceID, reason string) {
 	}
 }
 
+// 判断是否能直接访问会话
 func (s *Server) canAccessSession(c *conn, ses *session.Session) bool {
 	if ses == nil {
 		return false
@@ -258,6 +266,7 @@ func (s *Server) canAccessSession(c *conn, ses *session.Session) bool {
 	return c.role == roleDevice && c.deviceID == ses.DeviceID && c.id == ses.DeviceConnectionID
 }
 
+// 获取连接的标签
 func (s *Server) actorLabel(c *conn) string {
 	if c.label != "" {
 		return c.label

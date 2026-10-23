@@ -24,7 +24,7 @@ func (s *Server) validID(field, value string) error {
 func (s *Server) deviceError(err error) error {
 	switch {
 	case errors.Is(err, device.ErrDeviceNotFound):
-		return perr("DEVICE_NOT_FOUND", "device not found")
+		return perr("DEVICE_NOT_FOUND", "device not found") // 设备未找到
 	case errors.Is(err, device.ErrDeviceLimit):
 		return perr("DEVICE_LIMIT", "device limit reached")
 	case errors.Is(err, device.ErrDeviceOnline):

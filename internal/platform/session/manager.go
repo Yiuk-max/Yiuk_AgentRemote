@@ -3,6 +3,8 @@
 // set and an expiry. No session survives a platform restart.
 package session
 
+// Session lifecycle: requested -> pending_approval -> approved -> active -> closed
+// 授权状态机、权限集合、设备/操作者绑定、过期
 import (
 	"errors"
 	"fmt"

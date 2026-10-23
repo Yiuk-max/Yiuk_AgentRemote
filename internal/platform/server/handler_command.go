@@ -10,6 +10,7 @@ import (
 	"yiuk-switchboard/internal/platform/task"
 )
 
+// 处理命令执行请求
 func (s *Server) handleExecuteCommand(c *conn, m protocol.Message) error {
 	if err := s.validID("session_id", m.SessionID); err != nil {
 		return perr("INVALID_ARGUMENT", err.Error())
@@ -78,6 +79,7 @@ func (s *Server) handleExecuteCommand(c *conn, m protocol.Message) error {
 	})
 }
 
+// 处理命令执行输出
 func (s *Server) handleCommandOutput(c *conn, m protocol.Message) error {
 	if c.role != roleDevice {
 		return perr("NOT_DEVICE", "only the target device can send command output")
@@ -118,6 +120,7 @@ func (s *Server) handleCommandOutput(c *conn, m protocol.Message) error {
 	return nil
 }
 
+// 处理命令执行结果
 func (s *Server) handleCommandResult(c *conn, m protocol.Message) error {
 	if c.role != roleDevice {
 		return perr("NOT_DEVICE", "only the target device can report a command result")
@@ -146,6 +149,7 @@ func (s *Server) handleCommandResult(c *conn, m protocol.Message) error {
 	return nil
 }
 
+// 处理获取命令执行结果
 func (s *Server) handleGetCommandResult(c *conn, m protocol.Message) error {
 	if err := s.validID("session_id", m.SessionID); err != nil {
 		return perr("INVALID_ARGUMENT", err.Error())
@@ -180,6 +184,7 @@ func (s *Server) handleGetCommandResult(c *conn, m protocol.Message) error {
 	})
 }
 
+// 处理取消命令执行请求
 func (s *Server) handleCancelCommand(c *conn, m protocol.Message) error {
 	if err := s.validID("session_id", m.SessionID); err != nil {
 		return perr("INVALID_ARGUMENT", err.Error())
@@ -220,6 +225,7 @@ func (s *Server) handleCancelCommand(c *conn, m protocol.Message) error {
 	})
 }
 
+// 任务结果消息
 func taskResultMessage(t *task.Task) protocol.Message {
 	if t == nil {
 		return protocol.Message{Type: protocol.TypeCommandResult}

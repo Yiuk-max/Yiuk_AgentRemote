@@ -3,6 +3,7 @@
 // device password, connection and session.
 package device
 
+//临时密码哈希（盐 + SHA-256）、版本、TTL、撤销、在线连接、心跳、并发会话计数
 import (
 	"crypto/rand"
 	"crypto/sha256"

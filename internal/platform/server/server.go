@@ -51,6 +51,7 @@ type Server struct {
 }
 
 // New creates a platform server and binds its configured listener.
+// 新建一个平台服务器并绑定其配置的lintener。
 func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	ln, err := transport.Listen(cfg.Listen, cfg.TLSCert, cfg.TLSKey, cfg.AllowInsecure)
 	if err != nil {
@@ -58,9 +59,8 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	}
 	return NewWithListener(cfg, log, ln), nil
 }
-
-// NewWithListener creates a server around an already-bound listener. Tests use
-// this to avoid TLS certificate setup; production should use New.
+// 创建一个新的平台服务器并绑定其配置的侦听器，测试
+// 这个用于避免 TLS 证书设置；生产环境应使用 New。
 func NewWithListener(cfg config.Config, log *slog.Logger, ln net.Listener) *Server {
 	if log == nil {
 		log = slog.Default()
@@ -86,6 +86,7 @@ func (s *Server) Addr() net.Addr { return s.listener.Addr() }
 
 // Run accepts connections until the context is cancelled or the listener
 // fails. All connections and in-memory state are discarded on return.
+// Run 循环接受连接，直到上下文被取消或监听器失败。所有连接和内存中的状态在返回时都会被丢弃。
 func (s *Server) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -143,7 +144,7 @@ func (s *Server) isClosed() bool {
 		return false
 	}
 }
-
+// 处理单个连接的生命周期，包括读取和写入循环。每个连接在单独的 goroutine 中处理。
 func (s *Server) serveConn(nc net.Conn) {
 	if tcp, ok := nc.(*net.TCPConn); ok {
 		_ = tcp.SetKeepAlive(true)
@@ -196,7 +197,7 @@ func (s *Server) unregisterConn(c *conn) {
 	// clean up sessions owned by this connection in both roles.
 	s.cleanupOperator(c)
 }
-
+// 清理设备连接
 func (s *Server) cleanupDevice(c *conn) {
 	if c.deviceID == "" {
 		return
