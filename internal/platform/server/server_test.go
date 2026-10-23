@@ -453,6 +453,79 @@ func TestFileDownloadRequiresReadFilePermissionAndStreamsChunks(t *testing.T) {
 	}
 }
 
+func TestFileUploadRequiresWriteFilePermissionAndForwardsChunks(t *testing.T) {
+	address, _ := startServer(t, func(cfg *config.Config) { cfg.MaxUploadBytes = 1024 })
+	device := dialClient(t, address)
+	device.auth(testPlayerPassword)
+	device.register("device-upload", testDevicePassword, protocol.ModeDirect)
+
+	operator := dialClient(t, address)
+	operator.auth(testPlayerPassword)
+	operator.send(protocol.Message{
+		Type: protocol.TypeRequestSession, DeviceID: "device-upload", TemporaryPassword: testDevicePassword,
+		Purpose: "read only", Permissions: []string{"read_file"},
+	})
+	readSession := operator.recv(protocol.TypeSessionCreated)
+	device.recv(protocol.TypeSessionStatus)
+	operator.send(protocol.Message{
+		Type: protocol.TypeUploadFile, SessionID: readSession.SessionID, RequestID: "upload-denied",
+		RemotePath: `C:gent
+otes.md`, FileName: "notes.md", FileSize: 5,
+	})
+	if errMsg := operator.recv(protocol.TypeError); errMsg.Code != "PERMISSION_DENIED" {
+		t.Fatalf("upload without write_file = %s, want PERMISSION_DENIED", errMsg.Code)
+	}
+	device.expectNone(100 * time.Millisecond)
+
+	operator.send(protocol.Message{
+		Type: protocol.TypeRequestSession, DeviceID: "device-upload", TemporaryPassword: testDevicePassword,
+		Purpose: "send notes", Permissions: []string{"write_file"},
+	})
+	writeSession := operator.recv(protocol.TypeSessionCreated)
+	device.recv(protocol.TypeSessionStatus)
+	operator.send(protocol.Message{
+		Type: protocol.TypeUploadFile, SessionID: writeSession.SessionID, RequestID: "upload-1",
+		RemotePath: `C:gent
+otes.md`, FileName: "notes.md", FileSize: 5,
+		FileSHA256: "checksum", Overwrite: true,
+	})
+	forwarded := device.recv(protocol.TypeUploadFile)
+	if forwarded.RequestID != "upload-1" || forwarded.RemotePath != `C:gent
+otes.md` ||
+		forwarded.FileName != "notes.md" || forwarded.FileSize != 5 || !forwarded.Overwrite {
+		t.Fatalf("unexpected forwarded upload request: %#v", forwarded)
+	}
+
+	operator.send(protocol.Message{
+		Type: protocol.TypeFileUploadChunk, SessionID: writeSession.SessionID, RequestID: "upload-1",
+		Sequence: 2, Data: "bG9n",
+	})
+	if errMsg := operator.recv(protocol.TypeError); errMsg.Code != "INVALID_CHUNK_SEQUENCE" {
+		t.Fatalf("out-of-order upload chunk = %s, want INVALID_CHUNK_SEQUENCE", errMsg.Code)
+	}
+	operator.send(protocol.Message{
+		Type: protocol.TypeFileUploadChunk, SessionID: writeSession.SessionID, RequestID: "upload-1",
+		Sequence: 1, Data: "aGVsbG8=", EOF: true,
+	})
+	chunk := device.recvWhere(protocol.TypeFileUploadChunk, func(m protocol.Message) bool { return m.RequestID == "upload-1" })
+	if chunk.Data != "aGVsbG8=" || chunk.Sequence != 1 || !chunk.EOF {
+		t.Fatalf("unexpected forwarded upload chunk: %#v", chunk)
+	}
+
+	device.send(protocol.Message{
+		Type: protocol.TypeFileUploadResult, SessionID: writeSession.SessionID, RequestID: "upload-1",
+		Status: string(protocol.TaskSucceeded), FileName: "notes.md", FileSize: 5,
+		FileSHA256: "checksum", RemotePath: `C:gent
+otes.md`, ResultKnown: true,
+	})
+	result := operator.recvWhere(protocol.TypeFileUploadResult, func(m protocol.Message) bool { return m.RequestID == "upload-1" })
+	if result.Status != string(protocol.TaskSucceeded) || result.FileSize != 5 ||
+		result.FileSHA256 != "checksum" || result.RemotePath != `C:gent
+otes.md` {
+		t.Fatalf("unexpected upload result: %#v", result)
+	}
+}
+
 func TestOutputTruncation(t *testing.T) {
 	address, _ := startServer(t, func(c *config.Config) { c.MaxOutputBytes = 1024 })
 	device := dialClient(t, address)

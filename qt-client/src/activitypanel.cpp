@@ -15,6 +15,7 @@ QString kindToken(ActivityKind kind) {
         case ActivityKind::Error: return QStringLiteral("err");
         case ActivityKind::Read: return QStringLiteral("read");
         case ActivityKind::Download: return QStringLiteral("file");
+        case ActivityKind::Upload: return QStringLiteral("upload");
         case ActivityKind::Success: return QStringLiteral("ok");
         case ActivityKind::Info:
         default: return QStringLiteral("info");

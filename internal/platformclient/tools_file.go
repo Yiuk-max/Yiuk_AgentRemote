@@ -61,7 +61,7 @@ func (c *Client) downloadFile(ctx context.Context, raw json.RawMessage) (any, er
 		Type: protocol.TypeDownloadFile, SessionID: input.SessionID, RequestID: requestID, RemotePath: input.RemotePath,
 	}, func(m protocol.Message) bool {
 		return m.Type == protocol.TypeFileDownloadResult && m.RequestID == requestID
-	}, c.downloadTimeout())
+	}, c.fileTransferTimeout())
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +170,8 @@ func safeRemoteBase(remotePath string) string {
 	return base
 }
 
-func (c *Client) downloadTimeout() time.Duration {
+// fileTransferTimeout bounds one whole file transfer (download or upload).
+func (c *Client) fileTransferTimeout() time.Duration {
 	timeout := time.Duration(c.cfg.TimeoutSeconds) * time.Second
 	if timeout < 5*time.Minute {
 		timeout = 5 * time.Minute

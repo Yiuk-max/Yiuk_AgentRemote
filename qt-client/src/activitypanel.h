@@ -17,6 +17,7 @@ enum class ActivityKind {
     Error,
     Read,
     Download,
+    Upload,
     Success,
 };
 

@@ -48,9 +48,20 @@ func (s *Server) sweep() {
 		for _, t := range finished {
 			s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
 		}
-		for _, t := range s.transfers.FinishSession(ses.ID, transfer.StatusCancelled) {
-			s.sendToConnection(ses.OperatorConnectionID, transferResultMessage(t))
+		for _, msg := range s.sessionTransferResults(ses.ID, transfer.StatusCancelled) {
+			s.sendToConnection(ses.OperatorConnectionID, msg)
 		}
+	}
+	for _, t := range s.uploads.Expire() {
+		ses, ok := s.sessions.Get(t.SessionID)
+		if !ok {
+			continue
+		}
+		s.sendToConnection(ses.OperatorConnectionID, uploadResultMessage(t))
+		s.sendToConnection(ses.DeviceConnectionID, protocol.Message{
+			Type: protocol.TypeCancelFileUpload, SessionID: t.SessionID, RequestID: t.RequestID,
+		})
+		s.audit.Event("file_upload_timed_out", "session", audit.RedactID(t.SessionID), "request", audit.RedactID(t.RequestID))
 	}
 	for _, t := range s.transfers.Expire() {
 		ses, ok := s.sessions.Get(t.SessionID)

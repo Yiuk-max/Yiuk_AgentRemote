@@ -14,7 +14,7 @@ import (
 
 const (
 	maxTemporaryPasswordLen = 256
-	downloadTransferTimeout = 5 * time.Minute
+	fileTransferTimeout = 5 * time.Minute
 )
 
 func (s *Server) handle(c *conn, m protocol.Message) error {
@@ -56,6 +56,14 @@ func (s *Server) handle(c *conn, m protocol.Message) error {
 		return s.handleFileChunk(c, m)
 	case protocol.TypeFileDownloadResult:
 		return s.handleFileDownloadResult(c, m)
+	case protocol.TypeUploadFile:
+		return s.handleUploadFile(c, m)
+	case protocol.TypeFileUploadChunk:
+		return s.handleFileUploadChunk(c, m)
+	case protocol.TypeFileUploadResult:
+		return s.handleFileUploadResult(c, m)
+	case protocol.TypeCancelFileUpload:
+		return s.handleCancelFileUpload(c, m)
 	case protocol.TypeSessionStatus:
 		return s.handleGetSessionStatus(c, m)
 	case protocol.TypeOpenSessionChannel:

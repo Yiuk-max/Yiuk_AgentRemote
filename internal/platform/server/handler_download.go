@@ -29,7 +29,7 @@ func (s *Server) handleDownloadFile(c *conn, m protocol.Message) error {
 	if !ok || onlineID != ses.DeviceConnectionID || s.lookupConn(onlineID) == nil {
 		return perr("DEVICE_OFFLINE", "device is no longer online")
 	}
-	t, created, err := s.transfers.Start(ses.ID, m.RequestID, m.CorrelationID, int64(s.cfg.MaxDownloadBytes), downloadTransferTimeout)
+	t, created, err := s.transfers.Start(ses.ID, m.RequestID, m.CorrelationID, int64(s.cfg.MaxDownloadBytes), fileTransferTimeout)
 	if err != nil {
 		return s.transferError(err)
 	}

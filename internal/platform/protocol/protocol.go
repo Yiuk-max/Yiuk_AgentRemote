@@ -57,6 +57,11 @@ const (
 	TypeFileChunk          = "file_chunk"
 	TypeFileDownloadResult = "file_download_result"
 
+	TypeUploadFile       = "upload_file"
+	TypeCancelFileUpload = "cancel_file_upload"
+	TypeFileUploadChunk  = "file_upload_chunk"
+	TypeFileUploadResult = "file_upload_result"
+
 	TypeListDevices = "list_devices"
 	TypeDeviceList  = "device_list"
 
@@ -144,6 +149,9 @@ type Message struct {
 	FileName   string `json:"file_name,omitempty"`
 	FileSize   int64  `json:"file_size,omitempty"`
 	FileSHA256 string `json:"file_sha256,omitempty"`
+	// Overwrite lets an upload replace an existing remote file. The device
+	// refuses to replace files unless this is explicitly set.
+	Overwrite bool `json:"overwrite,omitempty"`
 
 	Stream      string `json:"stream,omitempty"`
 	Data        string `json:"data,omitempty"`

@@ -113,6 +113,23 @@ private:
     // temporary script file.
     QHash<QString, PowerShellRunner *> runs;
     QHash<QString, bool> activeFileDownloads;
+    struct FileUploadState {
+        QString sessionId;
+        QString requestId;
+        QString targetPath;
+        QString tempPath;
+        QString fileName;
+        QFile *file = nullptr;
+        QCryptographicHash *hash = nullptr;
+        quint64 expectedSequence = 1;
+        qint64 received = 0;
+        qint64 expected = 0;
+        QString expectedSha256;
+        bool overwrite = false;
+    };
+    // Uploads are received from the operator and written to disk: one open
+    // temporary file per in-flight upload, renamed into place when complete.
+    QHash<QString, QSharedPointer<FileUploadState>> activeFileUploads;
     QSystemTrayIcon *trayIcon = nullptr;
     QStatusBar *statusFooter = nullptr;
     QHash<QString, QString> notificationSessions;
@@ -181,11 +198,19 @@ private:
         qint64 expected = 0;
     };
     bool sessionAllowsFileRead(const QString &sessionId);
+    bool sessionAllowsFileWrite(const QString &sessionId);
     void finishFileDownload(const QSharedPointer<FileDownloadState> &state, const QString &status,
                             bool resultKnown);
     void pumpFileDownload(const QSharedPointer<FileDownloadState> &state);
     void onPlatformFileDownloadRequested(const QString &sessionId, const QString &requestId,
                                          const QString &remotePath);
+    void onPlatformFileUploadRequested(const QString &sessionId, const QString &requestId,
+                                       const QString &remotePath, const QString &fileName,
+                                       qint64 fileSize, const QString &sha256, bool overwrite);
+    void onPlatformFileUploadChunk(const QString &sessionId, const QString &requestId,
+                                   quint64 sequence, const QString &data, bool eof);
+    void finishFileUpload(const QSharedPointer<FileUploadState> &state, const QString &status);
+    void abortFileUploadsForSession(const QString &sessionId);
     void onPlatformCommandRequested(const QString &sessionId, const QString &requestId, const QString &command,
                                     const QString &workingDirectory, int timeoutSeconds);
     void executePlatformCommand(const QString &sessionId, const QString &requestId, const QString &command,
@@ -204,6 +229,7 @@ private:
     void interruptPlatformSessions();
     QString activeTaskSummary(const QString &sessionId) const;
     QJsonObject downloadLocalFile(const QJsonObject &input);
+    QJsonObject uploadLocalFile(const QJsonObject &input);
     QJsonObject executeLocalCommand(const QJsonObject &input);
     QJsonObject commandResult(const QJsonObject &input) const;
     QJsonObject cancelCommand(const QJsonObject &input);

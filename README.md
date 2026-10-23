@@ -12,7 +12,8 @@
 - **会话授权**：会话绑定设备、操作者、权限集合与到期时间，可即时结束并终止任务。
 - **命令任务**：单次 PowerShell 执行，返回 stdout、stderr、退出码、状态与截断标记；支持工作目录、超时、取消、输出上限。
 - **远端文件读取**：独立 `read_file` 权限，64 KiB 分块，单文件上限 32 MiB，SHA-256 校验后落盘。
-- **Agent 工具**：`list_devices`、`get_device_status`、`request_connection`、`run_command`、`get_session_status`、`execute_command`、`get_command_result`、`download_file`、`cancel_command`、`close_session`，附 MCP stdio 适配器。
+- **文件上传**：独立 `write_file` 权限，64 KiB 分块推到目标设备，设备端先写临时文件，校验大小与 SHA-256 后再原子改名；默认拒绝覆盖已有文件。
+- **Agent 工具**：`list_devices`、`get_device_status`、`request_connection`、`run_command`、`get_session_status`、`execute_command`、`get_command_result`、`download_file`、`upload_file`、`cancel_command`、`close_session`，附 MCP stdio 适配器。
 - **只读活动面板**：远程协助过程由独立进程 `yiuk-activity-panel` 展示——半透明悬浮终端，按操作类型着色（读取 / 执行命令 / 下载 / 输出 / 错误）。随时可关、随时可开，新操作不会把它弹到前台。
 - **TLS 中转**：平台连接使用独立业务类型、端口、密码与资源限制，TLS 1.2+ 加密。
 - **心跳保活**：设备与操作者连接都会定期心跳，闲置长会话不会被误判断线。
@@ -65,4 +66,4 @@
 - [开发与构建](docs/development.md)：环境、构建、测试、打包发布、服务器部署。
 - [本机开发环境](docs/local-dev.md)：**仅限本机**的工具链路径、快捷命令与已知坑。
 
-发布说明：`docs/release-notes-0.1.3.txt`；`release/` 下为构建好的 Windows x64 压缩包与 SHA-256（不进仓库）。
+发布说明：`docs/release-notes-0.1.4.txt`；`release/` 下为构建好的 Windows x64 压缩包与 SHA-256（不进仓库）。

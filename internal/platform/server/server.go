@@ -40,6 +40,7 @@ type Server struct {
 	sessions  *session.Manager
 	tasks     *task.Manager
 	transfers *transfer.Manager
+	uploads   *transfer.Manager
 	auth      *auth.Authenticator
 	audit     *audit.Logger
 
@@ -74,6 +75,7 @@ func NewWithListener(cfg config.Config, log *slog.Logger, ln net.Listener) *Serv
 		sessions:  session.NewManager(cfg.MaxSessions, cfg.MaxSessionsPerDevice, cfg.SessionTimeout(), cfg.ApprovalTimeout()),
 		tasks:     task.NewManager(cfg.MaxOutputBytes, cfg.MaxTasksPerSession),
 		transfers: transfer.NewManager(cfg.MaxTasksPerSession),
+		uploads:   transfer.NewManager(cfg.MaxTasksPerSession),
 		auth:      auth.New(cfg.PlayerPassword, cfg.AuthRatePerMin),
 		audit:     audit.New(log),
 		conns:     make(map[string]*conn),
@@ -215,8 +217,8 @@ func (s *Server) cleanupDevice(c *conn) {
 		for _, t := range finished {
 			s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
 		}
-		for _, t := range s.transfers.FinishSession(ses.ID, transfer.StatusResultUnknown) {
-			s.sendToConnection(ses.OperatorConnectionID, transferResultMessage(t))
+		for _, msg := range s.sessionTransferResults(ses.ID, transfer.StatusResultUnknown) {
+			s.sendToConnection(ses.OperatorConnectionID, msg)
 		}
 	}
 }
@@ -226,8 +228,8 @@ func (s *Server) cleanupOperator(c *conn) {
 	for _, ses := range interrupted {
 		s.devices.RemoveSession(ses.DeviceID, ses.ID)
 		finished := s.tasks.FinishSession(ses.ID, task.StatusCancelled)
-		for _, t := range s.transfers.FinishSession(ses.ID, transfer.StatusCancelled) {
-			s.sendToConnection(ses.OperatorConnectionID, transferResultMessage(t))
+		for _, msg := range s.sessionTransferResults(ses.ID, transfer.StatusCancelled) {
+			s.sendToConnection(ses.OperatorConnectionID, msg)
 		}
 		s.notifySession(ses)
 		if ses.DeviceConnectionID != "" {

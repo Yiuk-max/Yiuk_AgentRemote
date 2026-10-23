@@ -57,6 +57,8 @@ platform:
   heartbeat_timeout_sec: 45
   handshake_timeout_sec: 10
   max_output_bytes: 2097152
+  max_download_bytes: 33554432
+  max_upload_bytes: 33554432
   max_frame_bytes: 262144
   auth_rate_per_min: 10
   offline_device_keep_sec: 86400

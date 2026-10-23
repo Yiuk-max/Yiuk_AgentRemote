@@ -475,6 +475,29 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
                                    message.value(QStringLiteral("remote_path")).toString());
         return;
     }
+    if (type == QLatin1String("upload_file")) {
+        emit fileUploadRequested(message.value(QStringLiteral("session_id")).toString(),
+                                 message.value(QStringLiteral("request_id")).toString(),
+                                 message.value(QStringLiteral("remote_path")).toString(),
+                                 message.value(QStringLiteral("file_name")).toString(),
+                                 static_cast<qint64>(message.value(QStringLiteral("file_size")).toDouble()),
+                                 message.value(QStringLiteral("file_sha256")).toString(),
+                                 message.value(QStringLiteral("overwrite")).toBool());
+        return;
+    }
+    if (type == QLatin1String("file_upload_chunk")) {
+        emit fileUploadChunkReceived(message.value(QStringLiteral("session_id")).toString(),
+                                     message.value(QStringLiteral("request_id")).toString(),
+                                     static_cast<quint64>(message.value(QStringLiteral("sequence")).toDouble()),
+                                     message.value(QStringLiteral("data")).toString(),
+                                     message.value(QStringLiteral("eof")).toBool());
+        return;
+    }
+    if (type == QLatin1String("cancel_file_upload")) {
+        emit fileUploadCanceled(message.value(QStringLiteral("session_id")).toString(),
+                                message.value(QStringLiteral("request_id")).toString());
+        return;
+    }
     if (type == QLatin1String("cancel_file_download")) {
         emit fileDownloadCanceled(message.value(QStringLiteral("session_id")).toString(),
                                  message.value(QStringLiteral("request_id")).toString());
@@ -587,6 +610,21 @@ void PlatformClient::sendFileDownloadResult(const QString &sessionId, const QStr
                      {QStringLiteral("session_id"), sessionId},
                      {QStringLiteral("request_id"), requestId},
                      {QStringLiteral("status"), status},
+                     {QStringLiteral("file_name"), fileName},
+                     {QStringLiteral("file_size"), static_cast<double>(fileSize)},
+                     {QStringLiteral("file_sha256"), sha256},
+                     {QStringLiteral("result_known"), resultKnown}});
+}
+
+void PlatformClient::sendFileUploadResult(const QString &sessionId, const QString &requestId,
+                                          const QString &status, const QString &remotePath,
+                                          const QString &fileName, qint64 fileSize,
+                                          const QString &sha256, bool resultKnown) {
+    send(QJsonObject{{QStringLiteral("type"), QStringLiteral("file_upload_result")},
+                     {QStringLiteral("session_id"), sessionId},
+                     {QStringLiteral("request_id"), requestId},
+                     {QStringLiteral("status"), status},
+                     {QStringLiteral("remote_path"), remotePath},
                      {QStringLiteral("file_name"), fileName},
                      {QStringLiteral("file_size"), static_cast<double>(fileSize)},
                      {QStringLiteral("file_sha256"), sha256},

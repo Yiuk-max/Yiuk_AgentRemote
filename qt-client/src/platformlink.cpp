@@ -176,6 +176,23 @@ void MainWindow::startPlatform() {
     connect(platform, &PlatformClient::sessionCreated, this, &MainWindow::onPlatformSessionCreated);
     connect(platform, &PlatformClient::commandRequested, this, &MainWindow::onPlatformCommandRequested);
     connect(platform, &PlatformClient::fileDownloadRequested, this, &MainWindow::onPlatformFileDownloadRequested);
+    connect(platform, &PlatformClient::fileUploadRequested, this, &MainWindow::onPlatformFileUploadRequested);
+    connect(platform, &PlatformClient::fileUploadChunkReceived, this, &MainWindow::onPlatformFileUploadChunk);
+    connect(platform, &PlatformClient::fileUploadCanceled, this, [this](const QString &sessionId, const QString &requestId) {
+        const QSharedPointer<FileUploadState> state = activeFileUploads.value(requestId);
+        if (!state || state->sessionId != sessionId) return;
+        appendActivity(sessionId, QString("平台已取消文件上传 %1").arg(requestId.left(8)), ActivityKind::Upload);
+        if (state->file) {
+            state->file->close();
+            state->file->deleteLater();
+            state->file = nullptr;
+        }
+        delete state->hash;
+        state->hash = nullptr;
+        if (!state->tempPath.isEmpty()) QFile::remove(state->tempPath);
+        activeFileUploads.remove(requestId);
+        refreshActiveSessions();
+    });
     connect(platform, &PlatformClient::fileDownloadCanceled, this, [this](const QString &sessionId, const QString &requestId) {
         activeFileDownloads.remove(requestId);
         appendActivity(sessionId, QString("平台已取消文件下载 %1").arg(requestId.left(8)),

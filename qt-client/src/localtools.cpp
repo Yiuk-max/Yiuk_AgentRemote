@@ -37,6 +37,7 @@ QJsonObject MainWindow::invokeLocalTool(const QString &tool, const QJsonObject &
     if (tool == "get_session_status") return sessionStatus(input.value("session_id").toString());
     if (tool == "execute_command") return executeLocalCommand(input);
     if (tool == "download_file") return downloadLocalFile(input);
+    if (tool == "upload_file") return uploadLocalFile(input);
     if (tool == "get_command_result") return commandResult(input);
     if (tool == "cancel_command") return cancelCommand(input);
     if (tool == "close_session") return closeSession(input.value("session_id").toString());
@@ -136,6 +137,73 @@ QJsonObject MainWindow::downloadLocalFile(const QJsonObject &input) {
                           {"size", static_cast<double>(total)},
                           {"sha256", QString::fromLatin1(hash.result().toHex())},
                           {"status", "succeeded"}});
+}
+
+
+// uploadLocalFile copies a local file into this machine's uploads directory.
+// The local bridge has no remote device, so source and target share a host.
+QJsonObject MainWindow::uploadLocalFile(const QJsonObject &input) {
+    const QString sessionId = input.value("session_id").toString();
+    expireSessionIfNeeded(sessionId);
+    if (!sessions.contains(sessionId)) return fail("SESSION_EXPIRED", "会话不存在或已过期");
+    const QJsonObject session = sessions.value(sessionId);
+    const QString status = session.value("status").toString();
+    if (status != "active" && status != "approved") return fail("PERMISSION_DENIED", "设备所有者尚未批准此会话");
+    bool canWrite = false;
+    for (const QJsonValue &permission : session.value("permissions").toArray()) {
+        if (permission.toString() == QLatin1String("write_file")) canWrite = true;
+    }
+    if (!canWrite) return fail("PERMISSION_DENIED", "会话未获得 write_file 权限");
+    const QString localPath = input.value("local_path").toString().trimmed();
+    if (localPath.isEmpty() || !QFileInfo(localPath).isAbsolute()) {
+        return fail("INVALID_ARGUMENT", "local_path 必须是绝对路径");
+    }
+    QFileInfo localInfo(localPath);
+    if (!localInfo.exists() || !localInfo.isFile()) return fail("LOCAL_READ_FAILED", "local_path 不是可读取的普通文件");
+    constexpr qint64 maxUploadBytes = 32LL * 1024 * 1024;
+    if (localInfo.size() > maxUploadBytes) return fail("FILE_TOO_LARGE", "文件超过 32 MiB 上传上限");
+    const QString requested = input.value("remote_path").toString().trimmed();
+    QString target;
+    if (requested.isEmpty()) {
+        target = QDir(yiukConfigRoot())
+            .filePath(QString("uploads/%1-%2").arg(QDateTime::currentMSecsSinceEpoch()).arg(localInfo.fileName()));
+    } else {
+        if (!QFileInfo(requested).isAbsolute()) return fail("INVALID_ARGUMENT", "remote_path 必须是绝对路径");
+        QFileInfo requestedInfo(requested);
+        target = requestedInfo.isDir() ? QDir(requested).filePath(localInfo.fileName()) : requested;
+    }
+    const bool overwrite = input.value("overwrite").toBool(false);
+    if (QFileInfo::exists(target) && !overwrite) return fail("REMOTE_PATH_EXISTS", "目标文件已存在；如需覆盖请设置 overwrite=true");
+    if (!QDir().mkpath(QFileInfo(target).absolutePath())) return fail("LOCAL_WRITE_FAILED", "无法创建目标目录");
+    QFile source(localPath);
+    if (!source.open(QIODevice::ReadOnly)) return fail("LOCAL_READ_FAILED", "无法打开 local_path");
+    QSaveFile output(target);
+    if (!output.open(QIODevice::WriteOnly)) return fail("LOCAL_WRITE_FAILED", "无法创建目标文件");
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    qint64 total = 0;
+    while (!source.atEnd()) {
+        const QByteArray chunk = source.read(64 * 1024);
+        if (chunk.isEmpty() && source.error() != QFile::NoError) {
+            output.cancelWriting();
+            return fail("LOCAL_READ_FAILED", "读取 local_path 失败");
+        }
+        if (output.write(chunk) != chunk.size()) {
+            output.cancelWriting();
+            return fail("LOCAL_WRITE_FAILED", "写入目标文件失败");
+        }
+        hash.addData(chunk);
+        total += chunk.size();
+    }
+    if (total != localInfo.size()) {
+        output.cancelWriting();
+        return fail("FILE_INTEGRITY_FAILED", "读取文件大小与预期不一致");
+    }
+    if (!output.commit()) return fail("LOCAL_WRITE_FAILED", "提交目标文件失败");
+    return ok(QJsonObject{{"session_id", sessionId}, {"local_path", localPath},
+                          {"remote_path", target}, {"file_name", QFileInfo(target).fileName()},
+                          {"size", static_cast<double>(total)},
+                          {"sha256", QString::fromLatin1(hash.result().toHex())},
+                          {"overwrite", overwrite}, {"status", "succeeded"}});
 }
 
 

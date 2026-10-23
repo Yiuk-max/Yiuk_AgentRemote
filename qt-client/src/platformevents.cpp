@@ -2,6 +2,8 @@
 
 #include "powershellrunner.h"
 
+#include <QDateTime>
+
 
 // adoptDeviceSession records a session where this client is the assisted device,
 // including direct mode where the platform skips the approval request.
@@ -77,8 +79,10 @@ void MainWindow::onPlatformSessionUpdated(const QJsonObject &session) {
                    ActivityKind::Session);
     persistSessionState();
     const QString status = session.value("status").toString();
-    if (status != "active" && status != "approved" && status != "pending_approval")
+    if (status != "active" && status != "approved" && status != "pending_approval") {
         stopTasksForSession(id, status == "closed" ? "cancelled" : "result_unknown");
+        abortFileUploadsForSession(id);
+    }
     refreshPendingRequests();
     refreshActiveSessions();
     refreshSessionsPage();
@@ -273,6 +277,259 @@ void MainWindow::onPlatformFileDownloadRequested(const QString &sessionId, const
                    ActivityKind::Download);
     refreshActiveSessions();
     QTimer::singleShot(0, this, [this, state] { pumpFileDownload(state); });
+}
+
+
+bool MainWindow::sessionAllowsFileWrite(const QString &sessionId) {
+    const QJsonObject session = sessions.value(sessionId);
+    const QString status = session.value("status").toString();
+    if (status != "active" && status != "approved") return false;
+    const QJsonArray permissions = session.value("permissions").toArray();
+    for (const QJsonValue &permission : permissions) {
+        if (permission.toString() == QLatin1String("write_file")) return true;
+    }
+    return false;
+}
+
+
+namespace {
+
+constexpr qint64 kMaxUploadBytes = 32LL * 1024 * 1024;
+
+// Keeps an operator-supplied file name usable as a single path component.
+QString safeUploadName(const QString &fileName) {
+    QString base = fileName;
+    base.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    const int slash = base.lastIndexOf(QLatin1Char('/'));
+    if (slash >= 0) base = base.mid(slash + 1);
+    QString out;
+    out.reserve(base.size());
+    for (const QChar ch : base) {
+        if (ch.unicode() < 0x20 || QStringLiteral("<>:\"/|?*").contains(ch)) out += QLatin1Char('_');
+        else out += ch;
+    }
+    out = out.trimmed();
+    while (out.startsWith(QLatin1Char('.'))) out.remove(0, 1);
+    if (out.isEmpty()) out = QStringLiteral("upload.bin");
+    return out.left(160);
+}
+
+}  // namespace
+
+
+// finishFileUpload reports the terminal result and releases the temporary file.
+void MainWindow::finishFileUpload(const QSharedPointer<FileUploadState> &state, const QString &status) {
+    if (!state || state->requestId.isEmpty()) return;
+    const QString sessionStatus = sessions.value(state->sessionId).value("status").toString();
+    const bool sessionLive = sessionStatus == "active" || sessionStatus == "approved";
+    QString sha;
+    if (status == QLatin1String("succeeded") && state->hash)
+        sha = QString::fromLatin1(state->hash->result().toHex());
+    if (state->file) {
+        state->file->close();
+        state->file->deleteLater();
+        state->file = nullptr;
+    }
+    delete state->hash;
+    state->hash = nullptr;
+    activeFileUploads.remove(state->requestId);
+    if (status != QLatin1String("succeeded") && !state->tempPath.isEmpty())
+        QFile::remove(state->tempPath);
+    if (sessionLive && platform && platform->isConnected()) {
+        platform->sendFileUploadResult(state->sessionId, state->requestId, status,
+                                      status == QLatin1String("succeeded") ? state->targetPath : QString(),
+                                      state->fileName,
+                                      status == QLatin1String("succeeded") ? state->received : 0,
+                                      sha, true);
+    }
+    refreshActiveSessions();
+}
+
+
+// abortFileUploadsForSession stops local uploads whose session ended without
+// telling the platform (the session is already gone there).
+void MainWindow::abortFileUploadsForSession(const QString &sessionId) {
+    const QStringList requestIds = activeFileUploads.keys();
+    for (const QString &requestId : requestIds) {
+        QSharedPointer<FileUploadState> state = activeFileUploads.value(requestId);
+        if (!state || state->sessionId != sessionId) continue;
+        appendActivity(sessionId, QString("文件上传 %1 已停止：会话已结束").arg(requestId.left(8)),
+                       ActivityKind::Error);
+        if (state->file) {
+            state->file->close();
+            state->file->deleteLater();
+            state->file = nullptr;
+        }
+        delete state->hash;
+        state->hash = nullptr;
+        if (!state->tempPath.isEmpty()) QFile::remove(state->tempPath);
+        activeFileUploads.remove(requestId);
+    }
+    refreshActiveSessions();
+}
+
+
+void MainWindow::onPlatformFileUploadRequested(const QString &sessionId, const QString &requestId,
+                                               const QString &remotePath, const QString &fileName,
+                                               qint64 fileSize, const QString &sha256, bool overwrite) {
+    auto fail = [this, sessionId, requestId, fileName](const QString &message) {
+        appendActivity(sessionId, QString("文件上传 %1 被拒绝：%2").arg(requestId.left(8), message),
+                       ActivityKind::Error);
+        if (platform && platform->isConnected())
+            platform->sendFileUploadResult(sessionId, requestId, QStringLiteral("failed"), QString(),
+                                           fileName, 0, QString(), true);
+    };
+    if (requestId.isEmpty() || activeFileUploads.contains(requestId)) return;
+    if (!sessionAllowsFileWrite(sessionId)) {
+        fail(QStringLiteral("会话未获得 write_file 权限或已结束"));
+        return;
+    }
+    if (fileSize < 0 || fileSize > kMaxUploadBytes) {
+        fail(QStringLiteral("文件超过 32 MiB 上传上限"));
+        return;
+    }
+    if (sha256.size() > 128) {
+        fail(QStringLiteral("校验值过长"));
+        return;
+    }
+
+    const QString name = safeUploadName(fileName);
+    const QString requested = remotePath.trimmed();
+    QString target;
+    if (requested.isEmpty()) {
+        const QString dir = QDir(yiukConfigRoot()).filePath("uploads");
+        target = QDir(dir).filePath(QString("%1-%2").arg(QDateTime::currentMSecsSinceEpoch()).arg(name));
+    } else {
+        if (!QDir::isAbsolutePath(requested)) {
+            fail(QStringLiteral("远程路径必须是绝对路径"));
+            return;
+        }
+        const QFileInfo requestedInfo(requested);
+        target = requestedInfo.isDir() ? QDir(requested).filePath(name) : requested;
+    }
+    if (target.isEmpty() || target.size() > 4096) {
+        fail(QStringLiteral("目标路径无效或过长"));
+        return;
+    }
+    const QFileInfo targetInfo(target);
+    if (targetInfo.exists() && !overwrite) {
+        fail(QStringLiteral("目标文件已存在；如需覆盖请设置 overwrite=true"));
+        return;
+    }
+    if (!QDir().mkpath(targetInfo.absolutePath())) {
+        fail(QStringLiteral("无法创建目标目录"));
+        return;
+    }
+    const QString tempPath = target + QString(".yiuk-upload-%1.part").arg(requestId.left(8));
+    QFile::remove(tempPath);
+    auto *file = new QFile(tempPath, this);
+    if (!file->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        const QString error = file->errorString();
+        file->deleteLater();
+        fail(QStringLiteral("无法创建目标文件：%1").arg(error));
+        return;
+    }
+    auto state = QSharedPointer<FileUploadState>::create();
+    state->sessionId = sessionId;
+    state->requestId = requestId;
+    state->targetPath = target;
+    state->tempPath = tempPath;
+    state->fileName = name;
+    state->file = file;
+    state->hash = new QCryptographicHash(QCryptographicHash::Sha256);
+    state->expected = fileSize;
+    state->expectedSha256 = sha256.toLower();
+    state->overwrite = overwrite;
+    activeFileUploads.insert(requestId, state);
+    appendActivity(sessionId, QString("Agent 开始上传文件 %1（%2 字节）→ %3").arg(name).arg(fileSize).arg(target),
+                   ActivityKind::Upload);
+    refreshActiveSessions();
+    if (fileSize == 0) {
+        // An empty file carries no chunks: the request metadata is the file.
+        QFile::remove(target);
+        if (!QFile::rename(tempPath, target)) {
+            appendActivity(sessionId, QString("文件上传 %1 失败：无法创建空文件").arg(requestId.left(8)),
+                           ActivityKind::Error);
+            finishFileUpload(state, QStringLiteral("failed"));
+            return;
+        }
+        appendActivity(sessionId, QString("文件上传 %1 完成：0 字节").arg(requestId.left(8)),
+                       ActivityKind::Success);
+        finishFileUpload(state, QStringLiteral("succeeded"));
+    }
+}
+
+
+void MainWindow::onPlatformFileUploadChunk(const QString &sessionId, const QString &requestId,
+                                           quint64 sequence, const QString &data, bool eof) {
+    auto state = activeFileUploads.value(requestId);
+    if (!state || state->sessionId != sessionId || !state->file) return;
+    auto fail = [this, state, requestId](const QString &message) {
+        appendActivity(state->sessionId, QString("文件上传 %1 失败：%2").arg(requestId.left(8), message),
+                       ActivityKind::Error);
+        finishFileUpload(state, QStringLiteral("failed"));
+    };
+    if (!sessionAllowsFileWrite(sessionId)) {
+        appendActivity(sessionId, QString("文件上传 %1 已停止：会话不再授权写入").arg(requestId.left(8)),
+                       ActivityKind::Error);
+        finishFileUpload(state, QStringLiteral("cancelled"));
+        return;
+    }
+    if (sequence != state->expectedSequence) {
+        fail(QStringLiteral("分块序号不连续"));
+        return;
+    }
+    const QByteArray chunk = QByteArray::fromBase64(data.toLatin1());
+    if (chunk.isEmpty() && !data.isEmpty()) {
+        fail(QStringLiteral("分块数据不是有效的 Base64"));
+        return;
+    }
+    if (state->received + chunk.size() > kMaxUploadBytes ||
+        (state->expected > 0 && state->received + chunk.size() > state->expected)) {
+        fail(QStringLiteral("写入字节数超过声明的文件大小"));
+        return;
+    }
+    if (!chunk.isEmpty() && state->file->write(chunk) != chunk.size()) {
+        fail(QStringLiteral("写入目标文件失败：%1").arg(state->file->errorString()));
+        return;
+    }
+    state->hash->addData(chunk);
+    state->received += chunk.size();
+    state->expectedSequence++;
+    if (!eof) return;
+
+    state->file->flush();
+    state->file->close();
+    state->file->deleteLater();
+    state->file = nullptr;
+    if (state->received != state->expected) {
+        appendActivity(sessionId, QString("文件上传 %1 失败：收到 %2 字节，声明 %3 字节")
+                                   .arg(requestId.left(8)).arg(state->received).arg(state->expected),
+                       ActivityKind::Error);
+        finishFileUpload(state, QStringLiteral("failed"));
+        return;
+    }
+    if (!state->expectedSha256.isEmpty()) {
+        const QString actual = QString::fromLatin1(state->hash->result().toHex());
+        if (actual != state->expectedSha256) {
+            appendActivity(sessionId, QString("文件上传 %1 失败：校验值不一致").arg(requestId.left(8)),
+                           ActivityKind::Error);
+            finishFileUpload(state, QStringLiteral("failed"));
+            return;
+        }
+    }
+    if (state->overwrite) QFile::remove(state->targetPath);
+    if (!QFile::rename(state->tempPath, state->targetPath)) {
+        appendActivity(sessionId, QString("文件上传 %1 失败：无法写入目标文件 %2")
+                                   .arg(requestId.left(8), state->targetPath),
+                       ActivityKind::Error);
+        finishFileUpload(state, QStringLiteral("failed"));
+        return;
+    }
+    appendActivity(sessionId, QString("文件上传 %1 完成：%2 字节 → %3")
+                               .arg(requestId.left(8)).arg(state->received).arg(state->targetPath),
+                   ActivityKind::Success);
+    finishFileUpload(state, QStringLiteral("succeeded"));
 }
 
 

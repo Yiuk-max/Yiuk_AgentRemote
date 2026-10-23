@@ -16,6 +16,7 @@ enum class Kind {
     Error,
     Read,
     Download,
+    Upload,
     Success,
 };
 

@@ -53,6 +53,7 @@ type Config struct {
 	HandshakeTimeoutSec   int    `yaml:"handshake_timeout_sec"`
 	MaxOutputBytes        int    `yaml:"max_output_bytes"`
 	MaxDownloadBytes      int    `yaml:"max_download_bytes"`
+	MaxUploadBytes        int    `yaml:"max_upload_bytes"`
 	MaxFrameBytes         int    `yaml:"max_frame_bytes"`
 	AuthRatePerMin        int    `yaml:"auth_rate_per_min"`
 	TemporaryPasswordMin  int    `yaml:"temporary_password_min_sec"`
@@ -83,6 +84,7 @@ func Default() Config {
 		HandshakeTimeoutSec:   10,
 		MaxOutputBytes:        2 << 20,
 		MaxDownloadBytes:      32 << 20,
+		MaxUploadBytes:        32 << 20,
 		MaxFrameBytes:         256 << 10,
 		AuthRatePerMin:        30,
 		TemporaryPasswordMin:  60,
@@ -140,6 +142,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.MaxDownloadBytes == 0 {
 		c.MaxDownloadBytes = d.MaxDownloadBytes
+	}
+	if c.MaxUploadBytes == 0 {
+		c.MaxUploadBytes = d.MaxUploadBytes
 	}
 	if c.MaxFrameBytes == 0 {
 		c.MaxFrameBytes = d.MaxFrameBytes
@@ -255,6 +260,9 @@ func (c Config) Validate() error {
 	}
 	if c.MaxDownloadBytes < 1024 || c.MaxDownloadBytes > 256<<20 {
 		return errors.New("max_download_bytes must be between 1 KiB and 256 MiB")
+	}
+	if c.MaxUploadBytes < 1024 || c.MaxUploadBytes > 256<<20 {
+		return errors.New("max_upload_bytes must be between 1 KiB and 256 MiB")
 	}
 	if c.MaxFrameBytes < 4096 || c.MaxFrameBytes > 16<<20 {
 		return errors.New("max_frame_bytes must be between 4096 and 16 MiB")

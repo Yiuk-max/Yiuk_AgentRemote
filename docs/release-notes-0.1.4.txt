@@ -1,0 +1,42 @@
+Yiuk Device Assist 0.1.4
+========================
+
+新增
+- 新增 MCP 工具 upload_file：把本地文件上传到目标设备。
+  - 需要单独的 write_file 权限，和 read_file / execute_command 互不替代。
+  - 64 KiB 分块、单文件上限 32 MiB（服务端 max_upload_bytes 可调）。
+  - 设备端先写同目录临时文件，收齐后校验字节数与 SHA-256 再改名到位。
+  - 默认拒绝覆盖已有文件，overwrite=true 时才替换。
+  - remote_path 留空时落到设备 %LOCALAPPDATA%\Yiuk\DeviceAssist\uploads\；
+    传目录时自动拼接原文件名。返回最终远端路径、大小与校验值。
+- 活动面板新增「上传」分类（琥珀色），与下载区分。
+
+修复
+- MCP/Agent 侧连接以前从不发心跳，空闲超过服务端 heartbeat_timeout_sec
+  （默认 45 秒）会被断开，重连后旧会话归属旧连接，close_session 报
+  not found / connection does not own the session。
+  - 现在操作者连接空闲时每 15 秒 ping 一次，连续 3 个周期无 pong 才主动断开。
+  - close_session 对 SESSION_NOT_FOUND 幂等成功，重连后关旧会话不再报错。
+- 平台连接断开时，客户端把所有平台会话标记为 interrupted 并停止任务，
+  UI 不再在断联后继续显示「远程协助进行中」。
+- DEVICE_ALREADY_ONLINE 不再永久放弃重连，改为 1s→30s 指数退避重试，
+  服务端旧连接过期后客户端自动恢复在线。
+- 服务端「会话不存在 / 不属于该连接」统一返回 SESSION_NOT_FOUND，
+  不再混用 NOT_FOUND。
+
+移除
+- 彻底删除 Minecraft 联机中转：relay 进程、房间/会话管道、旧 Protobuf
+  协议、relay 配置与服务器侧 relay 运维 agent 全部移除，相关文档同步清理。
+  平台现在只承载远程协助业务。
+
+安装 / 升级
+- Windows 10/11 x64，解压即用：目录内同时有
+  yiuk-device-assist.exe、yiuk-activity-panel.exe、yiuk-mcp.exe 与 Qt 运行库。
+- 直接覆盖旧版本目录即可，本机凭证保留在
+  %LOCALAPPDATA%\Yiuk\DeviceAssist（旧的 %APPDATA% 目录仍会被读取）。
+
+升级后建议
+1. 覆盖安装后启动客户端，确认设置页显示「平台已连接」。
+2. Agent 侧重新拷贝一次 MCP 配置，确保 tools/list 里有 upload_file。
+3. 首次上传前，在 request_connection 的 permissions 里加上 write_file，
+   设备所有者批准后才能写入文件。

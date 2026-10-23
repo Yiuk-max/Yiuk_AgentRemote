@@ -209,7 +209,7 @@ func (s *Server) handleCloseSession(c *conn, m protocol.Message) error {
 	}
 	s.devices.RemoveSession(closed.DeviceID, closed.ID)
 	finished := s.tasks.FinishSession(closed.ID, task.StatusCancelled)
-	cancelledTransfers := s.transfers.FinishSession(closed.ID, transfer.StatusCancelled)
+	cancelledTransfers := s.sessionTransferResults(closed.ID, transfer.StatusCancelled)
 	// Ask the device to stop local processes when the operator closed the
 	// session, and tell the operator when the device closed it.
 	if c.role != roleDevice {
@@ -225,8 +225,8 @@ func (s *Server) handleCloseSession(c *conn, m protocol.Message) error {
 	for _, t := range finished {
 		s.sendToConnection(closed.OperatorConnectionID, taskResultMessage(t))
 	}
-	for _, t := range cancelledTransfers {
-		s.sendToConnection(closed.OperatorConnectionID, transferResultMessage(t))
+	for _, msg := range cancelledTransfers {
+		s.sendToConnection(closed.OperatorConnectionID, msg)
 	}
 	s.audit.Event("session_closed", "session", audit.RedactID(closed.ID), "device", audit.RedactID(closed.DeviceID), "reason", reason)
 	si := sessionInfo(closed)
@@ -249,8 +249,8 @@ func (s *Server) revokeDeviceSessions(deviceID, reason string) {
 		for _, t := range finished {
 			s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
 		}
-		for _, t := range s.transfers.FinishSession(ses.ID, transfer.StatusResultUnknown) {
-			s.sendToConnection(ses.OperatorConnectionID, transferResultMessage(t))
+		for _, msg := range s.sessionTransferResults(ses.ID, transfer.StatusResultUnknown) {
+			s.sendToConnection(ses.OperatorConnectionID, msg)
 		}
 	}
 }

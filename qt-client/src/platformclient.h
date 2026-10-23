@@ -69,6 +69,9 @@ public:
     void sendFileDownloadResult(const QString &sessionId, const QString &requestId, const QString &status,
                                 const QString &fileName, qint64 fileSize, const QString &sha256,
                                 bool resultKnown);
+    void sendFileUploadResult(const QString &sessionId, const QString &requestId, const QString &status,
+                              const QString &remotePath, const QString &fileName, qint64 fileSize,
+                              const QString &sha256, bool resultKnown);
     void updateTemporaryPassword(const QString &password, int version, const QString &mode, int ttlSeconds);
     void closeSession(const QString &sessionId);
     void cancelCommand(const QString &sessionId, const QString &requestId);
@@ -96,6 +99,11 @@ signals:
                        const QJsonValue &exitCode, bool resultKnown, bool truncated);
     void fileDownloadRequested(const QString &sessionId, const QString &requestId, const QString &remotePath);
     void fileDownloadCanceled(const QString &sessionId, const QString &requestId);
+    void fileUploadRequested(const QString &sessionId, const QString &requestId, const QString &remotePath,
+                             const QString &fileName, qint64 fileSize, const QString &sha256, bool overwrite);
+    void fileUploadChunkReceived(const QString &sessionId, const QString &requestId, quint64 sequence,
+                                 const QString &data, bool eof);
+    void fileUploadCanceled(const QString &sessionId, const QString &requestId);
     void cancelRequested(const QString &sessionId, const QString &requestId);
     void closeRequested(const QString &sessionId);
     void temporaryPasswordUpdated(const QString &password, int version, qint64 expiresAt);

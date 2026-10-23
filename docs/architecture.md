@@ -62,7 +62,7 @@
 
 - 只有目标设备的连接可以批准/拒绝；只有绑定的 operator 连接可以提交任务。
 - `pending_approval`、`rejected`、`expired`、`closed` 状态下服务端一律拒绝任务。
-- `read_file` 与 `execute_command` 权限相互独立。
+- `read_file`、`write_file` 与 `execute_command` 权限相互独立。
 - 刷新临时密码会撤销该设备的活动会话。
 
 ## 4. 端到端流程
@@ -95,7 +95,15 @@
 3. MCP 端校验大小与校验和，写入目标文件（不覆盖已有文件）。
 4. 服务端只转发 Base64 分块，校验权限、分块序号、累计字节数与设备归属；超 `max_download_bytes` 或 5 分钟未完成的传输会被终止。
 
-### 4.5 结束与撤销
+### 4.5 文件上传
+
+1. `upload_file(session_id, local_path, remote_path, overwrite)`，会话须具备 `write_file`。
+2. MCP 端校验本地文件（绝对路径、普通文件、≤32 MiB），先算 SHA-256，再按 64 KiB 切块、Base64 编码逐帧推送。
+3. 服务端校验权限、分块序号、累计字节数并转发给设备；超 `max_upload_bytes` 或 5 分钟未完成即终止并下发取消。
+4. 设备端解析目标路径（为空时落到 `%LOCALAPPDATA%\Yiuk\DeviceAssist\uploads`；已有目录则拼接文件名），先写同目录临时文件，收齐后校验大小与 SHA-256，再改名到目标；默认拒绝覆盖已有文件。
+5. 设备回 `file_upload_result`（状态、`remote_path`、大小、SHA-256），MCP 端比对摘要后返回最终远端路径。
+
+### 4.6 结束与撤销
 
 所有者停止、operator 关闭或过期时，平台置终态、拒收新任务并下发取消；设备端同步终止任务。
 
@@ -135,6 +143,7 @@ approve_session / reject_session
 open_session_channel / close_session
 execute_command / command_accepted / command_output / command_result
 download_file / cancel_file_download / file_chunk / file_download_result
+upload_file / cancel_file_upload / file_upload_chunk / file_upload_result
 get_command_result / cancel_command / command_cancelled
 list_devices / device_list
 ping / pong / error
@@ -182,11 +191,11 @@ ServerState
 | --- | --- |
 | `H\|标题\|会话标签\|state\|状态文案` | 标题、顶部会话标签与状态 |
 | `R\|` | 清空日志（切换会话时） |
-| `E\|kind\|HH:MM:SS\|文本` | 一条记录，`kind` ∈ `info/session/exec/out/err/read/file/ok` |
+| `E\|kind\|HH:MM:SS\|文本` | 一条记录，`kind` ∈ `info/session/exec/out/err/read/file/upload/ok` |
 | `S\|state\|状态文案` | 只更新状态 |
 | `A\|` | 用户主动打开时前置窗口 |
 
-`state` 取 `active` / `pending` / `closed` / `none`，颜色由面板决定。配色沿用 pi 深色主题的分类（当前只做文字颜色，背景块留待后续）：会话=紫、执行命令=绿、读取=蓝、下载=兰紫、输出=灰、错误=红、完成=绿。
+`state` 取 `active` / `pending` / `closed` / `none`，颜色由面板决定。配色沿用 pi 深色主题的分类（当前只做文字颜色，背景块留待后续）：会话=紫、执行命令=绿、读取=蓝、下载=兰紫、上传=琥珀、输出=灰、错误=红、完成=绿。
 
 ## 10. MCP 工具契约
 
@@ -202,6 +211,7 @@ ServerState
 | `execute_command` | `session_id`、`command`、`working_directory`、`timeout_seconds` | `request_id`、状态 |
 | `get_command_result` | `session_id`、`request_id`、`cursor` | 输出块与终态 |
 | `download_file` | `session_id`、`remote_path`、`destination_path` | 本地路径、大小、SHA-256、状态 |
+| `upload_file` | `session_id`、`local_path`、`remote_path`、`overwrite` | 远端路径、大小、SHA-256、状态 |
 | `cancel_command` | `session_id`、`request_id` | 任务状态 |
 | `close_session` | `session_id` | 关闭状态 |
 

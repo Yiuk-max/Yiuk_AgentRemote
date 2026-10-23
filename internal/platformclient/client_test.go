@@ -2,6 +2,7 @@ package platformclient_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -464,6 +465,153 @@ func TestPlatformClientDownloadsFileWithReadFilePermission(t *testing.T) {
 	}
 	invoke(t, backend, agenttools.CloseSession, map[string]any{"session_id": sessionID})
 	device.recv(protocol.TypeCloseSession)
+}
+
+func TestPlatformClientUploadFile(t *testing.T) {
+	cases := []struct {
+		name     string
+		contents []byte
+	}{
+		{"single chunk", []byte("upload from the operator client\n")},
+		{"exact multiple of the chunk size", bytes.Repeat([]byte("a"), 128*1024)},
+		{"partial tail chunk", bytes.Repeat([]byte("b"), 100*1024)},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) { runUploadTool(t, tc.contents) })
+	}
+}
+
+// runUploadTool drives one upload_file tool call and asserts the device sees
+// the bytes in order with a terminating EOF chunk.
+func runUploadTool(t *testing.T, contents []byte) {
+	t.Helper()
+	address := startPlatform(t)
+	device := dialFakeDevice(t, address)
+	device.register("device-upload")
+
+	backend, err := platformclient.New(platformclient.Config{
+		Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+
+	session := invoke(t, backend, agenttools.RequestConnection, map[string]any{
+		"device_id": "device-upload", "purpose": "send a file", "permissions": []string{"write_file"},
+		"temporary_password": devicePassword,
+	}).(map[string]any)
+	sessionID, _ := session["session_id"].(string)
+	if sessionID == "" || session["status"] != protocol.StatusApproved {
+		t.Fatalf("unexpected session: %#v", session)
+	}
+	device.recv(protocol.TypeSessionStatus)
+
+	localPath := filepath.Join(t.TempDir(), "upload-source.bin")
+	if err := os.WriteFile(localPath, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(contents)
+	remotePath := "C:/agent/upload.bin"
+	sessionId := sessionID
+
+	type outcome struct {
+		data any
+		err  error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		raw, _ := json.Marshal(map[string]any{
+			"session_id": sessionId, "local_path": localPath,
+			"remote_path": remotePath, "overwrite": true,
+		})
+		data, err := backend.Invoke(context.Background(), agenttools.Request{Name: agenttools.UploadFile, Input: raw})
+		done <- outcome{data: data, err: err}
+	}()
+
+	forwarded := device.recv(protocol.TypeUploadFile)
+	if forwarded.RequestID == "" || forwarded.RemotePath != remotePath ||
+		forwarded.FileName == "" || forwarded.FileSize != int64(len(contents)) || !forwarded.Overwrite {
+		t.Fatalf("unexpected upload request: %#v", forwarded)
+	}
+	if forwarded.FileSHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("upload request digest = %q", forwarded.FileSHA256)
+	}
+	var received []byte
+	var sequence uint64 = 1
+	for {
+		chunk := device.recv(protocol.TypeFileUploadChunk)
+		if chunk.RequestID != forwarded.RequestID || chunk.Sequence != sequence {
+			t.Fatalf("unexpected chunk: %#v", chunk)
+		}
+		data, decodeErr := base64.StdEncoding.DecodeString(chunk.Data)
+		if decodeErr != nil {
+			t.Fatalf("chunk is not base64: %v", decodeErr)
+		}
+		received = append(received, data...)
+		if chunk.EOF {
+			break
+		}
+		sequence++
+		if sequence > 64 {
+			t.Fatal("upload did not terminate")
+		}
+	}
+	if !bytes.Equal(received, contents) {
+		t.Fatalf("device received %d bytes, want %d", len(received), len(contents))
+	}
+	device.send(protocol.Message{
+		Type: protocol.TypeFileUploadResult, SessionID: sessionID, RequestID: forwarded.RequestID,
+		Status: string(protocol.TaskSucceeded), FileName: forwarded.FileName,
+		FileSize: int64(len(contents)), FileSHA256: hex.EncodeToString(sum[:]),
+		RemotePath: remotePath, ResultKnown: true,
+	})
+
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("upload_file: %v", result.err)
+	}
+	data := result.data.(map[string]any)
+	if data["remote_path"] != remotePath || data["status"] != string(protocol.TaskSucceeded) {
+		t.Fatalf("unexpected upload result: %#v", data)
+	}
+	if size, _ := data["size"].(int64); size != int64(len(contents)) {
+		t.Fatalf("size = %#v", data["size"])
+	}
+	if data["sha256"] != hex.EncodeToString(sum[:]) {
+		t.Fatalf("sha256 = %v", data["sha256"])
+	}
+	invoke(t, backend, agenttools.CloseSession, map[string]any{"session_id": sessionID})
+	device.recv(protocol.TypeCloseSession)
+}
+
+// TestPlatformClientUploadFileRejectsInvalidLocalPath guards that a bad
+// local_path never reaches the platform.
+func TestPlatformClientUploadFileRejectsInvalidLocalPath(t *testing.T) {
+	address := startPlatform(t)
+	backend, err := platformclient.New(platformclient.Config{
+		Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+
+	for _, localPath := range []string{"relative/file.txt", "C:/definitely/missing/file.bin"} {
+		raw, _ := json.Marshal(map[string]any{"session_id": "session-x", "local_path": localPath})
+		_, err := backend.Invoke(context.Background(), agenttools.Request{Name: agenttools.UploadFile, Input: raw})
+		var toolErr *agenttools.Error
+		if err == nil || !errors.As(err, &toolErr) {
+			t.Fatalf("%q: got %v, want a tool error", localPath, err)
+		}
+		if localPath == "relative/file.txt" && toolErr.Code != "INVALID_ARGUMENT" {
+			t.Fatalf("relative path code = %s, want INVALID_ARGUMENT", toolErr.Code)
+		}
+		if localPath != "relative/file.txt" && toolErr.Code != "LOCAL_READ_FAILED" {
+			t.Fatalf("missing file code = %s, want LOCAL_READ_FAILED", toolErr.Code)
+		}
+	}
 }
 
 func TestPlatformClientRunCommandApprovalMode(t *testing.T) {

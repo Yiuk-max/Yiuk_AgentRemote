@@ -82,6 +82,8 @@ func (c *Client) Invoke(ctx context.Context, req agenttools.Request) (any, error
 		return c.getCommandResult(ctx, req.Input)
 	case agenttools.DownloadFile:
 		return c.downloadFile(ctx, req.Input)
+	case agenttools.UploadFile:
+		return c.uploadFile(ctx, req.Input)
 	case agenttools.CancelCommand:
 		return c.cancelCommand(ctx, req.Input)
 	case agenttools.CloseSession:
@@ -96,6 +98,14 @@ func (c *Client) call(ctx context.Context, req protocol.Message, match func(prot
 }
 
 func (c *Client) callTimeout(ctx context.Context, req protocol.Message, match func(protocol.Message) bool, timeout time.Duration) (protocol.Message, error) {
+	return c.callStream(ctx, req, nil, match, timeout)
+}
+
+// callStream sends one request, optionally streams extra frames on the same
+// connection (file chunks), then waits for the correlated response. The call
+// mutex stays held for the whole exchange so no other tool call can interleave
+// frames with the stream.
+func (c *Client) callStream(ctx context.Context, req protocol.Message, frames func(write func(protocol.Message) error) error, match func(protocol.Message) bool, timeout time.Duration) (protocol.Message, error) {
 	c.callMu.Lock()
 	defer c.callMu.Unlock()
 
@@ -117,6 +127,17 @@ func (c *Client) callTimeout(ctx context.Context, req protocol.Message, match fu
 	if err := c.writeMessage(conn, req); err != nil {
 		c.markDisconnected(done)
 		return protocol.Message{}, &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not send request to platform"}
+	}
+	if frames != nil {
+		write := func(m protocol.Message) error {
+			m.Version = protocol.Version
+			m.BusinessType = protocol.BusinessAgentAssist
+			return c.writeMessage(conn, m)
+		}
+		if err := frames(write); err != nil {
+			c.markDisconnected(done)
+			return protocol.Message{}, &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not stream data to platform: " + err.Error()}
+		}
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()

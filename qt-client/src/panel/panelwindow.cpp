@@ -33,6 +33,7 @@ Gdiplus::Color KindColor(Kind kind, BYTE alpha) {
         case Kind::Execute: return Gdiplus::Color(alpha, 111, 211, 168);
         case Kind::Read: return Gdiplus::Color(alpha, 143, 167, 240);
         case Kind::Download: return Gdiplus::Color(alpha, 214, 152, 226);
+        case Kind::Upload: return Gdiplus::Color(alpha, 226, 176, 106);
         case Kind::Error: return Gdiplus::Color(alpha, 239, 142, 114);
         case Kind::Success: return Gdiplus::Color(alpha, 111, 211, 168);
         case Kind::Output: return Gdiplus::Color(alpha, 152, 161, 178);
@@ -49,6 +50,7 @@ Gdiplus::Color KindInk(Kind kind) {
         case Kind::Execute: return Gdiplus::Color(255, 198, 237, 217);
         case Kind::Read: return Gdiplus::Color(255, 201, 214, 248);
         case Kind::Download: return Gdiplus::Color(255, 239, 210, 246);
+        case Kind::Upload: return Gdiplus::Color(255, 252, 238, 214);
         case Kind::Error: return Gdiplus::Color(255, 246, 190, 176);
         case Kind::Success: return Gdiplus::Color(255, 191, 236, 214);
         case Kind::Output: return Gdiplus::Color(255, 157, 167, 184);
@@ -63,6 +65,7 @@ std::wstring KindLabel(Kind kind) {
         case Kind::Execute: return L"执行";
         case Kind::Read: return L"读取";
         case Kind::Download: return L"下载";
+        case Kind::Upload: return L"上传";
         case Kind::Error: return L"错误";
         case Kind::Success: return L"完成";
         case Kind::Output: return L"输出";
@@ -169,6 +172,7 @@ Kind ParseKind(const std::wstring& token) {
     if (token == L"err") return Kind::Error;
     if (token == L"read") return Kind::Read;
     if (token == L"file") return Kind::Download;
+    if (token == L"upload") return Kind::Upload;
     if (token == L"ok") return Kind::Success;
     return Kind::Info;
 }
