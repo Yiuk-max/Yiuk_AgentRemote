@@ -218,6 +218,89 @@ func TestPlatformClientDirectSessionFlow(t *testing.T) {
 	device.recv(protocol.TypeSessionStatus)
 }
 
+// TestPlatformClientHeartbeatsIdleConnection asserts the operator connection
+// keeps pinging while no tool call is in flight. Without it the platform closes
+// the connection after heartbeat_timeout_sec and long sessions are interrupted.
+func TestPlatformClientHeartbeatsIdleConnection(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	codec := protocol.NewCodec(protocol.DefaultMaxFrameBytes)
+	pings := make(chan uint64, 8)
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		for {
+			m, readErr := codec.Read(reader)
+			if readErr != nil {
+				return
+			}
+			switch m.Type {
+			case protocol.TypeAuthenticatePlayer:
+				_ = codec.Write(conn, protocol.Message{Version: protocol.Version, Type: protocol.TypeAuthenticated, ConnectionID: "conn-heartbeat"})
+			case protocol.TypePing:
+				pings <- m.Sequence
+				_ = codec.Write(conn, protocol.Message{Version: protocol.Version, Type: protocol.TypePong, Sequence: m.Sequence})
+			case protocol.TypeListDevices:
+				_ = codec.Write(conn, protocol.Message{Version: protocol.Version, Type: protocol.TypeDeviceList, CorrelationID: m.CorrelationID})
+			}
+		}
+	}()
+
+	backend, err := platformclient.New(platformclient.Config{
+		Address: ln.Addr().String(), PlayerPassword: playerPassword, AllowPlaintext: true,
+		TimeoutSeconds: 5, HeartbeatIntervalSeconds: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+
+	// One tool call opens the persistent operator connection.
+	if _, err := backend.Invoke(context.Background(), agenttools.Request{Name: agenttools.ListDevices, Input: json.RawMessage(`{}`)}); err != nil {
+		t.Fatalf("list_devices: %v", err)
+	}
+
+	deadline := time.After(6 * time.Second)
+	for want := uint64(1); want <= 2; want++ {
+		select {
+		case seq := <-pings:
+			if seq != want {
+				t.Fatalf("ping sequence = %d, want %d", seq, want)
+			}
+		case <-deadline:
+			t.Fatalf("received %d heartbeats, want at least 2 keep-alive pings", want-1)
+		}
+	}
+}
+
+// TestPlatformClientCloseSessionIsIdempotent covers the stale-session path: the
+// platform forgets sessions on restart, so closing one must not fail the tool.
+func TestPlatformClientCloseSessionIsIdempotent(t *testing.T) {
+	address := startPlatform(t)
+	backend, err := platformclient.New(platformclient.Config{
+		Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+
+	result := invoke(t, backend, agenttools.CloseSession, map[string]any{"session_id": "missing-session"}).(map[string]any)
+	if result["status"] != protocol.StatusClosed {
+		t.Fatalf("unexpected close result: %#v", result)
+	}
+	if result["session_id"] != "missing-session" {
+		t.Fatalf("session_id = %#v", result["session_id"])
+	}
+}
+
 func TestPlatformClientRejectsMissingTemporaryPassword(t *testing.T) {
 	address := startPlatform(t)
 	device := dialFakeDevice(t, address)

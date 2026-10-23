@@ -92,7 +92,7 @@ func (s *Server) handleCommandOutput(c *conn, m protocol.Message) error {
 	}
 	ses, ok := s.sessions.Get(m.SessionID)
 	if !ok || ses.DeviceID != c.deviceID || ses.DeviceConnectionID != c.id {
-		return perr("NOT_FOUND", "session not found")
+		return perr("SESSION_NOT_FOUND", "session not found")
 	}
 	t, err := s.tasks.AppendOutput(ses.ID, m.RequestID, m.Stream, m.Data)
 	if err != nil {
@@ -133,7 +133,7 @@ func (s *Server) handleCommandResult(c *conn, m protocol.Message) error {
 	}
 	ses, ok := s.sessions.Get(m.SessionID)
 	if !ok || ses.DeviceID != c.deviceID || ses.DeviceConnectionID != c.id {
-		return perr("NOT_FOUND", "session not found")
+		return perr("SESSION_NOT_FOUND", "session not found")
 	}
 	status, err := terminalTaskStatus(m.Status)
 	if err != nil {
@@ -159,7 +159,7 @@ func (s *Server) handleGetCommandResult(c *conn, m protocol.Message) error {
 	}
 	ses, ok := s.sessions.Get(m.SessionID)
 	if !ok || !s.canAccessSession(c, ses) {
-		return perr("NOT_FOUND", "session not found")
+		return perr("SESSION_NOT_FOUND", "session not found")
 	}
 	view, err := s.tasks.Result(ses.ID, m.RequestID, m.Cursor)
 	if err != nil {
@@ -194,7 +194,7 @@ func (s *Server) handleCancelCommand(c *conn, m protocol.Message) error {
 	}
 	ses, ok := s.sessions.Get(m.SessionID)
 	if !ok || !s.canAccessSession(c, ses) {
-		return perr("NOT_FOUND", "session not found")
+		return perr("SESSION_NOT_FOUND", "session not found")
 	}
 	t, err := s.tasks.CancelRequested(ses.ID, m.RequestID)
 	if err != nil {

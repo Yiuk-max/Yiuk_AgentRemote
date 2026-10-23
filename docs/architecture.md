@@ -1,6 +1,6 @@
 # 架构与实现
 
-状态：远程协助链路已实现并可在本机联调；真实双机验收、Minecraft 回归、发布前安全检查待完成（见 §12）。
+状态：远程协助链路已实现并可在本机联调；真实双机验收、发布前安全检查待完成（见 §12）。
 
 关联：[产品需求](product-requirements.md)、[开发与构建](development.md)、[本机开发环境](local-dev.md)。
 
@@ -9,15 +9,15 @@
 | 领域 | 选型 | 说明 |
 | --- | --- | --- |
 | 桌面应用 | Qt 6 Widgets + C++17 + CMake | 同一安装包同时提供设备所有者与协助者能力 |
-| 中转服务 | Go（单进程、模块分层） | 内存状态，暂无数据库；Minecraft relay 为独立进程 |
+| 中转服务 | Go（单进程、模块分层） | 内存状态，暂无数据库 |
 | Agent 集成 | 独立 MCP stdio adapter（`yiuk-mcp`） | Agent 以本机子进程方式启动，只做协议映射 |
 | 客户端传输 | TCP + TLS 1.2+，4 字节长度前缀帧 + JSON | 全部由客户端主动出站，适配 NAT |
 | 设备执行 | `PowerShellRunner`（`pwsh` 优先，`powershell` 回退） | 独立参数传递、临时脚本文件、超时/取消/输出上限 |
 | 身份与授权 | 设备码 + 设备临时密码 + 会话授权 | 设备码只作查找标识；临时密码永不出现在服务端日志 |
-| Minecraft | 独立业务类型、端口、密码与状态机 | 与远程协助互不共享凭证或房间 |
+| 保活 | 设备与操作者双向 ping 心跳 | 操作者连接空闲时仍需保活，避免长会话被误判断线 |
 | 发布 | Windows x64 绿色目录 + zip | 见[打包发布](development.md#打包发布) |
 
-被否掉的方案：Web UI（用户明确偏好 Qt）、HTTP/WebSocket（长会话与分块流需额外设计，非标准端口在当前部署可用）、复用旧 Protobuf（字段语义绑定 Minecraft）、把 MCP 直接写进 GUI 主程序（GUI 生命周期不适合 stdio 子进程）。
+被否掉的方案：Web UI（用户明确偏好 Qt）、HTTP/WebSocket（长会话与分块流需额外设计，非标准端口在当前部署可用）、复用旧 Protobuf（字段语义已过时）、把 MCP 直接写进 GUI 主程序（GUI 生命周期不适合 stdio 子进程）。
 
 ## 2. 进程与模块
 
@@ -48,8 +48,6 @@
 | `internal/agenttools` | 语言无关的工具契约与稳定错误码 |
 | `internal/mcpadapter`、`cmd/yiuk-mcp` | MCP stdio 适配 |
 | `qt-client/src` | 设备侧客户端：平台协议、审批 UI、命令执行、活动面板 |
-| `internal/room\|control\|server\|protocol`、`cmd/relay` | 既有 Minecraft 联机中转 |
-| `ops/server` | 服务器侧运维 agent（独立业务，见 [ops/README](../ops/README.md)） |
 
 ## 3. 授权模型
 
@@ -124,6 +122,7 @@ queued -> running -> succeeded | failed | timed_out | cancelled | result_unknown
 - 帧：4 字节大端长度前缀 + UTF-8 JSON envelope，帧上限 `max_frame_bytes`（默认 256 KiB）。
 - envelope 字段：`version`、`type`、`correlation_id`、`session_id`、`request_id`、`sequence`；直接响应回显 `correlation_id`，异步事件不回显。
 - 传输约束：TLS 最低 1.2；未配置证书且未显式 `allow_insecure` 时拒绝启动；握手/心跳/写均有 deadline；每连接有界发送队列，慢客户端直接断开；连接、设备、会话、任务均有上限。
+- 保活：设备连接每 15 秒发 `device_heartbeat`；操作者连接（`internal/platformclient`）空闲时每 15 秒发 `ping`，连续 3 个周期没有 `pong` 就主动断开，下次工具调用重连。`ping` 间隔可用 `heartbeat_interval_seconds` 覆盖，下限 1 秒。
 - 消息集合：
 
 ```text
@@ -141,7 +140,7 @@ list_devices / device_list
 ping / pong / error
 ```
 
-- 平台 listener 只接受 `agent_assist` 业务，Minecraft 由独立 relay 进程处理。
+- 平台 listener 只接受 `agent_assist` 业务。
 
 ## 7. 平台服务实现
 
@@ -154,7 +153,6 @@ ServerState
   connections         已认证连接与有界发送队列
   sessions            状态机与授权绑定
   tasks               request_id 幂等、有界输出、deadline
-  minecraft rooms     （relay 独立进程，平台不读取其配置）
 ```
 
 - janitor 定期收敛：会话过期、设备/操作者断线、任务 deadline 超时（标记 `timed_out` 并向设备下发取消）。
@@ -221,5 +219,4 @@ MCP 工具声明 `outputSchema` 与只读/破坏性/幂等提示，供 pi 等 Ho
 
 - **进程树清理**：Qt 目前用 `QProcess::kill()`，尚未用 Windows Job Object 清理整棵子进程树；非 ASCII/代码页输出与取消边界仍需真机验证。
 - **真实双机验收**：TLS 证书、安装包、UI 端到端流程。
-- **Minecraft 回归**：relay 已改由 `cmd/relay` 启动并暂停，需按冻结清单做开房、加入、双向数据流、房主断线恢复回归。
 - **发布前安全检查**：真实证书、日志脱敏复核、慢客户端与资源泄漏压测、安装包验收。

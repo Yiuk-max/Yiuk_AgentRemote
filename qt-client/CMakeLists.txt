@@ -82,7 +82,6 @@ if(YIUK_GO_EXECUTABLE)
     file(GLOB_RECURSE YIUK_GO_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/../cmd/**/*.go"
         "${CMAKE_CURRENT_SOURCE_DIR}/../internal/**/*.go"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../ops/**/*.go"
         "${CMAKE_CURRENT_SOURCE_DIR}/../go.mod"
         "${CMAKE_CURRENT_SOURCE_DIR}/../go.sum"
     )

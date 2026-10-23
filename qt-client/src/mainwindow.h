@@ -116,6 +116,9 @@ private:
     QSystemTrayIcon *trayIcon = nullptr;
     QStatusBar *statusFooter = nullptr;
     QHash<QString, QString> notificationSessions;
+    // True while the platform link was usable; used to tell a dropped link
+    // apart from the initial/never-connected state.
+    bool platformLinkWasUp = false;
     // The remote-session log is kept for the panel process, which the owner can
     // close and reopen at any time. The panel is an independent window; nothing
     // in this class may raise it on its own.
@@ -196,6 +199,9 @@ private:
     void showApprovalDialog(const QString &id);
     void decideSession(const QString &id, bool approved);
     void refreshActiveSessions();
+    // Marks every platform-backed session as interrupted. Called when the
+    // platform link drops so the UI cannot keep claiming a session is live.
+    void interruptPlatformSessions();
     QString activeTaskSummary(const QString &sessionId) const;
     QJsonObject downloadLocalFile(const QJsonObject &input);
     QJsonObject executeLocalCommand(const QJsonObject &input);

@@ -66,7 +66,7 @@ func (s *Server) handleFileChunk(c *conn, m protocol.Message) error {
 	}
 	ses, ok := s.sessions.Get(m.SessionID)
 	if !ok || ses.DeviceID != c.deviceID || ses.DeviceConnectionID != c.id {
-		return perr("NOT_FOUND", "session not found")
+		return perr("SESSION_NOT_FOUND", "session not found")
 	}
 	t, err := s.transfers.Append(ses.ID, m.RequestID, m.Sequence, m.Data)
 	if err != nil {
@@ -103,7 +103,7 @@ func (s *Server) handleFileDownloadResult(c *conn, m protocol.Message) error {
 	}
 	ses, ok := s.sessions.Get(m.SessionID)
 	if !ok || ses.DeviceID != c.deviceID || ses.DeviceConnectionID != c.id {
-		return perr("NOT_FOUND", "session not found")
+		return perr("SESSION_NOT_FOUND", "session not found")
 	}
 	status, err := terminalTransferStatus(m.Status)
 	if err != nil {

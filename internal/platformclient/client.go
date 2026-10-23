@@ -9,6 +9,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"yiuk-switchboard/internal/agenttools"
@@ -22,6 +23,10 @@ type Client struct {
 
 	callMu sync.Mutex // serializes tool calls and connection setup
 
+	// writeMu serializes frame writes so the heartbeat goroutine can never
+	// interleave bytes with a tool call in flight.
+	writeMu sync.Mutex
+
 	mu        sync.Mutex
 	conn      net.Conn
 	connID    string
@@ -29,6 +34,10 @@ type Client struct {
 	connDone  chan struct{}
 	connected bool
 	closed    bool
+
+	// pongs counts pong frames received on the current connection. The
+	// heartbeat goroutine treats a stalled counter as a dead peer.
+	pongs atomic.Uint64
 
 	cacheMu   sync.Mutex
 	sessions  map[string]protocol.SessionInfo
@@ -105,13 +114,10 @@ func (c *Client) callTimeout(ctx context.Context, req protocol.Message, match fu
 	req.Version = protocol.Version
 	req.BusinessType = protocol.BusinessAgentAssist
 	req.CorrelationID = correlationID
-	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	if err := c.codec.Write(conn, req); err != nil {
+	if err := c.writeMessage(conn, req); err != nil {
 		c.markDisconnected(done)
 		return protocol.Message{}, &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not send request to platform"}
 	}
-	_ = conn.SetWriteDeadline(time.Time{})
-
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	for {

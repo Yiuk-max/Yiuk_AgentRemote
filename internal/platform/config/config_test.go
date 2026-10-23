@@ -59,7 +59,7 @@ platform:
 
 func TestLoadRequiresPlatformSection(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "platform.yaml")
-	if err := os.WriteFile(path, []byte("minecraft: {}\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("other: {}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err == nil {

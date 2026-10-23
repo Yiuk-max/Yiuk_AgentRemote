@@ -285,6 +285,14 @@ void MainWindow::onPlatformRequestFailed(const QString &requestId, const QString
 void MainWindow::updatePlatformState(const QString &state) {
     const bool connected = state == "connected";
     const bool connecting = state == "connecting" || state == "authenticating";
+    const bool linkLost = platformLinkWasUp && !connected;
+    platformLinkWasUp = connected;
+    if (linkLost) {
+        // The link is gone, so no platform session can still be running.
+        // Without this the owner UI keeps showing "远程协助进行中" after the
+        // platform already dropped the connection.
+        interruptPlatformSessions();
+    }
     if (platformState) {
         platformState->setText(connected ? "平台：已连接" : (connecting ? "平台：连接中" : "平台：未连接"));
         platformState->setStyleSheet(connected ? "font-size: 11px; color: #16825d; padding: 2px 5px;"

@@ -508,9 +508,21 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
         const QString requestId = message.value(QStringLiteral("correlation_id")).toString();
         if (!requestId.isEmpty()) emit requestFailed(requestId, code, text);
         emit platformError(code, text);
+        if (code == QLatin1String("DEVICE_ALREADY_ONLINE")) {
+            // Not permanent: the platform still holds the previous connection
+            // for this device id, typically a half-open TCP socket that has not
+            // reached its heartbeat deadline yet. Back off and retry instead of
+            // staying offline until the user reconnects by hand.
+            heartbeatTimer_.stop();
+            if (socket_)
+                socket_->abort(); // onDisconnected() schedules the backoff retry
+            else if (!manualDisconnect_)
+                scheduleReconnect();
+            return;
+        }
         if (code == QLatin1String("BAD_PASSWORD") || code == QLatin1String("BAD_IDENTITY") ||
             code == QLatin1String("BUSINESS_TYPE_NOT_SUPPORTED") || code == QLatin1String("BAD_VERSION") ||
-            code == QLatin1String("RATE_LIMITED") || code == QLatin1String("DEVICE_ALREADY_ONLINE") ||
+            code == QLatin1String("RATE_LIMITED") ||
             code == QLatin1String("BAD_TEMPORARY_PASSWORD") || code == QLatin1String("TEMPORARY_PASSWORD_EXPIRED") ||
             code == QLatin1String("TEMPORARY_PASSWORD_REVOKED") || code == QLatin1String("STALE_PASSWORD_VERSION") ||
             code == QLatin1String("DEVICE_NOT_FOUND") || code == QLatin1String("DEVICE_LIMIT")) {

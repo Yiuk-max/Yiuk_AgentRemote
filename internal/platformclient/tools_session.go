@@ -2,6 +2,7 @@ package platformclient
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"encoding/json"
@@ -128,6 +129,18 @@ func (c *Client) closeSessionInternal(ctx context.Context, sessionID string) (ma
 		return m.Type == protocol.TypeSessionStatus && isTerminalSession(m.Status)
 	})
 	if err != nil {
+		// Closing is idempotent. The platform drops sessions when it restarts
+		// (or an operator connection is replaced), so a session that is gone is
+		// already as closed as the caller wants it to be.
+		var toolErr *agenttools.Error
+		if errors.As(err, &toolErr) && toolErr.Code == "SESSION_NOT_FOUND" {
+			return map[string]any{
+				"session_id":   sessionID,
+				"status":       protocol.StatusClosed,
+				"close_reason": "session_not_found",
+				"idempotent":   true,
+			}, nil
+		}
 		return nil, err
 	}
 	return sessionResult(resp), nil

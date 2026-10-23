@@ -1,9 +1,7 @@
 // Command platform runs the Yiuk Switchboard remote-assist platform server.
 //
 // The server is intentionally in-memory: restarting it invalidates every
-// device password, connection, session and task. Minecraft relay traffic is
-// served by the separate relay process so the two business types keep
-// independent ports, credentials and limits.
+// device password, connection, session and task.
 package main
 
 import (

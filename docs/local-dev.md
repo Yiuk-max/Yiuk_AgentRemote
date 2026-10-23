@@ -82,7 +82,6 @@ E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-device-assist.exe
 | 用途 | 位置 | 端口 |
 | --- | --- | --- |
 | 平台服务（本地开发） | `configs\platform.yaml` | `:25664` |
-| Minecraft relay | `configs\config.yaml` | 控制 `25564`，房间 `25570-25599` |
 | 服务器部署脚本默认 | `deploy\install-platform.sh` | `:29564` |
 
 本机已有一份 TLS 联调用的自签证书与构建好的服务端：`tmp-tls\server.crt`、`tmp-tls\server.key`、`tmp-tls\platform.exe`（`tmp-*` 与证书都在 `.gitignore` 里，不会进仓库）。

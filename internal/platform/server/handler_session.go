@@ -87,7 +87,7 @@ func (s *Server) handleApproveSession(c *conn, m protocol.Message) error {
 	}
 	if existing, ok := s.sessions.Get(m.SessionID); ok {
 		if existing.DeviceID != c.deviceID || existing.DeviceConnectionID != c.id {
-			return perr("NOT_FOUND", "session not found")
+			return perr("SESSION_NOT_FOUND", "session not found")
 		}
 	}
 	ses, err := s.sessions.Approve(m.SessionID, c.id)
@@ -116,7 +116,7 @@ func (s *Server) handleRejectSession(c *conn, m protocol.Message) error {
 	}
 	if existing, ok := s.sessions.Get(m.SessionID); ok {
 		if existing.DeviceID != c.deviceID || existing.DeviceConnectionID != c.id {
-			return perr("NOT_FOUND", "session not found")
+			return perr("SESSION_NOT_FOUND", "session not found")
 		}
 	}
 	reason := m.Message
@@ -150,7 +150,7 @@ func (s *Server) handleGetSessionStatus(c *conn, m protocol.Message) error {
 	}
 	ses, ok := s.sessions.Get(m.SessionID)
 	if !ok || !s.canAccessSession(c, ses) {
-		return perr("NOT_FOUND", "session not found")
+		return perr("SESSION_NOT_FOUND", "session not found")
 	}
 	si := sessionInfo(ses)
 	return s.sendOK(c, m, protocol.Message{
@@ -170,7 +170,7 @@ func (s *Server) handleOpenSessionChannel(c *conn, m protocol.Message) error {
 	}
 	ses, ok := s.sessions.Get(m.SessionID)
 	if !ok || !s.canAccessSession(c, ses) {
-		return perr("NOT_FOUND", "session not found")
+		return perr("SESSION_NOT_FOUND", "session not found")
 	}
 	if c.id == ses.OperatorConnectionID {
 		var err error
@@ -197,7 +197,7 @@ func (s *Server) handleCloseSession(c *conn, m protocol.Message) error {
 	}
 	ses, ok := s.sessions.Get(m.SessionID)
 	if !ok || !s.canAccessSession(c, ses) {
-		return perr("NOT_FOUND", "session not found")
+		return perr("SESSION_NOT_FOUND", "session not found")
 	}
 	reason := "closed_by_operator"
 	if c.role == roleDevice {

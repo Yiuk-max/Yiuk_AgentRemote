@@ -14,7 +14,8 @@
 - **远端文件读取**：独立 `read_file` 权限，64 KiB 分块，单文件上限 32 MiB，SHA-256 校验后落盘。
 - **Agent 工具**：`list_devices`、`get_device_status`、`request_connection`、`run_command`、`get_session_status`、`execute_command`、`get_command_result`、`download_file`、`cancel_command`、`close_session`，附 MCP stdio 适配器。
 - **只读活动面板**：远程协助过程由独立进程 `yiuk-activity-panel` 展示——半透明悬浮终端，按操作类型着色（读取 / 执行命令 / 下载 / 输出 / 错误）。随时可关、随时可开，新操作不会把它弹到前台。
-- **TLS 中转**：远程协助与 Minecraft 联机使用独立业务类型、端口、密码与资源限制。
+- **TLS 中转**：平台连接使用独立业务类型、端口、密码与资源限制，TLS 1.2+ 加密。
+- **心跳保活**：设备与操作者连接都会定期心跳，闲置长会话不会被误判断线。
 - **错误与幂等**：稳定错误码、不可复用请求 ID、断线不自动重放。
 
 ## 安全边界
@@ -56,11 +57,6 @@
 | 只读活动面板（独立子进程 / 逐像素透明） | 已完成 |
 | 真实 Windows 安装包与 TLS 端到端验收 | 进行中 |
 | Windows 进程树清理、安装升级、发布前安全检查 | 进行中 |
-| Minecraft 联机回归与冻结清单验证 | 待执行 |
-
-## 游戏联机
-
-保留既有的 Minecraft 局域网联机中转，与远程协助并列且互不互通。
 
 ## 文档
 

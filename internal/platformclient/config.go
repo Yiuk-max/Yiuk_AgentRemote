@@ -17,6 +17,17 @@ const configFileName = "platform-client.json"
 // password the platform accepts is never rejected here.
 const minPlayerPasswordLen = 8
 
+// Heartbeat defaults. The operator connection is idle between tool calls and
+// the platform closes connections silent for heartbeat_timeout_sec (45s by
+// default), so ping well inside that window.
+const (
+	defaultHeartbeatIntervalSeconds = 15
+	// minHeartbeatIntervalSeconds is a floor so a bad configuration file cannot
+	// turn the operator into a busy loop of pings.
+	minHeartbeatIntervalSeconds = 1
+	maxMissedHeartbeats         = 3
+)
+
 // Config configures an operator connection to the platform.
 type Config struct {
 	Address            string `json:"address"`
@@ -29,6 +40,9 @@ type Config struct {
 	PinnedCertSHA256 string `json:"pinned_cert_sha256,omitempty"`
 	AllowPlaintext   bool   `json:"allow_plaintext,omitempty"`
 	TimeoutSeconds   int    `json:"timeout_seconds,omitempty"`
+	// HeartbeatIntervalSeconds is how often an idle operator connection pings
+	// the platform. Defaults to 15s and never goes below 1s.
+	HeartbeatIntervalSeconds int `json:"heartbeat_interval_seconds,omitempty"`
 }
 
 // ConfigPath returns the per-user platform client configuration path.
@@ -67,6 +81,12 @@ func New(cfg Config) (*Client, error) {
 	}
 	if cfg.TimeoutSeconds <= 0 {
 		cfg.TimeoutSeconds = 30
+	}
+	if cfg.HeartbeatIntervalSeconds <= 0 {
+		cfg.HeartbeatIntervalSeconds = defaultHeartbeatIntervalSeconds
+	}
+	if cfg.HeartbeatIntervalSeconds < minHeartbeatIntervalSeconds {
+		cfg.HeartbeatIntervalSeconds = minHeartbeatIntervalSeconds
 	}
 	return &Client{
 		cfg:       cfg,

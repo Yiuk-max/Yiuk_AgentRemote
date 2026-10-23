@@ -9,6 +9,13 @@
 //   YIUK_PLATFORM_PIN       pinned server certificate SHA-256 (hex)
 //   YIUK_PLATFORM_CA        CA bundle path for TLS
 //   YIUK_PLATFORM_INSECURE  "1" to skip certificate verification
+//   YIUK_DEVICE_ID          device id used by the simulated device (default 123456789)
+//   YIUK_DEVICE_PASSWORD    initial temporary password of that device
+//   YIUK_INTEROP_TIMEOUT_MS overall timeout (default 15000)
+//
+// DEVICE_ALREADY_ONLINE is expected when another live connection still holds
+// the same device id. The client retries with backoff, so the harness reports
+// that error but does not count it as a failure.
 #include "platformclient.h"
 
 #include <QCoreApplication>
@@ -30,15 +37,21 @@ int main(int argc, char *argv[]) {
     const bool insecure = qEnvironmentVariable("YIUK_PLATFORM_INSECURE") == QLatin1String("1");
     const QString pin = qEnvironmentVariable("YIUK_PLATFORM_PIN");
     const QString caFile = qEnvironmentVariable("YIUK_PLATFORM_CA");
+    const QString deviceId = qEnvironmentVariable("YIUK_DEVICE_ID", QStringLiteral("123456789"));
+    const QString devicePassword =
+        qEnvironmentVariable("YIUK_DEVICE_PASSWORD", QString::fromLatin1(kDevicePassword));
+    const int timeoutMs = qEnvironmentVariableIntValue("YIUK_INTEROP_TIMEOUT_MS") > 0
+                              ? qEnvironmentVariableIntValue("YIUK_INTEROP_TIMEOUT_MS")
+                              : 15000;
 
     auto *device = new PlatformClient(&app);
     PlatformClient::Config deviceConfig;
     deviceConfig.address = address;
     deviceConfig.playerPassword = playerPassword;
-    deviceConfig.deviceId = QStringLiteral("123456789");
+    deviceConfig.deviceId = deviceId;
     deviceConfig.deviceName = QStringLiteral("qt-device");
     deviceConfig.mode = QStringLiteral("approval");
-    deviceConfig.temporaryPassword = QString::fromLatin1(kDevicePassword);
+    deviceConfig.temporaryPassword = devicePassword;
     deviceConfig.tls = useTls;
     deviceConfig.allowInsecure = insecure;
     deviceConfig.pinnedFingerprint = pin;
@@ -74,6 +87,9 @@ int main(int argc, char *argv[]) {
     bool closed = false;
     int failures = 0;
 
+    // Count transient reconnect churn so a retry-heavy run is still visible.
+    int alreadyOnlineRetries = 0;
+
     auto maybeRequest = [&] {
         // The device rotates its temporary password on first registration. A
         // session created before that rotation is correctly revoked by the
@@ -81,7 +97,7 @@ int main(int argc, char *argv[]) {
         if (!deviceReady || !devicePasswordReady || !operatorReady || requested) return;
         requested = true;
         qInfo() << "both clients registered; requesting session";
-        operation->requestSession(QStringLiteral("123456789"), QStringLiteral("interop"),
+        operation->requestSession(deviceId, QStringLiteral("interop"),
                                   QStringList{QStringLiteral("execute_command")},
                                   device->config().temporaryPassword);
     };
@@ -96,6 +112,14 @@ int main(int argc, char *argv[]) {
     });
     QObject::connect(device, &PlatformClient::temporaryPasswordUpdated, &app,
                      [&](const QString &, int, qint64) {
+        devicePasswordReady = true;
+        maybeRequest();
+    });
+    // A re-registration after a stale online entry may be answered with the
+    // already-rotated credentials instead of a fresh rotation. Either way the
+    // device now holds a usable temporary password.
+    QObject::connect(device, &PlatformClient::credentialsRenewed, &app,
+                     [&](const QString &, int) {
         devicePasswordReady = true;
         maybeRequest();
     });
@@ -156,6 +180,13 @@ int main(int argc, char *argv[]) {
         qInfo() << "device cert" << subject << "sha256" << fingerprint << "changed" << changed << details;
     });
     QObject::connect(device, &PlatformClient::platformError, &app, [&](const QString &code, const QString &message) {
+        if (code == QLatin1String("DEVICE_ALREADY_ONLINE")) {
+            // The platform still holds the previous connection for this id; the
+            // client backs off and retries, which is the behaviour under test.
+            ++alreadyOnlineRetries;
+            qInfo() << "device re-registration deferred" << code << "attempt" << alreadyOnlineRetries;
+            return;
+        }
         qWarning() << "device platform error" << code << message;
         ++failures;
     });
@@ -170,8 +201,9 @@ int main(int argc, char *argv[]) {
         }
     });
 
-    QTimer::singleShot(15000, &app, [&] {
-        qWarning() << "interop timed out";
+    QTimer::singleShot(timeoutMs, &app, [&] {
+        qWarning() << "interop timed out after" << timeoutMs << "ms; DEVICE_ALREADY_ONLINE retries:"
+                   << alreadyOnlineRetries;
         app.exit(1);
     });
 

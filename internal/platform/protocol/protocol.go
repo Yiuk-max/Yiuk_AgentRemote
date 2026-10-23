@@ -17,11 +17,10 @@ import (
 // Version is the only protocol version accepted by this build.
 const Version = 1
 
-// Business types are explicit so agent-assist traffic can never share a
-// session, permission set or channel with Minecraft relay traffic.
+// Business types are explicit so a future business can never share a session,
+// permission set or channel with agent-assist traffic.
 const (
 	BusinessAgentAssist = "agent_assist"
-	BusinessMinecraft   = "minecraft"
 )
 
 // 信息类型

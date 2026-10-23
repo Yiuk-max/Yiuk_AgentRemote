@@ -1,9 +1,0 @@
-# 独立运维代理示例配置。仅授权运维人员可读写此文件。
-# NOTE: the platform server is deployed on :29564 by deploy/install-platform.sh,
-# so the ops agent must use a different port.
-listen: ":29565"
-tls_cert: "/etc/yiuk-ops/server.crt"
-tls_key: "/etc/yiuk-ops/server.key"
-relay_binary: "/opt/yiuk/relay"
-relay_config: "/opt/yiuk/config.yaml"
-relay_working_dir: "/opt/yiuk"

@@ -40,7 +40,74 @@ func (c *Client) ensureConnectedLocked() error {
 	c.conn, c.connID, c.inbox, c.connDone, c.connected = conn, connID, inbox, done, true
 	c.mu.Unlock()
 	go c.readLoop(conn, reader, inbox, done)
+	go c.heartbeatLoop(conn, done)
 	return nil
+}
+
+// heartbeatInterval is how often the operator connection pings the platform.
+// The server closes connections that stay silent longer than its
+// heartbeat_timeout_sec (45s by default), so an idle operator must keep the
+// connection warm or its sessions would be interrupted mid-flight.
+func (c *Client) heartbeatInterval() time.Duration {
+	seconds := c.cfg.HeartbeatIntervalSeconds
+	if seconds <= 0 {
+		seconds = defaultHeartbeatIntervalSeconds
+	}
+	if seconds < minHeartbeatIntervalSeconds {
+		seconds = minHeartbeatIntervalSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+// heartbeatLoop keeps an otherwise idle connection alive and detects a peer
+// that stopped answering pings without closing the socket.
+func (c *Client) heartbeatLoop(conn net.Conn, done chan struct{}) {
+	ticker := time.NewTicker(c.heartbeatInterval())
+	defer ticker.Stop()
+	lastPongs := c.pongs.Load()
+	misses := 0
+	var sequence uint64
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+		}
+		pongs := c.pongs.Load()
+		if pongs == lastPongs {
+			misses++
+		} else {
+			misses = 0
+		}
+		lastPongs = pongs
+		if misses >= maxMissedHeartbeats {
+			// The platform stopped answering: drop the connection so the next
+			// tool call reconnects instead of waiting for a TCP timeout.
+			c.markDisconnected(done)
+			return
+		}
+		sequence++
+		if err := c.writeMessage(conn, protocol.Message{
+			Version:      protocol.Version,
+			BusinessType: protocol.BusinessAgentAssist,
+			Type:         protocol.TypePing,
+			Sequence:     sequence,
+		}); err != nil {
+			c.markDisconnected(done)
+			return
+		}
+	}
+}
+
+// writeMessage serializes one frame and bounds how long a stalled peer can
+// block the writer.
+func (c *Client) writeMessage(conn net.Conn, m protocol.Message) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	err := c.codec.Write(conn, m)
+	_ = conn.SetWriteDeadline(time.Time{})
+	return err
 }
 
 func (c *Client) handshake() (net.Conn, *bufio.Reader, string, error) {
@@ -135,6 +202,12 @@ func (c *Client) readLoop(conn net.Conn, reader *bufio.Reader, inbox chan protoc
 		m, err := c.codec.Read(reader)
 		if err != nil {
 			return
+		}
+		if m.Type == protocol.TypePong {
+			// Pongs only prove liveness; the heartbeat goroutine consumes the
+			// counter and the frame never needs to reach a tool call.
+			c.pongs.Add(1)
+			continue
 		}
 		select {
 		case inbox <- m:

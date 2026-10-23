@@ -11,7 +11,7 @@
 set -euo pipefail
 
 DEPLOY_DIR=/opt/yiuk-platform
-SERVICE_USER=yiukrelay
+SERVICE_USER=yiukplatform
 
 if [[ $EUID -ne 0 ]]; then
     echo "must run as root" >&2

@@ -213,5 +213,38 @@ QString MainWindow::sessionStatusText(const QString &sessionId) const {
     if (status == "closed") return "已断开，远程控制已停止";
     if (status == "expired") return "会话已过期";
     if (status == "rejected") return "请求已拒绝";
+    if (status == "interrupted") return "平台连接中断，协助已结束";
     return status.isEmpty() ? "无活动会话" : status;
+}
+
+
+// interruptPlatformSessions marks platform-backed sessions that are no longer
+// live because the connection to the platform went away. Local (bridge)
+// sessions are untouched: they never depend on the platform link.
+void MainWindow::interruptPlatformSessions() {
+    bool changed = false;
+    const QStringList sessionIds = sessions.keys();
+    for (const QString &sessionId : sessionIds) {
+        QJsonObject session = sessions.value(sessionId);
+        if (!session.value("source").toString().startsWith(QStringLiteral("platform"))) continue;
+        const QString status = session.value("status").toString();
+        if (status != "active" && status != "approved" && status != "pending_approval" &&
+            status != "requested") {
+            continue;
+        }
+        session.insert("status", "interrupted");
+        session.insert("close_reason", "platform_disconnected");
+        sessions.insert(sessionId, session);
+        stopTasksForSession(sessionId, "result_unknown");
+        notificationSessions.remove(sessionId);
+        appendActivity(sessionId, "平台连接已断开，会话中断", ActivityKind::Session);
+        changed = true;
+    }
+    if (!changed) return;
+    persistSessionState();
+    refreshPendingRequests();
+    refreshActiveSessions();
+    refreshSessionsPage();
+    syncActivityPanel();
+    showStatusMessage("平台连接已断开，远程协助已中断", 5000);
 }

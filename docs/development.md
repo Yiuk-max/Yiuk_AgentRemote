@@ -27,7 +27,7 @@ govulncheck ./...                 # go install golang.org/x/vuln/cmd/govulncheck
 ## 2. 源码结构
 
 ```text
-cmd/platform/ cmd/relay/ cmd/yiuk-mcp/ cmd/smoke/ cmd/device-sim/
+cmd/platform/ cmd/yiuk-mcp/ cmd/smoke/ cmd/device-sim/
 
 internal/platform/            auth config device session task transfer protocol transport audit
 internal/platform/server/     server.go conn.go routing.go janitor.go handler.go
@@ -37,11 +37,9 @@ internal/platformclient/      client.go config.go transport.go cache.go
                               tools_device.go tools_session.go tools_command.go tools_file.go
 internal/agenttools/          工具契约
 internal/mcpadapter/          MCP stdio
-internal/room/ control/ server/ protocol/   Minecraft relay
 
-configs/                      平台与 relay 配置模板
+configs/                      平台配置模板
 deploy/                       服务器安装脚本与 systemd 单元
-ops/server/                   relay 运维 agent（见 ops/README.md）
 ```
 
 Qt 客户端（`qt-client/src`）：
@@ -68,8 +66,6 @@ platformclient localbridge securestore   协议客户端、本机 bridge、DPAPI
 
 ```sh
 go build -o platform ./cmd/platform
-go build -o relay ./cmd/relay
-go build -o ops-agent ./ops/server/cmd/ops-agent
 ```
 
 ```sh
@@ -209,7 +205,7 @@ systemctl restart yiuk-platform
 
 - 不提交真实密码、TLS 私钥或其他凭证。
 - 平台服务完全内存化，重启后临时密码、会话、任务全部失效。
-- 平台 `player_password` 与 Minecraft `host_password` / `player_password` 使用不同随机强密码。
+- 每套部署使用独立的随机 `player_password`，不要与其他服务复用。
 - 管理端口由防火墙限制为可信运维终端。
 - 生产环境使用 TLS 并校验证书，`allow_plaintext` / `allow_insecure` 仅本机测试。
 
