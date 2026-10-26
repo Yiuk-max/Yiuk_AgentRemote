@@ -1,0 +1,31 @@
+# Only cmd/ + internal/ + go.mod/go.sum + the container entrypoint reach the build.
+.git
+.github
+.gitignore
+.pi
+.vscode
+.idea
+
+docs
+qt-client
+release
+bin
+tmp-*
+*.md
+todo.md
+
+# Never bake local secrets, certificates or logs into the image.
+.env
+*.log
+*.key
+*.crt
+*.pem
+player_password.txt
+configs/
+
+deploy/*
+!deploy/docker-entrypoint.sh
+
+Dockerfile
+docker-compose.yml
+.dockerignore

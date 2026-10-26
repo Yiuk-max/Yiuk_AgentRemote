@@ -18,6 +18,9 @@ build-*/
 *.key
 *.crt
 
+# Docker 本地 env（.env.example 是模板，.env 含密码不提交）
+.env
+
 # Client-side runtime credentials and bridge tokens
 platform-client.json
 local-api.json

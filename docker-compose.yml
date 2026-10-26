@@ -1,0 +1,63 @@
+# Yiuk Switchboard platform server, containerized.
+#
+#   cp .env.example .env        # 填写 YIUK_PLAYER_PASSWORD（16+ 位随机串）
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+# TLS:
+#   1) 生产：把证书放到 ./certs/server.crt 与 ./certs/server.key（key 权限 600），
+#      打开下面的 certs 挂载；容器内路径固定 /var/lib/yiuk-platform/certs/。
+#   2) 临时试用：置 YIUK_TLS_SELF_SIGNED: "true"，容器首次启动生成自签证书，
+#      客户端按指纹信任（设置页会显示 SHA-256）。
+#
+# 平台状态全部在内存：重启容器 = 所有设备在线状态、临时密码、会话与任务失效。
+services:
+  platform:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: yiuk-platform:local
+    container_name: yiuk-platform
+    restart: unless-stopped
+    ports:
+      - "${YIUK_PORT:-29564}:29564"
+    environment:
+      YIUK_LISTEN: ":29564"
+      # 用 .env 或 shell 变量提供；缺失时 compose 直接报错退出。
+      YIUK_PLAYER_PASSWORD: "${YIUK_PLAYER_PASSWORD:?请先设置 YIUK_PLAYER_PASSWORD（16+ 位随机串）}"
+      # 更隐蔽的做法：把密码放进文件，改用下面这行，并取消 secrets 段注释。
+      # YIUK_PLAYER_PASSWORD_FILE: /run/secrets/player_password
+      # 自签证书：默认开启只是为了能直接跑起来；生产请挂载真实证书并把这里改成 "false"。
+      # 证书已存在于 certs/ 时不会被覆盖。
+      YIUK_TLS_SELF_SIGNED: "${YIUK_TLS_SELF_SIGNED:-true}"
+      YIUK_TLS_HOST: "${YIUK_TLS_HOST:-yiuk-platform}"
+      TZ: "${TZ:-Asia/Shanghai}"
+    volumes:
+      - yiuk-platform-data:/var/lib/yiuk-platform
+      # - ./certs/server.crt:/var/lib/yiuk-platform/certs/server.crt:ro
+      # - ./certs/server.key:/var/lib/yiuk-platform/certs/server.key:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 29564"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # secrets:
+    #   - player_password
+
+volumes:
+  yiuk-platform-data:
+
+# secrets:
+#   player_password:
+#     file: ./player_password.txt

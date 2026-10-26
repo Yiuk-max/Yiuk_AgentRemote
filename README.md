@@ -63,7 +63,7 @@
 
 - [产品需求](docs/product-requirements.md)：范围、功能与验收标准。
 - [架构与实现](docs/architecture.md)：选型、模块边界、授权模型、协议、状态机、MCP 契约。
-- [开发与构建](docs/development.md)：环境、构建、测试、打包发布、服务器部署。
+- [开发与构建](docs/development.md)：环境、构建、测试、打包发布、服务器部署（systemd / [Docker](docs/development.md#61-容器部署docker--compose)）。
 - [本机开发环境](docs/local-dev.md)：**仅限本机**的工具链路径、快捷命令与已知坑。
 - [远程部署操作记录 2026-10-23](docs/remote-deploy-session-2026-10-23.md)：通过 MCP 远端部署 dsh-pet 的全过程、本机/目标机改动清单、两个坑与回滚步骤。
 

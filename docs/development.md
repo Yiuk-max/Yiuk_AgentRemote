@@ -171,6 +171,53 @@ systemctl restart yiuk-platform
 
 日志只记录脱敏 ID、状态与错误码。
 
+### 6.1 容器部署（Docker / Compose）
+
+镜像里只有 `cmd/platform` 的静态二进制与一个入口脚本，非 root（uid `10001`）运行，工作目录 `/var/lib/yiuk-platform`，暴露 `29564`。
+
+```sh
+docker build -t yiuk-platform:local .
+docker run -d --name yiuk-platform -p 29564:29564 \
+  -e YIUK_PLAYER_PASSWORD='<16 位以上随机串>' \
+  -e YIUK_TLS_SELF_SIGNED=true \
+  -v yiuk-platform-data:/var/lib/yiuk-platform \
+  yiuk-platform:local
+docker logs -f yiuk-platform
+```
+
+Compose（仓库根目录，推荐）：
+
+```sh
+cp .env.example .env      # 填 YIUK_PLAYER_PASSWORD
+docker compose up -d --build
+docker compose ps          # 健康检查为 nc -z 127.0.0.1 29564
+docker compose down        # 加 -v 一并删除卷（配置、证书、日志）
+```
+
+配置有两种来源：
+
+1. **环境变量**（默认）：启动时把 `platform.yaml` 渲染到 `/var/lib/yiuk-platform/platform.yaml`，每次重启按当前变量重写。只写 `listen`、TLS、`player_password`、`log_file`，其余限制走内置默认值。
+2. **挂载配置**（`-e YIUK_CONFIG=/etc/yiuk/platform.yaml -v <file>:/etc/yiuk/platform.yaml:ro`）：文件原样使用，入口脚本不写盘；路径不存在直接报错退出。要改 `max_*`、各类 TTL 等默认值就走这条路，模板见 `configs/platform.yaml`。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `YIUK_PLAYER_PASSWORD` | 无 | 玩家密码；缺失且无配置文件时拒绝启动，少于 8 字符由服务端拒绝 |
+| `YIUK_PLAYER_PASSWORD_FILE` | 无 | 从文件读密码（docker secret），优先于上一项 |
+| `YIUK_LISTEN` | `:29564` | 监听地址 |
+| `YIUK_TLS_CERT` / `YIUK_TLS_KEY` | `/var/lib/yiuk-platform/certs/server.crt` / `.key` | 证书与私钥 |
+| `YIUK_ALLOW_INSECURE` | `false` | 明文监听，仅限本地测试 |
+| `YIUK_TLS_SELF_SIGNED` | `false`（compose 里默认 `true`） | 证书缺失时生成一次性自签证书 |
+| `YIUK_TLS_HOST` | `yiuk-platform` | 自签证书的 CN 与 SAN（另含 `127.0.0.1`） |
+| `YIUK_TLS_SELF_SIGNED_DAYS` | `825` | 自签有效期（天） |
+| `YIUK_LOG_FILE` | `/var/lib/yiuk-platform/platform.log` | 日志文件；`slog` 的 JSON 同时写它 |
+| `YIUK_HEALTHCHECK_PORT` | `29564` | 只是镜像内置 `HEALTHCHECK` 探测的端口，改 `YIUK_LISTEN` 时同步改它 |
+
+- 生产用真实证书：把 `server.crt` / `server.key` 放进卷的 `certs/`（或按 compose 注释挂载），并设 `YIUK_TLS_SELF_SIGNED=false`；私钥在容器内为 `600`、归属 `10001`。
+- 卷用命名卷：bind mount 的主机目录属主必须是 `10001`，否则入口脚本写不了 `platform.yaml`（会带提示退出）。compose 的 `read_only: true` 只放开该卷与 `/tmp`。
+- 平台状态全在内存：容器重启即清空在线设备、临时密码、会话与任务，客户端需重连。
+- 自签证书要在客户端「设置」页按 SHA-256 指纹信任；换证书后客户端会提示「证书已变更」。
+- 本机 Docker Desktop 实测通过：自签 TLS + `cmd/smoke` 全链路（注册、申请、批准、执行、取结果、越权拒绝、关闭会话）、`YIUK_PLAYER_PASSWORD_FILE`、含 `# : ' \` 的密码渲染、明文模式与 `docker compose up` 健康检查。
+
 ## 7. 客户端配置与证书
 
 平台配置：`%LOCALAPPDATA%/Yiuk/DeviceAssist/platform-client.json`，兼容读取 `%APPDATA%/Yiuk/DeviceAssist`。
