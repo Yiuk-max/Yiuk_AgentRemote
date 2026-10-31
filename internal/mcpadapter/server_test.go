@@ -7,7 +7,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"yiuk-switchboard/internal/agenttools"
+	"agentremote/internal/agenttools"
 )
 
 type backendFunc func(context.Context, agenttools.Request) (any, error)

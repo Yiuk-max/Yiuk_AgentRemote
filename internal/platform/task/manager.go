@@ -37,14 +37,13 @@ var (
 	ErrInvalidStatus   = errors.New("invalid task terminal status")
 )
 
-// Chunk is one bounded output chunk.
+// Chunk 是一个有界的输出块
 type Chunk struct {
 	Stream   string
 	Sequence uint64
 	Data     string
 }
 
-// Task is the in-memory task record.
 type Task struct {
 	RequestID       string
 	SessionID       string
@@ -73,7 +72,7 @@ func (t *Task) clone() *Task {
 	return &out
 }
 
-// Manager owns all task state.
+// Manager 拥有所有的任务状态
 type Manager struct {
 	mu            sync.Mutex
 	tasks         map[string]*Task
@@ -82,9 +81,9 @@ type Manager struct {
 	now           func() time.Time
 }
 
-// NewManager creates a task manager. maxOutput is the total stdout+stderr
-// byte budget per task; maxPerSession bounds concurrently queued/running
-// tasks.
+// NewManager 创建一个任务管理器。
+// maxOutput 是每个任务的 stdout 和 stderr 总字节预算；
+// maxPerSession 限制同时排队/运行的任务数
 func NewManager(maxOutput, maxPerSession int) *Manager {
 	return newManager(maxOutput, maxPerSession, time.Now)
 }
@@ -99,10 +98,8 @@ func newManager(maxOutput, maxPerSession int, now func() time.Time) *Manager {
 	return &Manager{tasks: make(map[string]*Task), maxOutput: maxOutput, maxPerSession: maxPerSession, now: now}
 }
 
-// Start creates a running task or returns the existing task for a duplicate
-// request id. The bool result is true when a new task was created. A positive
-// timeout installs a server-side deadline so an unresponsive device cannot
-// leak running task slots forever.
+// Start 会创建一个正在运行的任务，或者返回重复请求 ID 的已有任务
+// 当创建了新任务时，bool 结果为 true。正的超时时间会设置服务器端的截止时间，这样无法响应的设备就不会永远占用
 func (m *Manager) Start(sessionID, requestID string, timeout time.Duration) (*Task, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -116,6 +113,7 @@ func (m *Manager) Start(sessionID, requestID string, timeout time.Duration) (*Ta
 		return existing.clone(), false, nil
 	}
 	active := 0
+	//找到设备，已激活任务数量+1
 	for _, t := range m.tasks {
 		if t.SessionID == sessionID && !isTerminal(t.Status) {
 			active++
@@ -139,8 +137,8 @@ func (m *Manager) Start(sessionID, requestID string, timeout time.Duration) (*Ta
 	return t.clone(), true, nil
 }
 
-// AppendOutput records one output chunk while enforcing the per-task byte
-// budget. Excess data is dropped and the task is marked truncated.
+// AppendOutput 会记录一个输出块，同时执行每个任务的字节额度
+// 超出部分的数据会被丢弃，任务会被标记为截断
 func (m *Manager) AppendOutput(sessionID, requestID, stream, data string) (*Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -171,8 +169,7 @@ func (m *Manager) AppendOutput(sessionID, requestID, stream, data string) (*Task
 	return t.clone(), nil
 }
 
-// Finish records the terminal status of a task. Terminal tasks are returned
-// unchanged, which makes device retries idempotent.
+// Finish 记录了任务的终端状态。终端任务会原样返
 func (m *Manager) Finish(sessionID, requestID string, status Status, exitCode *int, resultKnown bool) (*Task, error) {
 	if !isTerminal(status) {
 		return nil, ErrInvalidStatus
@@ -196,8 +193,7 @@ func (m *Manager) Finish(sessionID, requestID string, status Status, exitCode *i
 	return t.clone(), nil
 }
 
-// CancelRequested marks that cancellation was requested. If the task has not
-// started running yet it is immediately cancelled.
+// CancelRequested 表示已请求取消。如果任务尚未开始执行，它会立即被取消
 func (m *Manager) CancelRequested(sessionID, requestID string) (*Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -216,7 +212,7 @@ func (m *Manager) CancelRequested(sessionID, requestID string) (*Task, error) {
 	return t.clone(), nil
 }
 
-// Get returns a task clone.
+// 获取任务信息副本
 func (m *Manager) Get(sessionID, requestID string) (*Task, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -227,7 +223,7 @@ func (m *Manager) Get(sessionID, requestID string) (*Task, bool) {
 	return t.clone(), true
 }
 
-// ListBySession returns task clones for a session.
+// 给session返回任务副本
 func (m *Manager) ListBySession(sessionID string) []*Task {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -240,7 +236,7 @@ func (m *Manager) ListBySession(sessionID string) []*Task {
 	return out
 }
 
-// ActiveCount returns the number of queued/running tasks for a session.
+// 返回一个会话正在排队、处理的任务数量
 func (m *Manager) ActiveCount(sessionID string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -253,9 +249,9 @@ func (m *Manager) ActiveCount(sessionID string) int {
 	return count
 }
 
-// FinishSession transitions every live task for a session. finishStatus is
-// used for tasks whose local outcome is known (for example cancelled after an
-// owner stop); otherwise result_unknown is used for ambiguous disconnects.
+// FinishSession 会切换某个会话的每个实时任务。
+// finishStatus 用于本地结果已知的任务（例如在所有者停止后被取消）；
+// 否则，对于不明确的断开情况则使用 result_unknown
 func (m *Manager) FinishSession(sessionID string, finishStatus Status) []*Task {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -276,9 +272,8 @@ func (m *Manager) FinishSession(sessionID string, finishStatus Status) []*Task {
 	return out
 }
 
-// Expire marks running tasks whose server-side deadline has passed as
-// timed_out. The local device may still be finishing the process; the result
-// is therefore reported as not fully known.
+// 将服务器端截止时间已过的正在运行任务标记为超时
+// 本地设备可能仍在完成该进程；因此结果会被报告为不完全确定
 func (m *Manager) Expire() []*Task {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -296,15 +291,15 @@ func (m *Manager) Expire() []*Task {
 	return out
 }
 
-// ResultView is a bounded slice of output starting at a cursor.
+// ResultView 是从光标开始的输出的有界切片
 type ResultView struct {
 	Task       *Task
 	Chunks     []Chunk
 	NextCursor int
 }
 
-// Result returns output chunks after cursor. Cursor is a chunk index, not a
-// byte offset, so clients can page deterministically.
+// Result 会返回光标后的输出块。
+// 光标是块索引，而不是字节偏移量，所以客户端可以确定性地分页
 func (m *Manager) Result(sessionID, requestID string, cursor int) (*ResultView, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -18,8 +18,8 @@ int main(int argc, char *argv[]) {
     palette.setColor(QPalette::Highlight, QColor("#1479ed"));
     palette.setColor(QPalette::HighlightedText, QColor("#ffffff"));
     app.setPalette(palette);
-    // Tooltips are top level popups with no widget parent, so their white sheet
-    // rule cannot be inherited from MainWindow; everything else stays there.
+    // 工具提示是没有父控件的顶层弹窗，无法继承 MainWindow 的白色底板样式
+    // 其他样式仍由 MainWindow 提供
     app.setStyleSheet("QToolTip { background: #ffffff; color: #263446; border: 1px solid #e1e7ef; "
                       "border-radius: 6px; padding: 5px 8px; font-size: 12px; }");
     app.setApplicationName("Yiuk Device Assist");

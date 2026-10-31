@@ -1,38 +1,38 @@
 package server
 
-//消息分发
+//handler负责消息分发，只负责处理重要的事务，其它分发给具体的handler去处理
 import (
 	"errors"
 	"sort"
 	"time"
 
-	"yiuk-switchboard/internal/platform/audit"
-	"yiuk-switchboard/internal/platform/auth"
-	"yiuk-switchboard/internal/platform/device"
-	"yiuk-switchboard/internal/platform/protocol"
+	"agentremote/internal/platform/audit"
+	"agentremote/internal/platform/auth"
+	"agentremote/internal/platform/device"
+	"agentremote/internal/platform/protocol"
 )
 
 const (
 	maxTemporaryPasswordLen = 256
-	fileTransferTimeout = 5 * time.Minute
+	fileTransferTimeout     = 5 * time.Minute
 )
 
 func (s *Server) handle(c *conn, m protocol.Message) error {
-	if m.Version != protocol.Version {
+	if m.Version != protocol.Version { //网络协议版本比对
 		return ferr("BAD_VERSION", "unsupported protocol version")
 	}
 	switch m.Type {
-	case protocol.TypeAuthenticatePlayer:
+	case protocol.TypeAuthenticatePlayer: //连接服务器使用服务
 		return s.handleAuthenticate(c, m)
-	case protocol.TypePing:
+	case protocol.TypePing: //发心跳检测
 		if c.role == roleAnonymous {
 			return ferr("AUTH_REQUIRED", "authenticate before sending other messages")
 		}
 		return s.sendOK(c, m, protocol.Message{Type: protocol.TypePong, Sequence: m.Sequence, ServerTime: time.Now().Unix()})
-	case protocol.TypePong:
+	case protocol.TypePong: //收到心跳检测，不用管
 		return nil
 	}
-	if c.role == roleAnonymous {
+	if c.role == roleAnonymous { //匿名状态不能使用，返回报错
 		return ferr("AUTH_REQUIRED", "authenticate before sending other messages")
 	}
 	switch m.Type {

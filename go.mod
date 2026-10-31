@@ -1,4 +1,4 @@
-module yiuk-switchboard
+module agentremote
 
 go 1.27.3
 

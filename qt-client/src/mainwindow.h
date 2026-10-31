@@ -109,8 +109,7 @@ private:
     QHash<QString, QString> platformTaskSession;
     QHash<QString, QJsonObject> sessions;
     QHash<QString, QJsonObject> tasks;
-    // One runner per in-flight command; the runner owns the QProcess and the
-    // temporary script file.
+    // 每条执行中的命令对应一个运行器；运行器负责管理 QProcess 和临时脚本文件
     QHash<QString, PowerShellRunner *> runs;
     QHash<QString, bool> activeFileDownloads;
     struct FileUploadState {
@@ -127,18 +126,15 @@ private:
         QString expectedSha256;
         bool overwrite = false;
     };
-    // Uploads are received from the operator and written to disk: one open
-    // temporary file per in-flight upload, renamed into place when complete.
+    // 接收操作端上传并写入磁盘：每个进行中的上传使用一个已打开的临时文件，完成后再重命名到目标位置
     QHash<QString, QSharedPointer<FileUploadState>> activeFileUploads;
     QSystemTrayIcon *trayIcon = nullptr;
     QStatusBar *statusFooter = nullptr;
     QHash<QString, QString> notificationSessions;
-    // True while the platform link was usable; used to tell a dropped link
-    // apart from the initial/never-connected state.
+    // 平台连接曾经可用时为 true，用于区分连接断开与尚未连接的初始状态
     bool platformLinkWasUp = false;
-    // The remote-session log is kept for the panel process, which the owner can
-    // close and reopen at any time. The panel is an independent window; nothing
-    // in this class may raise it on its own.
+    // 远程会话日志保存在面板进程中，所有者可随时关闭或重新打开面板
+    // 面板是独立窗口，此类中的任何操作都不能主动将它置于前台
     ActivityPanel *activityPanel = nullptr;
     QHash<QString, QVector<ActivityEntry>> activityLogs;
     void setupSystemTray();
@@ -157,8 +153,7 @@ private:
     QWidget *createSettingsPage();
     void showPage(int index);
     void refreshDevicesPage();
-    // Star on the home page: outlined when the typed device code is not saved
-    // yet, filled amber once it is.
+    // 主页上的收藏星标：设备代码尚未收藏时显示描边，收藏后显示琥珀色实心图标
     void refreshFavoriteState();
     void refreshSessionsPage();
     QString sessionConnectorCode(const QJsonObject &session) const;
@@ -224,8 +219,8 @@ private:
     void showApprovalDialog(const QString &id);
     void decideSession(const QString &id, bool approved);
     void refreshActiveSessions();
-    // Marks every platform-backed session as interrupted. Called when the
-    // platform link drops so the UI cannot keep claiming a session is live.
+    // 将所有平台会话标记为中断
+    // 平台连接断开时调用，避免界面继续显示会话正在运行
     void interruptPlatformSessions();
     QString activeTaskSummary(const QString &sessionId) const;
     QJsonObject downloadLocalFile(const QJsonObject &input);

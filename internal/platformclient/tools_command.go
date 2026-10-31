@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
+	"agentremote/internal/agenttools"
+	"agentremote/internal/platform/protocol"
 	"encoding/json"
-	"yiuk-switchboard/internal/agenttools"
-	"yiuk-switchboard/internal/platform/protocol"
 )
 
 func (c *Client) executeCommand(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -67,9 +67,7 @@ func (c *Client) getCommandResultInternal(ctx context.Context, sessionID, reques
 	return resultMap(resp), nil
 }
 
-// runCommand is the one-shot operator flow: request a session (optionally
-// waiting for owner approval), execute one command, wait for its result, and
-// close the session unless the caller asks to keep it open.
+// runCommand 执行一次性操作端流程：请求会话（可选择等待设备所有者批准）、执行命令、等待结果，并在调用方未要求保持会话时关闭会话
 func (c *Client) runCommand(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {
 		DeviceID               string `json:"device_id"`

@@ -15,8 +15,7 @@ TitleBar::TitleBar(QWidget *parent, const QString &title)
     layout->setContentsMargins(dialogMode ? 16 : 12, 0, 6, 0);
     layout->setSpacing(dialogMode ? 6 : 2);
     if (dialogMode) {
-        // Same type ramp as the page headings, only smaller than the window
-        // brand label; the close button is the main window's own glyph.
+        // 字体层级与页面标题一致，但小于窗口品牌标签；关闭按钮复用主窗口的图标
         layout->addWidget(makeLabel(title, "font-size: 13px; font-weight: 600; color: #263446;"));
         layout->addStretch();
     } else {
@@ -44,8 +43,7 @@ void TitleBar::mousePressEvent(QMouseEvent *event) {
 }
 
 void TitleBar::mouseDoubleClickEvent(QMouseEvent *event) {
-    // Dialogs are not maximizable; only the main window keeps the double-click
-    // toggle.
+    // 对话框不可最大化；双击切换最大化状态仅适用于主窗口
     if (event->button() == Qt::LeftButton && !dialogMode)
         window()->isMaximized() ? window()->showNormal() : window()->showMaximized();
     QWidget::mouseDoubleClickEvent(event);
@@ -58,8 +56,7 @@ QPushButton *TitleBar::windowButton(Glyph glyph, const QString &kind, const QStr
     button->setIconSize(QSize(18, 18));
     button->setToolTip(tip);
     button->setCursor(Qt::PointingHandCursor);
-    // Title bar buttons never take keyboard focus, so a dialog still focuses its
-    // first real input instead of the close glyph.
+    // 标题栏按钮不会获取键盘焦点，因此对话框仍会聚焦到首个实际输入项，而不是关闭图标
     button->setFocusPolicy(Qt::NoFocus);
     button->setFixedSize(38, 30);
     button->setStyleSheet(kind == "close"

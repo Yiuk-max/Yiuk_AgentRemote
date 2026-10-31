@@ -8,23 +8,21 @@
 class QHBoxLayout;
 class QVBoxLayout;
 
-// Frameless popup surface shared by every secondary window and dialog.
+// 所有次级窗口和对话框共用的无边框弹窗界面
 //
-// It keeps the main window's white sheet, reused QSS and self-drawn title bar
-// (title on the left, the main window's close glyph on the right), so no popup
-// falls back to the native Windows chrome, and every action button comes from
-// the shared button factories instead of a copied stylesheet.
+// 沿用主窗口的白色底板、共享 QSS 和自绘标题栏（标题在左，右侧复用主窗口的关闭图标）
+// 所有弹窗都不会回退到 Windows 原生边框，操作按钮也统一使用共享工厂创建，避免复制样式表
 class YiukDialog final : public QDialog {
 public:
     enum class ButtonKind { Normal, Primary, Danger };
 
     YiukDialog(QWidget *parent, const QString &title);
 
-    // Content area between the title bar and the button row.
+    // 标题栏和按钮行之间的内容区域
     QVBoxLayout *content() const { return bodyLayout; }
 
-    // Appends one action button to the bottom row. Only the box is resized here;
-    // the look comes from makeButton/makePrimaryButton/makeDangerButton.
+    // 在底部按钮行追加一个操作按钮
+    // 此处只调整按钮尺寸；样式由 makeButton/makePrimaryButton/makeDangerButton 提供
     QPushButton *addButton(const QString &text, ButtonKind kind = ButtonKind::Normal);
 
 protected:
@@ -36,8 +34,8 @@ private:
     bool centered = false;
 };
 
-// QMessageBox/QInputDialog replacements: same information hierarchy as before,
-// but frameless and drawn with the client's own white sheet.
+// QMessageBox/QInputDialog 的替代实现：保留原有信息层级
+// 使用客户端自有的白色底板绘制，并去掉边框
 void showInfoMessage(QWidget *parent, const QString &title, const QString &text);
 void showWarningMessage(QWidget *parent, const QString &title, const QString &text);
 bool askConfirm(QWidget *parent, const QString &title, const QString &text,

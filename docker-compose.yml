@@ -1,4 +1,4 @@
-# Yiuk Switchboard platform server, containerized.
+# AgentRemote platform server, containerized.
 #
 #   cp .env.example .env        # 填写 YIUK_PLAYER_PASSWORD（16+ 位随机串）
 #   docker compose up -d --build

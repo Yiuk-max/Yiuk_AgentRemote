@@ -1,4 +1,4 @@
-# Yiuk Switchboard platform server (cmd/platform).
+# AgentRemote platform server (cmd/platform).
 #
 # Build:  docker build -t yiuk-platform:local .
 # Run:    docker run -d --name yiuk-platform -p 29564:29564 \
@@ -46,7 +46,7 @@ COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/yiuk-platform /usr/local/bin/docker-entrypoint.sh
 
 LABEL org.opencontainers.image.title="yiuk-platform" \
-      org.opencontainers.image.description="Yiuk Switchboard remote-assist platform server (TLS relay, sessions, command tasks)" \
+      org.opencontainers.image.description="AgentRemote remote-assist platform server (TLS relay, sessions, command tasks)" \
       org.opencontainers.image.licenses="UNLICENSED"
 
 ENV YIUK_LISTEN=:29564 \

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"yiuk-switchboard/internal/agenttools"
-	"yiuk-switchboard/internal/userconfig"
+	"agentremote/internal/agenttools"
+	"agentremote/internal/userconfig"
 )
 
 const configFileName = "local-api.json"

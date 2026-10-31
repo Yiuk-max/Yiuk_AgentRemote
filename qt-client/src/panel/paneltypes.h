@@ -4,10 +4,8 @@
 
 namespace yiuk {
 
-// Every operation a remote Agent performs on this device has its own kind. The
-// panel renders text colours only for now (pi's background boxes are a later
-// step), so the kind decides the gutter label, the accent bar and the ink of the
-// entry.
+// 远程 Agent 在此设备上执行的每种操作都有对应类型
+// 面板目前只用文字颜色区分类型（后续再支持 pi 的背景色块），因此类型决定边栏标签、强调色条和条目文字颜色
 enum class Kind {
     Info,
     Session,
@@ -22,12 +20,11 @@ enum class Kind {
 
 struct Entry {
     Kind kind = Kind::Info;
-    std::wstring time;  // "HH:MM:SS", already formatted by the parent
-    std::wstring text;  // may contain '\n'; the panel wraps it itself
+    std::wstring time;  // "HH:MM:SS"，由父进程预先格式化
+    std::wstring text;  // 可能包含 '\n'；面板会自行换行
 };
 
-// The parent sends a state token, never a colour: "active" drives the green dot,
-// "pending" the amber one, "closed" and "none" stay muted.
+// 父进程发送状态标记而非颜色："active" 对应绿色圆点，"pending" 对应琥珀色圆点，"closed" 和 "none" 使用弱化颜色
 enum class SessionState {
     None,
     Active,

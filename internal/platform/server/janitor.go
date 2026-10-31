@@ -5,10 +5,10 @@ import (
 	"context"
 	"time"
 
-	"yiuk-switchboard/internal/platform/audit"
-	"yiuk-switchboard/internal/platform/protocol"
-	"yiuk-switchboard/internal/platform/task"
-	"yiuk-switchboard/internal/platform/transfer"
+	"agentremote/internal/platform/audit"
+	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platform/task"
+	"agentremote/internal/platform/transfer"
 )
 
 func (s *Server) janitor(ctx context.Context) {
@@ -25,10 +25,10 @@ func (s *Server) janitor(ctx context.Context) {
 }
 
 // sweep是一个周期性清理函数，每秒执行一次，主要负责以下任务：
-// 1. 会话过期处理：检查所有会话是否过期，如果过期，则从设备中移除该会话，并向设备发送关闭会话的消息，同时将任务状态标记为取消。
-// 2. 传输过期处理：检查所有文件传输任务是否过期，如果过期，则向操作端发送传输结果消息，并向设备发送取消文件下载的消息。
-// 3. 任务过期处理：检查所有命令执行任务是否过期，如果过期，则向操作端发送任务结果消息，并向设备发送取消命令的消息。
-// 4. 离线设备清理：清理长时间离线的设备，并记录清理的数量。
+// 1. 会话过期处理：检查所有会话是否过期，如果过期，则从设备中移除该会话，并向设备发送关闭会话的消息，同时将任务状态标记为取消
+// 2. 传输过期处理：检查所有文件传输任务是否过期，如果过期，则向操作端发送传输结果消息，并向设备发送取消文件下载的消息
+// 3. 任务过期处理：检查所有命令执行任务是否过期，如果过期，则向操作端发送任务结果消息，并向设备发送取消命令的消息
+// 4. 离线设备清理：清理长时间离线的设备，并记录清理的数量
 func (s *Server) sweep() {
 	expired := s.sessions.Expire()
 	for _, ses := range expired {

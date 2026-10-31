@@ -8,20 +8,19 @@
 
 class QProcess;
 
-// Runs one command through pwsh.exe (falling back to powershell.exe) from a
-// temporary .ps1 script that carries a UTF-8 BOM, with per-stream output capped
-// at 1 MiB and a hard timeout. Both the platform path (results streamed back to
-// the requesting Agent) and the local bridge path (results kept in the client)
-// drive this class, so command execution has exactly one implementation.
+// 通过 pwsh.exe（不可用时回退到 powershell.exe）执行一条命令
+// 命令写入带 UTF-8 BOM 的临时 .ps1 脚本；每个输出流最多保留 1 MiB，并设置硬超时
+// 平台路径（结果流式返回给请求的 Agent）和本地桥接路径（结果保留在客户端）都使用此类
+// 因此命令执行逻辑只有一份实现
 class PowerShellRunner final : public QObject {
 public:
     struct Hooks {
-        // accepted: the bytes that fit inside the cap (empty once it is reached);
-        // truncated: cumulative cap flag for that stream.
+        // accepted：限制范围内接收的字节数，达到上限后为空
+        // truncated：该输出流是否曾达到限制的累计标记
         std::function<void(const QByteArray &accepted, bool standardError, bool truncated)> onOutput;
-        // status: succeeded | failed | timed_out | cancelled.
-        // exitCode: -1 when the process never reported one (start error, timeout,
-        // cancel). error: process error string for start/crash failures.
+        // status：succeeded | failed | timed_out | cancelled
+        // exitCode：进程未报告退出码时为 -1（启动错误、超时或取消）
+        // error：启动或崩溃失败时的进程错误信息
         std::function<void(const QString &status, int exitCode, const QString &error)> onFinished;
     };
 
@@ -29,11 +28,9 @@ public:
                      const QString &workingDirectory, int timeoutSeconds, Hooks hooks);
     ~PowerShellRunner() override;
 
-    // Returns false with *error set when the script or the interpreter cannot be
-    // prepared; nothing is reported through onFinished in that case.
+    // 无法准备脚本或解释器时返回 false 并设置 *error；此时不会触发 onFinished
     bool start(QString *error);
-    // Marks the command cancelled, stops it and reports the terminal state
-    // through onFinished exactly once.
+    // 将命令标记为已取消并停止执行，通过 onFinished 恰好报告一次最终状态
     void cancel();
 
 private:

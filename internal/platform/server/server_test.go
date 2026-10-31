@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"yiuk-switchboard/internal/platform/config"
-	"yiuk-switchboard/internal/platform/protocol"
-	"yiuk-switchboard/internal/platform/server"
+	"agentremote/internal/platform/config"
+	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platform/server"
 )
 
 const testPlayerPassword = "test-player-password-1234567890"

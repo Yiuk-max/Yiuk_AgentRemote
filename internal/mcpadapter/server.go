@@ -7,11 +7,11 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"yiuk-switchboard/internal/agenttools"
+	"agentremote/internal/agenttools"
 )
 
 func NewServer(core *agenttools.Core) *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "yiuk-switchboard", Version: "0.1.0"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "agentremote", Version: "0.1.0"}, nil)
 	newHandler := func(toolName string) mcp.ToolHandler {
 		return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			response := core.Call(ctx, toolName, req.Params.Arguments)

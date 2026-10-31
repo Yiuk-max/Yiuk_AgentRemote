@@ -10,26 +10,22 @@ import (
 	"path/filepath"
 	"strings"
 
+	"agentremote/internal/agenttools"
+	"agentremote/internal/platform/protocol"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"yiuk-switchboard/internal/agenttools"
-	"yiuk-switchboard/internal/platform/protocol"
 )
 
-// maxUploadFileBytes mirrors the server-side default for max_upload_bytes so a
-// file the platform would reject is never streamed. The server still enforces
-// its own configured limit.
+// maxUploadFileBytes 与服务端 max_upload_bytes 的默认值一致，避免传输平台会拒绝的文件
+// 服务端仍会执行自身配置的大小限制
 const maxUploadFileBytes = 32 << 20
 
-// uploadChunkBytes keeps every base64 chunk well below the protocol frame
-// limit; 64 KiB decoded becomes ~87 KiB encoded.
+// uploadChunkBytes 确保每个 base64 分块远小于协议帧上限；解码后的 64 KiB 约对应 87 KiB 编码数据
 const uploadChunkBytes = 64 << 10
 
-// uploadFile pushes one local file to the target device. The platform forwards
-// base64 chunks in order; the device writes them to remote_path (or to its own
-// uploads directory when remote_path is empty) and reports the final path,
-// size and SHA-256.
+// uploadFile 将本地文件发送到目标设备
+// 平台按顺序转发 base64 分块；设备将其写入 remote_path（为空时写入设备自己的 uploads 目录），并返回最终路径、大小和 SHA-256
 func (c *Client) uploadFile(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {
 		SessionID  string `json:"session_id"`
@@ -66,12 +62,10 @@ func (c *Client) uploadFile(ctx context.Context, raw json.RawMessage) (any, erro
 		Overwrite:  input.Overwrite,
 	}, func(write func(protocol.Message) error) error {
 		if info.Size() == 0 {
-			// The device creates the empty file from the request metadata; an
-			// empty protocol chunk is not a valid transfer frame.
+			// 设备根据请求元数据创建空文件；空的协议分块不是有效的传输帧
 			return nil
 		}
-		// Read one chunk ahead so the final chunk can carry EOF even when the
-		// file size is an exact multiple of the chunk size.
+		// 提前读取一个分块，以便文件大小恰好是分块大小整数倍时，仍能将 EOF 标记在最后一块上
 		pending, err := readUploadChunk(file)
 		if err != nil {
 			return err
@@ -138,8 +132,8 @@ func (c *Client) uploadFile(ctx context.Context, raw json.RawMessage) (any, erro
 	}, nil
 }
 
-// readUploadChunk reads at most one upload chunk. It returns io.EOF only when
-// no bytes are left, so the caller can flag the previous chunk as the last one.
+// readUploadChunk 最多读取一个上传分块
+// 仅当没有剩余数据时才返回 io.EOF，以便调用方将前一个分块标记为最后一块
 func readUploadChunk(file *os.File) ([]byte, error) {
 	buffer := make([]byte, uploadChunkBytes)
 	n, err := io.ReadFull(file, buffer)
@@ -152,8 +146,8 @@ func readUploadChunk(file *os.File) ([]byte, error) {
 	return nil, err
 }
 
-// openUploadSource validates the local file, hashes it and rewinds it so the
-// streamed bytes match the advertised digest and size.
+// openUploadSource 验证本地文件、计算哈希并将文件指针复位
+// 确保流式传输的数据与声明的摘要及大小一致
 func openUploadSource(localPath string) (*os.File, os.FileInfo, string, error) {
 	file, err := os.Open(localPath)
 	if err != nil {

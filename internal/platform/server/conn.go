@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"yiuk-switchboard/internal/platform/audit"
-	"yiuk-switchboard/internal/platform/protocol"
+	"agentremote/internal/platform/audit"
+	"agentremote/internal/platform/protocol"
 )
 
 type conn struct {
@@ -36,7 +36,7 @@ func (s *Server) readLoop(c *conn) {
 	handshake := true
 	for {
 		_ = c.nc.SetReadDeadline(time.Now().Add(deadline))
-		m, err := s.codec.Read(r)
+		m, err := s.codec.Read(r) //读一帧
 		if err != nil {
 			if handshake {
 				s.log.Warn("platform TLS/protocol handshake failed", "remote", c.remoteString(), "error", err)
@@ -45,20 +45,21 @@ func (s *Server) readLoop(c *conn) {
 			}
 			return
 		}
-		c.lastSeen = time.Now()
+		c.lastSeen = time.Now() //更新上次活跃时间点
+		//handle开始处理业务逻辑
 		if err := s.handle(c, m); err != nil {
+			// 出问题，返回报错信息
 			var pe *protoError
 			if errors.As(err, &pe) {
 				errMsg := protocol.ErrorMessage(pe.code, pe.message)
 				errMsg.CorrelationID = m.CorrelationID
-				// Fatal errors are written synchronously so the peer observes the
-				// error code before the connection is torn down.
+				// 致命错误是同步写入的，因此对等方在连接被拆除之前可以观察到错误代码
 				if pe.fatal {
 					_ = c.writeRaw(errMsg)
 					return
 				}
 				s.send(c, errMsg)
-			} else {
+			} else { //没成功开始处理消息，直接返回报错
 				s.log.Error("platform request failed", "connection", audit.RedactID(c.id), "error", err)
 				errMsg := protocol.ErrorMessage("INTERNAL", "request failed")
 				errMsg.CorrelationID = m.CorrelationID
@@ -77,7 +78,7 @@ func (c *conn) writeLoop() {
 	defer c.close("write_loop")
 	for {
 		select {
-		case m := <-c.send:
+		case m := <-c.send: //有消息可发送，取出消息
 			if err := c.writeRaw(m); err != nil {
 				return
 			}
@@ -87,8 +88,7 @@ func (c *conn) writeLoop() {
 	}
 }
 
-// writeRaw serializes writes from the writer goroutine and the fatal-error
-// path so protocol frames cannot interleave.
+// writeRaw 会将来自 writer 协程和致命错误路径的写操作序列化，这样协议帧就不会交错
 func (c *conn) writeRaw(m protocol.Message) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()

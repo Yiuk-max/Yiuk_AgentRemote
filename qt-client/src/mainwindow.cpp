@@ -14,11 +14,9 @@ MainWindow::MainWindow() {
     resize(960, 600);
     setMinimumSize(960, 600);
     setStyleSheet(R"(
-            /* One sheet for the main window and every popup. Popups are frameless
-               and reuse this window's self-drawn title bar, so nothing falls back
-               to the native Windows chrome. The dialog window itself is
-               transparent: #dialogCard paints the white surface and its hairline
-               border, which leaves room for the drop shadow around it. */
+            /* 主窗口和所有弹窗共用同一白色底板
+               弹窗采用无边框样式并复用此窗口自绘的标题栏，不会回退到 Windows 原生边框
+               对话框窗口本身保持透明，由 #dialogCard 绘制白色表面和细边框，为投影留出空间 */
             QMainWindow, QWidget#root { background: #ffffff; color: #182230; }
             QDialog { background: transparent; color: #182230; }
             QWidget#dialogCard { background: #ffffff; border: 1px solid #d5dde8; }
@@ -78,9 +76,8 @@ MainWindow::MainWindow() {
             QRadioButton::indicator { width: 15px; height: 15px; }
             QRadioButton::indicator:unchecked { border: 1px solid #b7c1ce; border-radius: 8px; background: white; }
             QRadioButton::indicator:checked { border: 4px solid #1977eb; border-radius: 8px; background: white; }
-            /* Popup surfaces (tray menu, row context menu, combo lists) follow the
-               same white sheet and blue highlight as the pages. Tooltips are top
-               level popups, so their rule lives on QApplication in main.cpp. */
+            /* 弹出界面（托盘菜单、行上下文菜单、下拉列表）与页面使用相同的白色底板和蓝色高亮
+               工具提示是顶层弹窗，因此其样式由 main.cpp 中的 QApplication 设置 */
             QMenu { background: #ffffff; border: 1px solid #e1e7ef; border-radius: 8px; padding: 4px; }
             QMenu::item { padding: 7px 20px; border-radius: 6px; color: #263446; font-size: 13px; }
             QMenu::item:selected { background: #e8f1fd; color: #126fe0; }
@@ -108,8 +105,8 @@ MainWindow::MainWindow() {
     pages->addWidget(createSessionsPage());
     pages->addWidget(createSettingsPage());
     contentLayout->addWidget(pages, 1);
-    // Keep the status line inside the right-hand column. A QMainWindow status
-    // bar spans the full window and makes the sidebar stop above it.
+    // 状态栏应位于右侧内容列内
+    // QMainWindow 状态栏会横跨整个窗口，导致侧边栏在状态栏上方结束
     statusFooter = new QStatusBar(content);
     statusFooter->setSizeGripEnabled(false);
     statusFooter->setFixedHeight(28);
@@ -326,10 +323,9 @@ QWidget *MainWindow::deviceRow(const QString &code, const QString &name, bool lo
     if (local) {
         connect(action, &QPushButton::clicked, this, [this] { copyToClipboard(deviceCode, "设备码已复制"); });
     } else {
-        // Always clickable. The row used to be enabled from the sidebar status
-        // label, which is stale for rows built before the platform connected, so
-        // "发起协助" stayed greyed out. The lookup already tells the user when
-        // the platform is offline.
+        // 始终允许点击
+        // 之前根据侧边栏状态标签启用该行，但平台连接前创建的行会保留过期状态，导致“发起协助”一直处于灰显
+        // 查找设备时已经会告知用户平台是否离线
         auto startAssist = [this, code] {
             QString digits;
             for (const QChar ch : code) if (ch.isDigit()) digits += ch;
@@ -375,12 +371,10 @@ void MainWindow::showPage(int index) {
     navDevices->setChecked(index == 1);
     navHistory->setChecked(index == 2);
     navSettings->setChecked(index == 3);
-    // The saved list can change on other pages (add, delete), so re-evaluate the
-    // favourite star whenever the home page comes back into view.
+    // 收藏列表可能在其他页面发生变化（添加或删除），因此每次返回主页时都重新检查收藏星标
     if (index == 0) refreshFavoriteState();
     if (index == 3 && settingsPage) {
-        // Text fields loaded while the page is hidden can auto-scroll the
-        // settings view; always present the page from its heading.
+        // 页面隐藏时加载文本字段可能导致设置页自动滚动；始终从页面标题位置显示
         QTimer::singleShot(0, this, [this] {
             if (auto *scroll = settingsPage->findChild<QScrollArea *>("settingsScroll"))
                 scroll->verticalScrollBar()->setValue(0);
@@ -435,11 +429,11 @@ QString sessionTimeText(const QJsonValue &value) {
 
 
 QString MainWindow::sessionConnectorCode(const QJsonObject &session) const {
-    // When this client initiated the session, the connector is this device.
+    // 如果会话由此客户端发起，连接方就是本设备
     if (session.value("device_id").toString() != deviceId()) return spacedCode(deviceId());
-    // Local MCP requests originate on this same device.
+    // 本地 MCP 请求也来自本设备
     if (session.value("source").toString() != QLatin1String("platform")) return spacedCode(deviceId());
-    // A remote platform operator has no device code in older session records.
+    // 旧版会话记录中可能没有远程平台操作端的设备代码
     const QString forwarded = session.value("operator_device_id").toString().trimmed();
     if (!forwarded.isEmpty()) return sessionCodeText(forwarded);
     const QString sourceDevice = session.value("source_device").toString().trimmed();
@@ -518,8 +512,8 @@ void MainWindow::showStatusMessage(const QString &message, int timeout) {
 
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
-    // QComboBox switches items on wheel by default. Ignore wheel input unless
-    // the user deliberately focused the authorization mode selector.
+    // QComboBox 默认会在滚动滚轮时切换选项
+    // 只有用户主动聚焦授权模式选择框时才处理滚轮输入
     if (watched == platformMode && event->type() == QEvent::Wheel && !platformMode->hasFocus())
         return true;
     return QMainWindow::eventFilter(watched, event);

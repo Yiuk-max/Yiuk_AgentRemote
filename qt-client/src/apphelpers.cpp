@@ -23,7 +23,7 @@ QPushButton *makePrimaryButton(const QString &text, int height) {
     auto *button = makeButton(text);
     button->setObjectName("primary");
     if (height > 0) {
-        // #primary is tuned for the 48px hero button; only the box changes.
+        // #primary 样式针对 48px 主按钮进行调校，这里只调整按钮尺寸
         button->setStyleSheet("QPushButton#primary { padding: 4px 16px; }");
         button->setFixedHeight(height);
     }
@@ -87,8 +87,8 @@ QString randomDigits(int count) {
     return value;
 }
 
-// randomPassword returns a 32-character base32 alphabet password. The alphabet
-// omits characters that are easy to confuse over a voice channel.
+// randomPassword 生成由 32 个字符组成的 base32 密码
+// 字符表排除了在语音沟通中容易混淆的字符
 QString randomPassword(int count) {
     static const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     const int alphabetSize = static_cast<int>(sizeof(alphabet)) - 1;
@@ -104,4 +104,3 @@ QString jsonArrayText(const QJsonArray &array) {
     for (const QJsonValue &value : array) values.append(value.toString());
     return values.join(", ");
 }
-

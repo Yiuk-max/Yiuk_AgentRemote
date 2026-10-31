@@ -1,21 +1,20 @@
-// Platform interop harness: connects two PlatformClient instances (a device
-// and an operator) to a running Go platform server and drives a full
-// request/approve/close session flow. It exits 0 on success and 1 on timeout.
+// 平台互操作测试程序：将两个 PlatformClient 实例（设备端和操作端）连接到运行中的 Go 平台服务
+// 并执行完整的请求、批准和关闭会话流程
+// 成功时退出码为 0，超时时退出码为 1
 //
-// Environment:
-//   YIUK_PLATFORM_ADDRESS   default 127.0.0.1:25664
-//   YIUK_PLATFORM_PASSWORD  platform player password
-//   YIUK_PLATFORM_TLS       "1" to use TLS (default: plaintext)
-//   YIUK_PLATFORM_PIN       pinned server certificate SHA-256 (hex)
-//   YIUK_PLATFORM_CA        CA bundle path for TLS
-//   YIUK_PLATFORM_INSECURE  "1" to skip certificate verification
-//   YIUK_DEVICE_ID          device id used by the simulated device (default 123456789)
-//   YIUK_DEVICE_PASSWORD    initial temporary password of that device
-//   YIUK_INTEROP_TIMEOUT_MS overall timeout (default 15000)
+// 环境变量：
+//   YIUK_PLATFORM_ADDRESS   默认值 127.0.0.1:25664
+//   YIUK_PLATFORM_PASSWORD  平台玩家密码
+//   YIUK_PLATFORM_TLS       设置为 "1" 使用 TLS（默认：明文）
+//   YIUK_PLATFORM_PIN       固定的服务器证书 SHA-256 指纹（十六进制）
+//   YIUK_PLATFORM_CA        TLS 的 CA 证书包路径
+//   YIUK_PLATFORM_INSECURE  设置为 "1" 跳过证书验证
+//   YIUK_DEVICE_ID          模拟设备使用的设备 ID（默认 123456789）
+//   YIUK_DEVICE_PASSWORD    设备的初始临时密码
+//   YIUK_INTEROP_TIMEOUT_MS 总超时时间（默认 15000 毫秒）
 //
-// DEVICE_ALREADY_ONLINE is expected when another live connection still holds
-// the same device id. The client retries with backoff, so the harness reports
-// that error but does not count it as a failure.
+// 当另一个有效连接仍占用相同设备 ID 时，预期会收到 DEVICE_ALREADY_ONLINE
+// 客户端会延迟后重试，因此测试程序会报告该错误，但不会将其视为失败
 #include "platformclient.h"
 
 #include <QCoreApplication>
@@ -87,13 +86,12 @@ int main(int argc, char *argv[]) {
     bool closed = false;
     int failures = 0;
 
-    // Count transient reconnect churn so a retry-heavy run is still visible.
+    // 统计临时重连次数，以便观察重试较多的运行情况
     int alreadyOnlineRetries = 0;
 
     auto maybeRequest = [&] {
-        // The device rotates its temporary password on first registration. A
-        // session created before that rotation is correctly revoked by the
-        // server, so wait for the rotation acknowledgement first.
+        // 设备首次注册时会轮换临时密码
+        // 服务端会正确撤销轮换前创建的会话，因此先等待收到密码轮换确认
         if (!deviceReady || !devicePasswordReady || !operatorReady || requested) return;
         requested = true;
         qInfo() << "both clients registered; requesting session";
@@ -115,9 +113,8 @@ int main(int argc, char *argv[]) {
         devicePasswordReady = true;
         maybeRequest();
     });
-    // A re-registration after a stale online entry may be answered with the
-    // already-rotated credentials instead of a fresh rotation. Either way the
-    // device now holds a usable temporary password.
+    // 清除过期在线记录后重新注册时，服务端可能返回已经轮换的凭据，而不是再次轮换
+    // 无论哪种情况，设备现在都持有可用的临时密码
     QObject::connect(device, &PlatformClient::credentialsRenewed, &app,
                      [&](const QString &, int) {
         devicePasswordReady = true;
@@ -181,8 +178,7 @@ int main(int argc, char *argv[]) {
     });
     QObject::connect(device, &PlatformClient::platformError, &app, [&](const QString &code, const QString &message) {
         if (code == QLatin1String("DEVICE_ALREADY_ONLINE")) {
-            // The platform still holds the previous connection for this id; the
-            // client backs off and retries, which is the behaviour under test.
+            // 平台仍保留此 ID 的旧连接；客户端会延迟后重试，这正是本测试验证的行为
             ++alreadyOnlineRetries;
             qInfo() << "device re-registration deferred" << code << "attempt" << alreadyOnlineRetries;
             return;

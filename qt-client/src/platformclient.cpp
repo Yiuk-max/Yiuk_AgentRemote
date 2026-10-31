@@ -87,8 +87,7 @@ void PlatformClient::connectToPlatform() {
 
     auto *socket = new QSslSocket(this);
     socket_ = socket;
-    // Use a VPN-configured system proxy first, then retry direct through the
-    // Windows route table if that proxy cannot complete TLS.
+    // 优先使用 VPN 配置的系统代理；如果代理无法完成 TLS 握手，则通过 Windows 路由表直接重试
     const QList<QNetworkProxy> proxies = QNetworkProxyFactory::systemProxyForQuery(
         QNetworkProxyQuery(host, static_cast<quint16>(port), QString(), QNetworkProxyQuery::TcpSocket));
     usingProxy_ = !forceDirectConnection_ && !proxies.isEmpty() &&
@@ -109,24 +108,20 @@ void PlatformClient::connectToPlatform() {
         const QString fingerprint = QString::fromLatin1(certificate.digest(QCryptographicHash::Sha256).toHex());
         if (!config_.pinnedFingerprint.isEmpty() && !fingerprint.isEmpty() &&
             fingerprint.compare(config_.pinnedFingerprint, Qt::CaseInsensitive) == 0) {
-            // QueryPeer still requires the matching certificate errors to be
-            // explicitly ignored; otherwise Qt aborts before encrypted().
+            // QueryPeer 仍要求明确忽略匹配的证书错误，否则 Qt 会在触发 encrypted() 前中止连接
             socket->ignoreSslErrors();
             return;
         }
-        // Complete the transport handshake so onEncrypted() can make the
-        // certificate decision consistently on Schannel and OpenSSL. No
-        // application frame is sent until that decision has succeeded.
+        // 完成传输层握手，以便 onEncrypted() 在 Schannel 和 OpenSSL 上都能一致地判断证书
+        // 证书验证通过前不会发送任何应用层数据帧
         sslErrorsSeen_ = true;
         socket->ignoreSslErrors(errors);
     });
 
     setState(QStringLiteral("connecting"));
     if (config_.tls) {
-        // A pinned certificate is verified after the TLS handshake using its
-        // exact DER fingerprint. Avoid backend-specific CA validation here:
-        // Schannel can abort a self-signed handshake before encrypted() and
-        // surface only the misleading "remote host closed" error.
+        // TLS 握手完成后，根据证书的 DER 指纹精确验证固定证书
+        // 此处避免依赖不同后端的 CA 验证：Schannel 可能在 encrypted() 触发前中止自签名证书握手，并只报告容易误导的“远程主机已关闭”错误
         if (!config_.pinnedFingerprint.trimmed().isEmpty())
             socket->setPeerVerifyMode(QSslSocket::VerifyNone);
         else
@@ -148,8 +143,8 @@ void PlatformClient::connectToPlatform() {
         }
         const auto networkProtocol = config_.forceIPv4 ? QAbstractSocket::IPv4Protocol
                                                        : QAbstractSocket::AnyIPProtocol;
-        // Keep the original hostname for SNI and certificate hostname checks;
-        // constrain only the address family used for DNS/socket routing.
+        // 保留原始主机名用于 SNI 和证书主机名检查
+        // 仅限制 DNS 和套接字路由使用的地址族
         socket->connectToHostEncrypted(host, static_cast<quint16>(port), host,
                                        QIODevice::ReadWrite, networkProtocol);
     } else {
@@ -182,7 +177,7 @@ bool PlatformClient::isConnected() const {
 void PlatformClient::onConnected() {
     auto *socket = qobject_cast<QTcpSocket *>(sender());
     if (!socket || socket != socket_) return;
-    // TLS sessions start only after onEncrypted() has accepted the certificate.
+    // 仅当 onEncrypted() 接受证书后才开始 TLS 会话
     if (config_.tls) return;
     beginSession();
 }
@@ -202,7 +197,7 @@ void PlatformClient::onEncrypted() {
         return;
     }
     if (!sslErrorsSeen_ && config_.pinnedFingerprint.isEmpty()) {
-        // Certificate verified against the platform CA store.
+        // 已通过平台 CA 存储验证证书
         beginSession();
         return;
     }
@@ -288,8 +283,7 @@ void PlatformClient::onSocketError(QAbstractSocket::SocketError error) {
         return;
     }
     if (tlsErrorReported_) {
-        // The TLS dialog and message already explain the failure; the aborted
-        // handshake typically surfaces here as RemoteHostClosedError.
+        // TLS 对话框和提示信息已经说明失败原因；握手中止通常会在此处显示为 RemoteHostClosedError
         return;
     }
     QString hint;
@@ -532,13 +526,11 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
         if (!requestId.isEmpty()) emit requestFailed(requestId, code, text);
         emit platformError(code, text);
         if (code == QLatin1String("DEVICE_ALREADY_ONLINE")) {
-            // Not permanent: the platform still holds the previous connection
-            // for this device id, typically a half-open TCP socket that has not
-            // reached its heartbeat deadline yet. Back off and retry instead of
-            // staying offline until the user reconnects by hand.
+            // 这不是永久性故障：平台仍保留此设备 ID 的旧连接，通常是尚未达到心跳超时期限的半开 TCP 套接字
+            // 延迟后重试，而不是一直保持离线状态直到用户手动重连
             heartbeatTimer_.stop();
             if (socket_)
-                socket_->abort(); // onDisconnected() schedules the backoff retry
+                socket_->abort(); // onDisconnected() 会安排延迟重试
             else if (!manualDisconnect_)
                 scheduleReconnect();
             return;
@@ -549,15 +541,15 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
             code == QLatin1String("BAD_TEMPORARY_PASSWORD") || code == QLatin1String("TEMPORARY_PASSWORD_EXPIRED") ||
             code == QLatin1String("TEMPORARY_PASSWORD_REVOKED") || code == QLatin1String("STALE_PASSWORD_VERSION") ||
             code == QLatin1String("DEVICE_NOT_FOUND") || code == QLatin1String("DEVICE_LIMIT")) {
-            // These errors will not be fixed by reconnecting. Stop the retry
-            // loop and wait for the user to correct the setting or reconnect.
+            // 重新连接无法修复这些错误
+            // 停止重试，等待用户修正设置或手动重新连接
             manualDisconnect_ = true;
             heartbeatTimer_.stop();
             if (socket_) socket_->abort();
         }
         return;
     }
-    // ping/pong/heartbeat_ack and other informational messages are ignored.
+    // 忽略 ping/pong/heartbeat_ack 等通知消息
 }
 
 void PlatformClient::approveSession(const QString &sessionId) {

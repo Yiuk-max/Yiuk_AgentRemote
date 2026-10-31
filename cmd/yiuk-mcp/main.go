@@ -7,10 +7,10 @@ import (
 	"os/signal"
 	"syscall"
 
-	"yiuk-switchboard/internal/agenttools"
-	"yiuk-switchboard/internal/localbridge"
-	"yiuk-switchboard/internal/mcpadapter"
-	"yiuk-switchboard/internal/platformclient"
+	"agentremote/internal/agenttools"
+	"agentremote/internal/localbridge"
+	"agentremote/internal/mcpadapter"
+	"agentremote/internal/platformclient"
 )
 
 func main() {
@@ -26,8 +26,7 @@ func main() {
 		slog.Info("MCP backend: local Qt bridge")
 		backend = local
 	} else {
-		// Surface why the platform configuration was rejected instead of only
-		// reporting an unconfigured backend.
+		// 明确显示平台配置被拒绝的原因，而不只是报告后端未配置
 		slog.Warn("MCP backend is not configured; tools will return NOT_CONFIGURED",
 			"platform_config_error", platformErr)
 	}

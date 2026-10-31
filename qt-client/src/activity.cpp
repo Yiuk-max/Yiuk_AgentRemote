@@ -3,8 +3,7 @@
 #include "yiukdialog.h"
 
 
-// The panel always follows the session the owner is part of right now: a live
-// session wins over the most recent finished one, and the newest of each.
+// 活动面板始终显示当前所属的会话：优先显示活动会话，否则显示最近结束的会话
 QString MainWindow::currentActivitySession() const {
     QString liveId;
     QString recentId;
@@ -64,8 +63,7 @@ void MainWindow::appendActivity(const QString &sessionId, const QString &message
     entry.text = message;
     log.append(entry);
     while (log.size() > 400) log.removeFirst();
-    // A closed panel is never reopened or raised by activity: only the owner
-    // opens it, from the active-session card or the tray menu.
+    // 面板关闭后不会因新活动而重新打开或置顶；只有所有者能从活动会话卡片或托盘菜单打开面板
     if (!activityPanel || !activityPanel->isOpen() || activityPanel->sessionId() != sessionId) return;
     activityPanel->append(entry);
     activityPanel->setStatus(activitySessionState(sessionId), sessionStatusText(sessionId));
@@ -79,8 +77,7 @@ void MainWindow::syncActivityPanel() {
         activityPanel->setStatus(QStringLiteral("none"), QStringLiteral("当前没有远程协助会话"));
         return;
     }
-    // Switching content is a data update; the window keeps its z-order and focus
-    // so new activity never pulls it in front of the owner's work.
+    // 切换内容只是更新数据；窗口保持原有层级和焦点，不会因新活动而遮挡所有者正在进行的工作
     if (activityPanel->sessionId() != id) {
         activityPanel->setSessionId(id);
         activityPanel->reset(activitySessionLabel(id), activitySessionState(id), sessionStatusText(id),

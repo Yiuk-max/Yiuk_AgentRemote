@@ -3,9 +3,9 @@ package platformclient
 import (
 	"context"
 
+	"agentremote/internal/agenttools"
+	"agentremote/internal/platform/protocol"
 	"encoding/json"
-	"yiuk-switchboard/internal/agenttools"
-	"yiuk-switchboard/internal/platform/protocol"
 )
 
 func (c *Client) listDevices(ctx context.Context) (any, error) {

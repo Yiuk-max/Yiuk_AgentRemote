@@ -12,9 +12,8 @@ constexpr qint64 kOutputLimitPerStream = 1 << 20;
 constexpr int kMinTimeoutSeconds = 1;
 constexpr int kMaxTimeoutSeconds = 3600;
 
-// Windows PowerShell 5.1 decodes .ps1 files as ANSI unless they start with a
-// BOM, so a non-ASCII command would be mangled without it. The preamble forces
-// UTF-8 output so both interpreters return the same bytes.
+// Windows PowerShell 5.1 会将未以 BOM 开头的 .ps1 文件按 ANSI 解码，因此非 ASCII 命令会乱码
+// 预置脚本会强制使用 UTF-8 输出，确保两种解释器返回相同的字节
 bool writeScriptFile(const QString &path, const QString &command, QString *error) {
     QFile script(path);
     if (!script.open(QIODevice::WriteOnly)) {
@@ -117,8 +116,7 @@ void PowerShellRunner::readOutput(bool standardError) {
 void PowerShellRunner::finish(const QString &status, int exitCode, const QString &error) {
     if (finished_) return;
     finished_ = true;
-    // cleanup() disconnects the process first, so killing it here cannot call
-    // back into finish() and report a second terminal state.
+    // cleanup() 会先断开进程信号，因此在此终止进程不会回调 finish() 并重复报告最终状态
     cleanup();
     if (hooks_.onFinished) hooks_.onFinished(status, exitCode, error);
 }

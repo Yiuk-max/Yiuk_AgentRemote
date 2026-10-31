@@ -30,7 +30,7 @@ import (
 	"syscall"
 	"time"
 
-	"yiuk-switchboard/internal/platform/protocol"
+	"agentremote/internal/platform/protocol"
 )
 
 func main() {

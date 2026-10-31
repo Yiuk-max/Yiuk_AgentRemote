@@ -54,6 +54,6 @@ QString SecureStore::unprotect(const QString &stored) {
     }
     if (stored.startsWith(kPlainPrefix))
         return QString::fromUtf8(QByteArray::fromBase64(stored.mid(kPlainPrefix.size()).toLatin1()));
-    // Backwards compatible: treat an unprefixed value as plaintext.
+    // 为兼容旧数据，将没有前缀的值视为明文
     return stored;
 }

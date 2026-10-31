@@ -6,53 +6,47 @@ import (
 	"os"
 	"strings"
 
+	"agentremote/internal/platform/protocol"
+	"agentremote/internal/userconfig"
 	"encoding/json"
-	"yiuk-switchboard/internal/platform/protocol"
-	"yiuk-switchboard/internal/userconfig"
 )
 
 const configFileName = "platform-client.json"
 
-// minPlayerPasswordLen mirrors the server-side configuration floor so a
-// password the platform accepts is never rejected here.
+// minPlayerPasswordLen 与服务端配置的密码最小长度一致，避免拒绝平台可接受的密码
 const minPlayerPasswordLen = 8
 
-// Heartbeat defaults. The operator connection is idle between tool calls and
-// the platform closes connections silent for heartbeat_timeout_sec (45s by
-// default), so ping well inside that window.
+// 心跳默认值：操作端连接在工具调用之间处于空闲状态；平台会在连接静默超过 heartbeat_timeout_sec（默认 45 秒）后将其关闭，因此心跳应在此期限内发送
 const (
 	defaultHeartbeatIntervalSeconds = 15
-	// minHeartbeatIntervalSeconds is a floor so a bad configuration file cannot
-	// turn the operator into a busy loop of pings.
+	// minHeartbeatIntervalSeconds 设置最小间隔，避免错误配置导致操作端频繁发送心跳
 	minHeartbeatIntervalSeconds = 1
 	maxMissedHeartbeats         = 3
 )
 
-// Config configures an operator connection to the platform.
+// Config 配置与平台的操作端连接
 type Config struct {
 	Address            string `json:"address"`
 	PlayerPassword     string `json:"player_password"`
 	TLSCAFile          string `json:"tls_ca,omitempty"`
 	InsecureSkipVerify bool   `json:"insecure_skip_verify,omitempty"`
-	// PinnedCertSHA256 is the lowercase hex SHA-256 of the server certificate
-	// DER bytes. When set, only that exact certificate is accepted, which keeps
-	// self-signed deployments usable without trusting arbitrary certificates.
+	// PinnedCertSHA256 是服务器证书 DER 字节的 SHA-256 小写十六进制值
+	// 设置后只接受该证书，从而支持使用自签名证书，而无需信任任意证书
 	PinnedCertSHA256 string `json:"pinned_cert_sha256,omitempty"`
 	AllowPlaintext   bool   `json:"allow_plaintext,omitempty"`
 	TimeoutSeconds   int    `json:"timeout_seconds,omitempty"`
-	// HeartbeatIntervalSeconds is how often an idle operator connection pings
-	// the platform. Defaults to 15s and never goes below 1s.
+	// HeartbeatIntervalSeconds 指定空闲操作端连接向平台发送心跳的间隔
+	// 默认值为 15 秒，且不能小于 1 秒
 	HeartbeatIntervalSeconds int `json:"heartbeat_interval_seconds,omitempty"`
 }
 
-// ConfigPath returns the per-user platform client configuration path.
+// ConfigPath 返回当前用户的平台客户端配置文件路径
 func ConfigPath() (string, error) {
 	return userconfig.Path(configFileName)
 }
 
-// NewFromUserConfig loads the platform client configuration. It returns an
-// error when the file is missing or invalid so callers can fall back to the
-// local bridge.
+// NewFromUserConfig 加载平台客户端配置
+// 如果文件缺失或无效则返回错误，调用方可回退到本地桥接
 func NewFromUserConfig() (*Client, error) {
 	path, err := ConfigPath()
 	if err != nil {
@@ -69,8 +63,8 @@ func NewFromUserConfig() (*Client, error) {
 	return New(cfg)
 }
 
-// New validates configuration and returns a lazy client. The connection is
-// established on the first tool call.
+// New 验证配置并返回延迟创建连接的客户端
+// 首次工具调用时才会建立连接
 func New(cfg Config) (*Client, error) {
 	cfg.Address = strings.TrimSpace(cfg.Address)
 	if cfg.Address == "" {

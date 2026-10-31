@@ -73,7 +73,7 @@ QWidget *MainWindow::createSettingsPage() {
     platformAddress = new QLineEdit;
     platformAddress->setObjectName("settingsField");
     platformAddress->setMinimumHeight(32);
-    platformAddress->setPlaceholderText("switchboard.example.com:25664");
+    platformAddress->setPlaceholderText("agentremote.example.com:25664");
     addFormRow(platformLayout, "服务器地址", platformAddress);
 
     platformPassword = new QLineEdit;
@@ -89,8 +89,8 @@ QWidget *MainWindow::createSettingsPage() {
     platformMode = new QComboBox;
     platformMode->setObjectName("settingsField");
     platformMode->setMinimumHeight(32);
-    // Wheel events must not change the authorization mode while the user is
-    // scrolling the settings page; only allow them when the box has focus.
+    // 用户滚动设置页时，滚轮事件不能改变授权模式
+    // 只有选择框获得焦点时才允许滚轮切换
     platformMode->setFocusPolicy(Qt::StrongFocus);
     platformMode->installEventFilter(this);
     platformMode->addItem("等待对方同意", "approval");
@@ -148,8 +148,7 @@ QWidget *MainWindow::createSettingsPage() {
             PlatformClient::Config cfg = platform->config();
             const QString address = platformAddress->text().trimmed();
             if (cfg.address.trimmed() != address) {
-                // A different server is a different identity; never reuse
-                // the previous certificate trust for it.
+                // 不同服务器代表不同身份，不能沿用之前对证书的信任
                 cfg.pinnedFingerprint.clear();
                 platform->setConfig(cfg);
             }

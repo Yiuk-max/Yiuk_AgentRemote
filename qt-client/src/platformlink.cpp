@@ -125,7 +125,7 @@ QString MainWindow::mcpToolSourcePath() const {
 
 QString MainWindow::mcpAgentConfigText() const {
     QJsonObject server{{"command", mcpToolSourcePath()}, {"args", QJsonArray{}}};
-    QJsonObject root{{"mcpServers", QJsonObject{{"yiuk-switchboard", server}}}};
+    QJsonObject root{{"mcpServers", QJsonObject{{"agentremote", server}}}};
     return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented));
 }
 
@@ -217,8 +217,7 @@ void MainWindow::startPlatform() {
     });
     connect(platform, &PlatformClient::certificateUntrusted, this,
             [this](const QString &fingerprint, const QString &subject, const QString &details, bool changed) {
-        // Frameless security prompt on the shared white sheet; the amber banner
-        // reuses the warning style the settings page already uses.
+        // 无边框安全提示使用共用的白色底板；琥珀色横幅沿用设置页的警告样式
         YiukDialog dialog(this, changed ? QStringLiteral("服务器证书已变更") : QStringLiteral("服务器证书不受信任"));
         dialog.setFixedWidth(560);
         auto *banner = makeLabel(changed ? QStringLiteral("服务器证书与之前记录的不一致，可能存在中间人攻击。")
@@ -254,7 +253,7 @@ void MainWindow::startPlatform() {
     loadPlatformConfig();
     if (!platform->config().address.isEmpty()) {
         showStatusMessage("启动后自动连接平台…", 3000);
-        // 等窗口首帧渲染后再连接，避免启动时 TLS 握手与证书弹框抢在界面出现前。
+        // 等窗口首帧渲染后再连接，避免启动时 TLS 握手与证书弹框抢在界面出现前
         QTimer::singleShot(0, this, [this] {
             if (platform && platform->state() == "disconnected") platform->connectToPlatform();
         });
@@ -305,9 +304,8 @@ void MainWindow::updatePlatformState(const QString &state) {
     const bool linkLost = platformLinkWasUp && !connected;
     platformLinkWasUp = connected;
     if (linkLost) {
-        // The link is gone, so no platform session can still be running.
-        // Without this the owner UI keeps showing "远程协助进行中" after the
-        // platform already dropped the connection.
+        // 连接已断开，因此平台会话不可能仍在运行
+        // 否则平台断开连接后，所有者界面仍会显示“远程协助进行中”
         interruptPlatformSessions();
     }
     if (platformState) {

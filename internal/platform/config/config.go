@@ -1,7 +1,4 @@
-// Package config defines the in-memory platform server configuration.
-//
-// The platform server keeps its own configuration section so player passwords,
-// ports and limits stay isolated per deployment.
+// config 包定义了内存中平台服务器的配置
 // 平台服务器使用独立配置节，便于按部署隔离玩家密码、端口和限制。
 // YAML → 结构体 + ApplyDefaults/Validate + 派生 TTL 方法
 package config
@@ -18,57 +15,53 @@ import (
 
 const examplePassword = "REPLACE_WITH_A_LONG_RANDOM_PLAYER_SECRET"
 
-// MinPlayerPasswordLen is the hard floor accepted by configuration
-// validation. Passwords shorter than RecommendedPlayerPasswordLen are allowed
-// but logged as a warning at startup, because the player password only gates
-// relay usage and never grants device access on its own.
+// MinPlayerPasswordLen 是 player_password 的最小长度
+// validation.允许短于推荐长度的密码，但在启动时记录为警告
 const (
 	MinPlayerPasswordLen         = 8
 	RecommendedPlayerPasswordLen = 16
 )
 
-// Config is the platform server configuration. All fields map to the
-// `platform:` section of the YAML file.
+// 服务器配置.所有字段都映射到 YAML 文件的 `platform:` 部分
 type Config struct {
-	Listen string `yaml:"listen"`
+	Listen string `yaml:"listen"` //端口
 
-	TLSCert string `yaml:"tls_cert"`
-	TLSKey  string `yaml:"tls_key"`
-	// AllowInsecure permits a plaintext TCP listener. It exists only for local
-	// development and tests and must never be enabled in production.
+	TLSCert string `yaml:"tls_cert"` //证书文件
+	TLSKey  string `yaml:"tls_key"`  //私钥文件
+	// 是否允许明文传输TCP.测试可以明文方便调试。生产环境应使用TLS。
 	AllowInsecure bool `yaml:"allow_insecure"`
 
 	PlayerPassword string `yaml:"player_password"`
 
-	MaxConnections       int `yaml:"max_connections"`
-	MaxDevices           int `yaml:"max_devices"`
-	MaxSessions          int `yaml:"max_sessions"`
-	MaxSessionsPerDevice int `yaml:"max_sessions_per_device"`
-	MaxTasksPerSession   int `yaml:"max_tasks_per_session"`
+	MaxConnections       int `yaml:"max_connections"`         // 服务器最大连接数
+	MaxDevices           int `yaml:"max_devices"`             // 服务器最大设备数
+	MaxSessions          int `yaml:"max_sessions"`            // 服务器最大会话数
+	MaxSessionsPerDevice int `yaml:"max_sessions_per_device"` // 每个设备最大会话数
+	MaxTasksPerSession   int `yaml:"max_tasks_per_session"`   // 每个会话最大任务数
 
-	SessionTimeoutSec     int    `yaml:"session_timeout_sec"`
-	ApprovalTimeoutSec    int    `yaml:"approval_timeout_sec"`
-	TempPasswordTTLSec    int    `yaml:"temp_password_ttl_sec"`
-	HeartbeatTimeoutSec   int    `yaml:"heartbeat_timeout_sec"`
-	HandshakeTimeoutSec   int    `yaml:"handshake_timeout_sec"`
-	MaxOutputBytes        int    `yaml:"max_output_bytes"`
-	MaxDownloadBytes      int    `yaml:"max_download_bytes"`
-	MaxUploadBytes        int    `yaml:"max_upload_bytes"`
-	MaxFrameBytes         int    `yaml:"max_frame_bytes"`
-	AuthRatePerMin        int    `yaml:"auth_rate_per_min"`
-	TemporaryPasswordMin  int    `yaml:"temporary_password_min_sec"`
-	TemporaryPasswordMax  int    `yaml:"temporary_password_max_sec"`
-	OfflineDeviceKeepSec  int    `yaml:"offline_device_keep_sec"`
-	CloseReasonMaxLen     int    `yaml:"close_reason_max_len"`
-	PurposeMaxLen         int    `yaml:"purpose_max_len"`
-	CommandMaxLen         int    `yaml:"command_max_len"`
-	WorkingDirMaxLen      int    `yaml:"working_directory_max_len"`
-	IdentifierMaxLen      int    `yaml:"identifier_max_len"`
-	ObserverSlowClientBuf int    `yaml:"slow_client_buffer"`
-	LogFile               string `yaml:"log_file"`
+	SessionTimeoutSec     int    `yaml:"session_timeout_sec"`        // 会话超时秒数
+	ApprovalTimeoutSec    int    `yaml:"approval_timeout_sec"`       // 会话审批超时秒数
+	TempPasswordTTLSec    int    `yaml:"temp_password_ttl_sec"`      // 临时密码生存时间（秒）
+	HeartbeatTimeoutSec   int    `yaml:"heartbeat_timeout_sec"`      // 心跳超时秒数
+	HandshakeTimeoutSec   int    `yaml:"handshake_timeout_sec"`      // 握手超时秒数
+	MaxOutputBytes        int    `yaml:"max_output_bytes"`           // 最大输出字节数
+	MaxDownloadBytes      int    `yaml:"max_download_bytes"`         // 最大下载字节数
+	MaxUploadBytes        int    `yaml:"max_upload_bytes"`           // 最大上传字节数
+	MaxFrameBytes         int    `yaml:"max_frame_bytes"`            // 最大帧字节数
+	AuthRatePerMin        int    `yaml:"auth_rate_per_min"`          // 认证频率（每分钟），ip限流用
+	TemporaryPasswordMin  int    `yaml:"temporary_password_min_sec"` // 临时密码最小生存时间（秒）
+	TemporaryPasswordMax  int    `yaml:"temporary_password_max_sec"` // 临时密码最大生存时间（秒）
+	OfflineDeviceKeepSec  int    `yaml:"offline_device_keep_sec"`    // 离线设备保留时间（秒）
+	CloseReasonMaxLen     int    `yaml:"close_reason_max_len"`       // 关闭原因最大长度
+	PurposeMaxLen         int    `yaml:"purpose_max_len"`            // 目的最大长度，客户端信息面板的标语
+	CommandMaxLen         int    `yaml:"command_max_len"`            // 命令最大长度
+	WorkingDirMaxLen      int    `yaml:"working_directory_max_len"`  // 工作目录最大长度
+	IdentifierMaxLen      int    `yaml:"identifier_max_len"`         // 标识符最大长度，用于唯一标识设备或用户
+	ObserverSlowClientBuf int    `yaml:"slow_client_buffer"`         // 慢客户端缓冲区大小
+	LogFile               string `yaml:"log_file"`                   // 日志文件路径
 }
 
-// Default returns the documented defaults from the refactor plan.
+// 硬编码的配置默认值
 func Default() Config {
 	return Config{
 		Listen:                ":25664",
@@ -82,26 +75,25 @@ func Default() Config {
 		TempPasswordTTLSec:    600,
 		HeartbeatTimeoutSec:   45,
 		HandshakeTimeoutSec:   10,
-		MaxOutputBytes:        2 << 20,
-		MaxDownloadBytes:      32 << 20,
+		MaxOutputBytes:        2 << 20,  //2 MiB
+		MaxDownloadBytes:      32 << 20, //32 MiB
 		MaxUploadBytes:        32 << 20,
-		MaxFrameBytes:         256 << 10,
+		MaxFrameBytes:         256 << 10, //256 KiB
 		AuthRatePerMin:        30,
 		TemporaryPasswordMin:  60,
-		TemporaryPasswordMax:  24 * 3600,
+		TemporaryPasswordMax:  24 * 3600, //24h
 		OfflineDeviceKeepSec:  24 * 3600,
 		CloseReasonMaxLen:     256,
 		PurposeMaxLen:         512,
-		CommandMaxLen:         32768,
-		WorkingDirMaxLen:      4096,
+		CommandMaxLen:         32768, //32 KiB
+		WorkingDirMaxLen:      4096,  //4 KiB
 		IdentifierMaxLen:      128,
 		ObserverSlowClientBuf: 64,
 		LogFile:               "platform.log",
 	}
 }
 
-// ApplyDefaults fills zero-valued fields with documented defaults. YAML
-// unmarshalling into a partial nested section would otherwise zero fields.
+// 用默认值填充0值字段。必须在 Validate 之前调用。
 func (c *Config) ApplyDefaults() {
 	d := Default()
 	if c.Listen == "" {
@@ -184,7 +176,7 @@ func (c *Config) ApplyDefaults() {
 	}
 }
 
-// Load reads and validates a YAML file containing a `platform:` section.
+// Load 读取并验证包含 `platform:` 部分的 YAML 文件。
 func Load(path string) (Config, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -193,21 +185,21 @@ func Load(path string) (Config, error) {
 	var file struct {
 		Platform *Config `yaml:"platform"`
 	}
-	if err := yaml.Unmarshal(b, &file); err != nil {
+	if err := yaml.Unmarshal(b, &file); err != nil { // 解析 YAML
 		return Config{}, fmt.Errorf("parse platform config: %w", err)
 	}
-	if file.Platform == nil {
+	if file.Platform == nil { // 检查是否存在 platform 部分
 		return Config{}, errors.New("platform config is missing the platform section")
 	}
 	c := *file.Platform
-	c.ApplyDefaults()
-	if err := c.Validate(); err != nil {
+	c.ApplyDefaults()                    // 填充默认值
+	if err := c.Validate(); err != nil { // 验证配置
 		return Config{}, err
 	}
 	return c, nil
 }
 
-// Validate rejects unsafe or inconsistent configuration.
+// 拒绝不安全和不一致的字段
 func (c Config) Validate() error {
 	if strings.TrimSpace(c.Listen) == "" {
 		return errors.New("listen address must be set")
@@ -282,6 +274,7 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// 获取配置中各种数值
 // SessionTimeout returns the approved session lifetime.
 func (c Config) SessionTimeout() time.Duration {
 	return time.Duration(c.SessionTimeoutSec) * time.Second

@@ -1,6 +1,5 @@
-// Package device owns in-memory device registration, temporary passwords and
-// online state. Nothing is persisted: restarting the platform invalidates every
-// device password, connection and session.
+// device 包负责内存中的设备注册、临时密码和在线状态。
+// 重启后数据失效
 package device
 
 //临时密码哈希（盐 + SHA-256）、版本、TTL、撤销、在线连接、心跳、并发会话计数
@@ -15,7 +14,7 @@ import (
 	"time"
 )
 
-// Mode controls how a verified temporary password may create a session.
+// 协助连接模式，approval or direct
 type Mode string
 
 const (
@@ -34,7 +33,6 @@ var (
 	ErrInvalidMode    = errors.New("invalid authorization mode")
 )
 
-// Info is the non-secret device view.
 type Info struct {
 	ID                string
 	Name              string

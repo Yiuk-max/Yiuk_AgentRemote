@@ -17,11 +17,11 @@ import (
 	"testing"
 	"time"
 
-	"yiuk-switchboard/internal/agenttools"
-	"yiuk-switchboard/internal/platform/config"
-	"yiuk-switchboard/internal/platform/protocol"
-	"yiuk-switchboard/internal/platform/server"
-	"yiuk-switchboard/internal/platformclient"
+	"agentremote/internal/agenttools"
+	"agentremote/internal/platform/config"
+	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platform/server"
+	"agentremote/internal/platformclient"
 )
 
 const playerPassword = "client-test-player-password"
@@ -193,8 +193,7 @@ func TestPlatformClientDirectSessionFlow(t *testing.T) {
 		Status: string(protocol.TaskSucceeded), ExitCode: &exit, ResultKnown: true,
 	})
 
-	// Poll until the result is available; the first poll may race with the
-	// streamed output notification.
+	// 轮询直到结果可用；首次轮询可能与流式输出通知发生竞争
 	var result map[string]any
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -219,9 +218,8 @@ func TestPlatformClientDirectSessionFlow(t *testing.T) {
 	device.recv(protocol.TypeSessionStatus)
 }
 
-// TestPlatformClientHeartbeatsIdleConnection asserts the operator connection
-// keeps pinging while no tool call is in flight. Without it the platform closes
-// the connection after heartbeat_timeout_sec and long sessions are interrupted.
+// TestPlatformClientHeartbeatsIdleConnection 验证没有工具调用时操作端连接仍会持续发送心跳
+// 如果缺少此检查，平台会在 heartbeat_timeout_sec 后关闭连接，导致长会话中断
 func TestPlatformClientHeartbeatsIdleConnection(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -263,7 +261,7 @@ func TestPlatformClientHeartbeatsIdleConnection(t *testing.T) {
 	}
 	defer backend.Close()
 
-	// One tool call opens the persistent operator connection.
+	// 一次工具调用会建立持久操作端连接
 	if _, err := backend.Invoke(context.Background(), agenttools.Request{Name: agenttools.ListDevices, Input: json.RawMessage(`{}`)}); err != nil {
 		t.Fatalf("list_devices: %v", err)
 	}
@@ -281,8 +279,7 @@ func TestPlatformClientHeartbeatsIdleConnection(t *testing.T) {
 	}
 }
 
-// TestPlatformClientCloseSessionIsIdempotent covers the stale-session path: the
-// platform forgets sessions on restart, so closing one must not fail the tool.
+// TestPlatformClientCloseSessionIsIdempotent 覆盖会话已过期的情况：平台重启后会清除会话，因此关闭已不存在的会话不应导致工具调用失败
 func TestPlatformClientCloseSessionIsIdempotent(t *testing.T) {
 	address := startPlatform(t)
 	backend, err := platformclient.New(platformclient.Config{
@@ -482,8 +479,7 @@ func TestPlatformClientUploadFile(t *testing.T) {
 	}
 }
 
-// runUploadTool drives one upload_file tool call and asserts the device sees
-// the bytes in order with a terminating EOF chunk.
+// runUploadTool 执行一次 upload_file 工具调用，并验证设备按顺序收到数据及终止用的 EOF 分块
 func runUploadTool(t *testing.T, contents []byte) {
 	t.Helper()
 	address := startPlatform(t)
@@ -586,8 +582,7 @@ func runUploadTool(t *testing.T, contents []byte) {
 	device.recv(protocol.TypeCloseSession)
 }
 
-// TestPlatformClientUploadFileRejectsInvalidLocalPath guards that a bad
-// local_path never reaches the platform.
+// TestPlatformClientUploadFileRejectsInvalidLocalPath 验证无效的 local_path 不会发送到平台
 func TestPlatformClientUploadFileRejectsInvalidLocalPath(t *testing.T) {
 	address := startPlatform(t)
 	backend, err := platformclient.New(platformclient.Config{

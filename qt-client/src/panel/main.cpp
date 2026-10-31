@@ -1,9 +1,7 @@
-// yiuk-activity-panel: the receive-only log window of the Qt client.
+// yiuk-activity-panel：Qt 客户端的只读日志窗口
 //
-// It runs as its own process because the user owns its lifetime: closing it must
-// not stop the remote session, and no new activity may pull it back to the front.
-// The parent client streams protocol lines to our stdin; everything below turns
-// them into one native, per-pixel translucent Win32 window.
+// 它以独立进程运行，生命周期由用户控制：关闭面板不能停止远程会话，新活动也不能将其重新置于前台
+// 父客户端将协议行写入本进程的 stdin；下方代码会将其绘制为原生逐像素透明的 Win32 窗口
 #include <windows.h>
 #include <shellapi.h>
 
@@ -67,8 +65,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
     int exitCode = 0;
     {
-        // Kept in a scope so every GDI+ object (fonts, surface) is released
-        // before the runtime shuts down.
+        // 使用独立作用域，确保 GDI+ 运行时关闭前释放所有对象（字体和绘图表面）
         auto panel = std::make_unique<yiuk::PanelWindow>(ParseArguments());
         if (!panel->Create(instance)) {
             Gdiplus::GdiplusShutdown(token);

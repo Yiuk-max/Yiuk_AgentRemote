@@ -3,11 +3,11 @@ package server
 import (
 	"strings"
 
-	"yiuk-switchboard/internal/platform/audit"
-	"yiuk-switchboard/internal/platform/protocol"
-	"yiuk-switchboard/internal/platform/session"
-	"yiuk-switchboard/internal/platform/task"
-	"yiuk-switchboard/internal/platform/transfer"
+	"agentremote/internal/platform/audit"
+	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platform/session"
+	"agentremote/internal/platform/task"
+	"agentremote/internal/platform/transfer"
 )
 
 // 申请会话

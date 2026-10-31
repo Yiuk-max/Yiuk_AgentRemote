@@ -10,17 +10,16 @@ import (
 	"strings"
 	"time"
 
+	"agentremote/internal/agenttools"
+	"agentremote/internal/platform/protocol"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"path/filepath"
-	"yiuk-switchboard/internal/agenttools"
-	"yiuk-switchboard/internal/platform/protocol"
 )
 
-// downloadFile requests one bounded file from the device. The platform streams
-// base64 chunks back as events; the terminal result arrives as the correlated
-// response, after which the bytes are written atomically to a local file.
+// downloadFile 从设备请求一个受大小限制的文件
+// 平台以事件形式流式返回 base64 分块；收到对应的最终响应后，再将数据原子地写入本地文件
 func (c *Client) downloadFile(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {
 		SessionID       string `json:"session_id"`
@@ -170,7 +169,7 @@ func safeRemoteBase(remotePath string) string {
 	return base
 }
 
-// fileTransferTimeout bounds one whole file transfer (download or upload).
+// fileTransferTimeout 限制一次完整文件传输（下载或上传）的最长时间
 func (c *Client) fileTransferTimeout() time.Duration {
 	timeout := time.Duration(c.cfg.TimeoutSeconds) * time.Second
 	if timeout < 5*time.Minute {

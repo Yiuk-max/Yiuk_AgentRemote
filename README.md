@@ -1,4 +1,4 @@
-# Yiuk Switchboard
+# AgentRemote
 
 面向 AI Agent 的远程设备协作与执行平台。Agent 在设备所有者授权后连接并操作远端 Windows 设备。
 
@@ -63,8 +63,12 @@
 
 - [产品需求](docs/product-requirements.md)：范围、功能与验收标准。
 - [架构与实现](docs/architecture.md)：选型、模块边界、授权模型、协议、状态机、MCP 契约。
+- [运行时架构：消息转发、MCP 工具与客户端](docs/runtime-architecture.md)：连接拓扑、读写循环、设备/操作者连接绑定、命令去程与结果回程、失败收敛、MCP 工具清单与错误码、operator 与设备客户端非界面逻辑。
+- [Go 后端技术说明与入门指南](docs/go-backend-guide.md)：面向 C++ 后端开发者的 Go 入门、架构、幂等、SHA-256、文件原子落盘和 Docker 说明。
 - [开发与构建](docs/development.md)：环境、构建、测试、打包发布、服务器部署（systemd / [Docker](docs/development.md#61-容器部署docker--compose)）。
 - [本机开发环境](docs/local-dev.md)：**仅限本机**的工具链路径、快捷命令与已知坑。
 - [远程部署操作记录 2026-10-23](docs/remote-deploy-session-2026-10-23.md)：通过 MCP 远端部署 dsh-pet 的全过程、本机/目标机改动清单、两个坑与回滚步骤。
 
 发布说明：`docs/release-notes-0.1.4.txt`；`release/` 下为构建好的 Windows x64 压缩包与 SHA-256（不进仓库）。
+
+> **命名兼容说明：** 当前 Go module/import path 和 MCP server 名称为 `agentremote`。`YIUK_*` 环境变量、`yiuk-platform` 服务/二进制及 `/var/lib/yiuk-platform` 数据目录仍保留旧名称，避免无计划地破坏已有部署、脚本和数据卷；后续如需统一，应配套迁移和兼容步骤。

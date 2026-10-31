@@ -1,5 +1,5 @@
 #!/bin/sh
-# Container entrypoint for the Yiuk Switchboard platform server.
+# Container entrypoint for the AgentRemote platform server.
 #
 # Two ways to configure the server:
 #

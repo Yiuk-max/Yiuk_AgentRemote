@@ -27,8 +27,7 @@ void MainWindow::stopTasksForSession(const QString &id, const QString &status) {
             requestIds.append(it.key());
     }
     for (const QString &requestId : requestIds) {
-        // Record the terminal status first: the runner reports "cancelled" to the
-        // finished hook, which keeps a status the caller already set.
+        // 先记录最终状态：运行器会向完成钩子报告 "cancelled"，该钩子会保留调用方已设置的状态
         QJsonObject task = tasks.value(requestId);
         task.insert("status", status);
         tasks.insert(requestId, task);
@@ -77,8 +76,7 @@ void MainWindow::showApprovalDialog(const QString &id) {
     expireSessionIfNeeded(id);
     if (sessions.value(id).value("status").toString() != "pending_approval") return;
     const QJsonObject session = sessions.value(id);
-    // Frameless blue/white approval sheet: same title bar and buttons as the
-    // main window, no native Windows dialog chrome.
+    // 无边框的蓝白色批准窗口：标题栏和按钮与主窗口一致，不使用 Windows 原生对话框边框
     YiukDialog dialog(this, QStringLiteral("远程协助授权"));
     dialog.setFixedWidth(560);
     dialog.content()->addWidget(makeLabel(QStringLiteral("Agent 请求远程协助权限"),
@@ -172,8 +170,7 @@ void MainWindow::refreshActiveSessions() {
         activeLayout->addWidget(card);
     }
     activePanel->setVisible(hasActive);
-    // Session changes are the only thing that may update the activity panel; the
-    // panel itself is opened by the owner, never by this refresh.
+    // 只有会话变更可以更新活动面板；面板只能由所有者打开，此刷新流程不会打开面板
     syncActivityPanel();
 }
 
@@ -219,9 +216,8 @@ QString MainWindow::sessionStatusText(const QString &sessionId) const {
 }
 
 
-// interruptPlatformSessions marks platform-backed sessions that are no longer
-// live because the connection to the platform went away. Local (bridge)
-// sessions are untouched: they never depend on the platform link.
+// interruptPlatformSessions 将因平台连接断开而不再活动的平台会话标记为中断
+// 本地桥接会话不受影响，因为它们不依赖平台连接
 void MainWindow::interruptPlatformSessions() {
     bool changed = false;
     const QStringList sessionIds = sessions.keys();

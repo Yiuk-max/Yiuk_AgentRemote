@@ -4,10 +4,10 @@ import (
 	"strings"
 	"time"
 
-	"yiuk-switchboard/internal/platform/audit"
-	"yiuk-switchboard/internal/platform/protocol"
-	"yiuk-switchboard/internal/platform/session"
-	"yiuk-switchboard/internal/platform/task"
+	"agentremote/internal/platform/audit"
+	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platform/session"
+	"agentremote/internal/platform/task"
 )
 
 // 处理命令执行请求

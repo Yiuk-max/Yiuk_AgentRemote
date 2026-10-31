@@ -46,9 +46,8 @@ if(WIN32)
     target_link_libraries(yiuk-device-assist PRIVATE crypt32)
 endif()
 
-# The receive-only activity log runs in its own Qt-free process: a native
-# per-pixel translucent Win32 window the owner can close and reopen at will
-# without touching the session. The client streams protocol lines to its stdin.
+# 只读活动日志运行在独立的 Qt-free 进程中：这是原生逐像素透明的 Win32 窗口
+# 所有者可随时关闭或重新打开而不影响会话；客户端通过 stdin 向其传输协议行
 add_executable(yiuk-activity-panel WIN32
     src/panel/main.cpp
     src/panel/panelpipe.cpp
@@ -63,19 +62,17 @@ target_compile_definitions(yiuk-activity-panel PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
 target_link_libraries(yiuk-activity-panel PRIVATE gdiplus shell32 user32 gdi32)
 if(MINGW)
-    # Keep the panel free of the MinGW runtime DLLs: it only needs system DLLs.
+    # 面板只依赖系统 DLL，因此不链接 MinGW 运行时 DLL
     target_link_options(yiuk-activity-panel PRIVATE -static-libgcc -static-libstdc++)
 endif()
 add_dependencies(yiuk-device-assist yiuk-activity-panel)
 
 target_link_libraries(yiuk-device-assist PRIVATE Qt6::Widgets Qt6::Network)
 
-# Expose the CMake project version to the UI so a support report always states
-# which client build is running.
+# 将 CMake 项目版本提供给界面，确保支持报告始终注明当前运行的客户端版本
 target_compile_definitions(yiuk-device-assist PRIVATE YIUK_CLIENT_VERSION="${PROJECT_VERSION}")
 
-# Ship the Agent MCP adapter beside the Qt client so users do not need to
-# install Go or download a second repository.
+# 将 Agent MCP 适配器与 Qt 客户端一起打包，用户无需安装 Go 或另行下载代码仓库
 find_program(YIUK_GO_EXECUTABLE go)
 if(YIUK_GO_EXECUTABLE)
     set(YIUK_MCP_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/yiuk-mcp.exe")
@@ -100,8 +97,8 @@ else()
     message(WARNING "Go was not found; yiuk-mcp.exe will not be bundled")
 endif()
 
-# Optional headless interop harness used to verify the protocol against the Go
-# platform server. Build with -DYIUK_BUILD_TESTS=ON.
+# 可选的无界面互操作测试程序，用于验证与 Go 平台服务端之间的协议
+# 使用 -DYIUK_BUILD_TESTS=ON 构建
 option(YIUK_BUILD_TESTS "Build the Qt platform interop harness" OFF)
 if(YIUK_BUILD_TESTS)
     qt_add_executable(yiuk-platform-interop
@@ -112,8 +109,7 @@ if(YIUK_BUILD_TESTS)
         src/securestore.h
     )
     target_include_directories(yiuk-platform-interop PRIVATE src)
-    # The harness is a headless diagnostic tool: keep it on the console
-    # subsystem so qInfo/qWarning output is visible in CI and terminals.
+    # 该测试程序是无界面的诊断工具：保留控制台子系统，使 CI 和终端能显示 qInfo/qWarning 输出
     set_target_properties(yiuk-platform-interop PROPERTIES WIN32_EXECUTABLE FALSE)
     target_link_libraries(yiuk-platform-interop PRIVATE Qt6::Core Qt6::Network)
     if(WIN32)

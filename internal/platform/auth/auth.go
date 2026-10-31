@@ -13,7 +13,7 @@ import (
 	"net"
 	"time"
 
-	baseauth "yiuk-switchboard/internal/auth"
+	baseauth "agentremote/internal/auth"
 )
 
 var (

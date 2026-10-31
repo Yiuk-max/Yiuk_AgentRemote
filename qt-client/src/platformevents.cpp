@@ -5,8 +5,8 @@
 #include <QDateTime>
 
 
-// adoptDeviceSession records a session where this client is the assisted device,
-// including direct mode where the platform skips the approval request.
+// adoptDeviceSession 记录本客户端作为被协助设备参与的会话
+// 包括平台跳过批准请求的直连模式
 void MainWindow::adoptDeviceSession(const QJsonObject &session, bool approved) {
     const QString id = session.value("session_id").toString();
     if (id.isEmpty()) return;
@@ -59,7 +59,7 @@ void MainWindow::onPlatformSessionUpdated(const QJsonObject &session) {
         if (known) {
             record.insert("source", existing.value("source"));
         } else if (session.value("device_id").toString() == deviceId()) {
-            // direct 模式：平台直接下发已批准会话，没有 session_request 阶段。
+            // direct 模式：平台直接下发已批准会话，没有 session_request 阶段
             adoptDeviceSession(session, session.value("status").toString() == "approved");
             return;
         } else {
@@ -296,7 +296,7 @@ namespace {
 
 constexpr qint64 kMaxUploadBytes = 32LL * 1024 * 1024;
 
-// Keeps an operator-supplied file name usable as a single path component.
+// 确保操作端提供的文件名可作为单独的路径组成部分使用
 QString safeUploadName(const QString &fileName) {
     QString base = fileName;
     base.replace(QLatin1Char('\\'), QLatin1Char('/'));
@@ -317,7 +317,7 @@ QString safeUploadName(const QString &fileName) {
 }  // namespace
 
 
-// finishFileUpload reports the terminal result and releases the temporary file.
+// finishFileUpload 上报最终结果并释放临时文件
 void MainWindow::finishFileUpload(const QSharedPointer<FileUploadState> &state, const QString &status) {
     if (!state || state->requestId.isEmpty()) return;
     const QString sessionStatus = sessions.value(state->sessionId).value("status").toString();
@@ -346,8 +346,8 @@ void MainWindow::finishFileUpload(const QSharedPointer<FileUploadState> &state, 
 }
 
 
-// abortFileUploadsForSession stops local uploads whose session ended without
-// telling the platform (the session is already gone there).
+// abortFileUploadsForSession 终止本地上传任务
+// 这些任务所属会话已结束，且平台未收到通知（平台侧的会话已经不存在）
 void MainWindow::abortFileUploadsForSession(const QString &sessionId) {
     const QStringList requestIds = activeFileUploads.keys();
     for (const QString &requestId : requestIds) {
@@ -445,7 +445,7 @@ void MainWindow::onPlatformFileUploadRequested(const QString &sessionId, const Q
                    ActivityKind::Upload);
     refreshActiveSessions();
     if (fileSize == 0) {
-        // An empty file carries no chunks: the request metadata is the file.
+        // 空文件不包含数据分块；文件信息由请求元数据携带
         QFile::remove(target);
         if (!QFile::rename(tempPath, target)) {
             appendActivity(sessionId, QString("文件上传 %1 失败：无法创建空文件").arg(requestId.left(8)),
@@ -592,7 +592,7 @@ void MainWindow::executePlatformCommand(const QString &sessionId, const QString 
             return;
         }
         if (status == QLatin1String("cancelled")) {
-            // The cancelling caller already recorded the terminal status.
+            // 发起取消的调用方已经记录了最终状态
             if (task.value("status").toString() == QLatin1String("running"))
                 task.insert("status", "cancelled");
             tasks.insert(requestId, task);

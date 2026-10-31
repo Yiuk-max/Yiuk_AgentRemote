@@ -1,12 +1,13 @@
 package server
 
+//转换
 //基本信息转换、时间戳、设备信息、会话信息
 import (
 	"time"
 
-	"yiuk-switchboard/internal/platform/device"
-	"yiuk-switchboard/internal/platform/protocol"
-	"yiuk-switchboard/internal/platform/session"
+	"agentremote/internal/platform/device"
+	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platform/session"
 )
 
 func deviceInfo(info device.Info) protocol.DeviceInfo {

@@ -30,9 +30,8 @@ type ToolSpec struct {
 	Annotations  ToolAnnotations `json:"annotations"`
 }
 
-// ToolAnnotations are MCP hints consumed by hosts such as pi when presenting
-// tools and applying confirmation policies. They do not replace server-side
-// authorization checks.
+// ToolAnnotations 是 MCP 提示，供 pi 等宿主展示工具和应用确认策略时使用
+// 它们不能替代服务端授权检查
 type ToolAnnotations struct {
 	ReadOnly    bool
 	Destructive *bool
@@ -52,8 +51,7 @@ type Response struct {
 	Data    any    `json:"data,omitempty"`
 }
 
-// Backend is the stable, Agent-independent boundary implemented by the
-// future local client/remote platform connection.
+// Backend 是稳定且独立于 Agent 的接口，由本地客户端或远程平台连接实现
 type Backend interface {
 	Invoke(context.Context, Request) (any, error)
 }

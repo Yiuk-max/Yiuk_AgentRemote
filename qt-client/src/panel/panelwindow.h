@@ -1,7 +1,7 @@
 #pragma once
 
 #include <windows.h>
-// GDI+ needs PROPID, which WIN32_LEAN_AND_MEAN keeps out of <windows.h>.
+// GDI+ 需要 PROPID，而 WIN32_LEAN_AND_MEAN 会阻止 <windows.h> 引入该定义
 #include <objidl.h>
 #include <gdiplus.h>
 
@@ -14,10 +14,8 @@
 
 namespace yiuk {
 
-// A borderless, per-pixel translucent window that only ever *receives* the log
-// of the current remote session. It lives in its own process so the user can
-// close it whenever they like and reopen it from the client; nothing here pulls
-// the window forward on its own.
+// 这是无边框、逐像素透明的窗口，只接收当前远程会话的日志
+// 它运行在独立进程中，用户可随时关闭并从客户端重新打开；此处不会主动将窗口置于前台
 class PanelWindow {
 public:
     explicit PanelWindow(PanelParams params);
@@ -34,7 +32,7 @@ private:
         int entry = 0;
         int begin = 0;
         int end = 0;
-        bool first = false;  // first wrapped line of the entry
+        bool first = false;  // 条目自动换行后的第一行
     };
 
     struct Metrics {
@@ -57,7 +55,7 @@ private:
         int buttonW = 30;
         int buttonH = 24;
         int buttonGap = 4;
-        int padding = 8;  // extra breathing room next to the scrollbar
+        int padding = 8;  // 滚动条旁的额外留白
     };
 
     enum class Drag { None, Move, Resize };

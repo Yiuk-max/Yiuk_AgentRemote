@@ -4,11 +4,11 @@ import (
 	"errors"
 	"strings"
 
-	"yiuk-switchboard/internal/platform/auth"
-	"yiuk-switchboard/internal/platform/device"
-	"yiuk-switchboard/internal/platform/session"
-	"yiuk-switchboard/internal/platform/task"
-	"yiuk-switchboard/internal/platform/transfer"
+	"agentremote/internal/platform/auth"
+	"agentremote/internal/platform/device"
+	"agentremote/internal/platform/session"
+	"agentremote/internal/platform/task"
+	"agentremote/internal/platform/transfer"
 )
 
 func (s *Server) validID(field, value string) error {

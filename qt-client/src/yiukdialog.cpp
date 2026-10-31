@@ -10,17 +10,15 @@
 
 namespace {
 
-// Room around the white card for the drop shadow to fade out in. The shadow
-// only has to separate the dialog from the white page behind it, so it stays
-// light instead of turning into a black band.
+// 白色卡片周围留出空白，让投影自然淡出
+// 投影只需将对话框与后方白色页面区分开，因此保持浅色，避免形成黑色边带
 constexpr int kShadowMargin = 18;
 constexpr int kShadowBlur = 22;
 constexpr int kShadowAlpha = 64;
 constexpr int kDialogButtonHeight = 34;
 constexpr int kDialogButtonMinWidth = 92;
 
-// Wrapped body text; the amber badge below keeps the warning signal the native
-// message box icon used to carry.
+// 主体文本自动换行；下方的琥珀色标记承载原生消息框图标的警告提示
 QLabel *bodyLabel(const QString &text, const QString &style = "font-size: 13px; color: #263446;") {
     auto *label = makeLabel(text, style);
     label->setTextFormat(Qt::PlainText);
@@ -46,13 +44,12 @@ void centerOnParent(QWidget *popup) {
 
 YiukDialog::YiukDialog(QWidget *parent, const QString &title) : QDialog(parent) {
     setWindowTitle(title);
-    // Drop the native title bar: the dialog is drawn like the main window and the
-    // reused close button replaces the system one.
+    // 移除原生标题栏：对话框沿用主窗口的绘制方式，并使用共享的关闭按钮替代系统按钮
     setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
     setModal(true);
     setSizeGripEnabled(false);
-    // The window itself stays transparent so the card's shadow can fade into the
-    // margin; the white surface and hairline border are painted by the card.
+    // 窗口本身保持透明，使卡片投影可以渐隐到边距中
+    // 白色表面和细边框由卡片绘制
     setAttribute(Qt::WA_TranslucentBackground, true);
 
     auto *outer = new QVBoxLayout(this);
@@ -80,8 +77,7 @@ YiukDialog::YiukDialog(QWidget *parent, const QString &title) : QDialog(parent) 
     bodyLayout->setSpacing(10);
     cardLayout->addWidget(body, 1);
 
-    // The button row lives in its own footer so callers can fill content() in any
-    // order and still get the buttons at the bottom right.
+    // 按钮行位于独立的底部区域，因此调用方可以按任意顺序填充 content()，按钮仍会位于右下方
     auto *footer = new QWidget(card);
     auto *footerLayout = new QHBoxLayout(footer);
     footerLayout->setContentsMargins(20, 6, 20, 16);
@@ -153,7 +149,7 @@ bool askConfirm(QWidget *parent, const QString &title, const QString &text,
     dialog.content()->addStretch();
     auto *reject = dialog.addButton(rejectText);
     auto *accept = dialog.addButton(acceptText, YiukDialog::ButtonKind::Primary);
-    // Destructive confirmations must not fire on Enter.
+    // 按 Enter 键不能触发危险操作确认
     reject->setDefault(true);
     accept->setAutoDefault(false);
     QObject::connect(reject, &QPushButton::clicked, &dialog, &QDialog::reject);
@@ -169,8 +165,8 @@ bool askText(QWidget *parent, const QString &title, const QString &label,
     dialog.setFixedWidth(460);
     dialog.content()->addWidget(bodyLabel(label, "font-size: 13px; color: #5f6d80;"));
     auto *edit = new QLineEdit(defaultValue);
-    // Reuse the settings field look so prompt inputs match the main window
-    // instead of picking up the borderless home-page line edit.
+    // 复用设置页输入框样式，使提示输入框与主窗口一致
+    // 避免使用主页无边框输入框的样式
     edit->setObjectName(QStringLiteral("settingsField"));
     edit->setEchoMode(echoMode);
     edit->setMinimumHeight(34);

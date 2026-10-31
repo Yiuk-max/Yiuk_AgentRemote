@@ -3,8 +3,8 @@ package platformclient
 import (
 	"strings"
 
+	"agentremote/internal/platform/protocol"
 	"encoding/base64"
-	"yiuk-switchboard/internal/platform/protocol"
 )
 
 type taskCache struct {
@@ -32,8 +32,7 @@ func sessionIDFromResult(result map[string]any) string {
 	return id
 }
 
-// aggregateResult turns streamed chunks into single stdout/stderr strings for
-// callers that do not want to page through output themselves.
+// aggregateResult 将流式分块合并为 stdout/stderr 字符串，供不需要分页读取输出的调用方使用
 func aggregateResult(result map[string]any) map[string]any {
 	var stdout, stderr strings.Builder
 	switch chunks := result["chunks"].(type) {
@@ -145,7 +144,7 @@ func (c *Client) observeFileResult(m protocol.Message) {
 	}
 }
 
-// download must be called with cacheMu held.
+// 调用 download 时必须持有 cacheMu
 func (c *Client) download(sessionID, requestID string) *downloadCache {
 	d, ok := c.downloads[requestID]
 	if !ok || d.sessionID != sessionID {
@@ -178,7 +177,7 @@ func (c *Client) observeResult(m protocol.Message) {
 	}
 }
 
-// task must be called with cacheMu held.
+// 调用 task 时必须持有 cacheMu
 func (c *Client) task(sessionID, requestID string) *taskCache {
 	t, ok := c.tasks[requestID]
 	if !ok || t.sessionID != sessionID {

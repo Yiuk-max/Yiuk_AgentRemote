@@ -5,8 +5,7 @@ import (
 	"path/filepath"
 )
 
-// cacheDownloadDir is the fallback used when the platform has no known
-// Downloads folder (for example on non-Windows systems).
+// 当平台未能确定 Downloads 目录时使用 cacheDownloadDir 作为回退路径（例如非 Windows 系统）
 func cacheDownloadDir() (string, error) {
 	root, err := os.UserCacheDir()
 	if err != nil {

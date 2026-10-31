@@ -1,5 +1,4 @@
-// Package transport creates the platform TLS listener. Plaintext is available
-// only when explicitly allowed for local development or tests.
+// 创建平台TLS 监听，只有测试时才允许明文传输
 package transport
 
 import (
@@ -8,13 +7,13 @@ import (
 	"net"
 )
 
-// Listen creates a TLS listener when cert/key are configured. If both are
-// empty and allowInsecure is true it falls back to plaintext TCP.
+// 如果证书和私钥都配置了，则创建TLS 的监听，如果都是空并且指定了允许明文传输，则返回明文TCP
 func Listen(address, certFile, keyFile string, allowInsecure bool) (net.Listener, error) {
 	if certFile != "" || keyFile != "" {
 		if certFile == "" || keyFile == "" {
 			return nil, errors.New("tls certificate and key must be set together")
 		}
+
 		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
 			return nil, err

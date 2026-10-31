@@ -238,7 +238,7 @@ docker compose down        # 加 -v 一并删除卷（配置、证书、日志�
 ```json
 {
   "mcpServers": {
-    "yiuk-switchboard": {
+    "agentremote": {
       "command": "C:/path/to/YiukDeviceAssist/yiuk-mcp.exe",
       "args": []
     }

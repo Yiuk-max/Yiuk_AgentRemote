@@ -9,38 +9,34 @@
 
 class QTcpSocket;
 
-// PlatformClient speaks the Yiuk platform framed-JSON protocol.
+// PlatformClient 使用 Yiuk 平台的带帧 JSON 协议进行通信
 //
-// The same object can act as the local device (register_device, approve/reject
-// sessions, execute commands) and as an operator (request_session). A single
-// authenticated connection is shared because the platform binds a session to
-// the connection that created it.
+// 同一对象既可作为本地设备（register_device、批准或拒绝会话、执行命令），也可作为操作端（request_session）
+// 两种角色共用一个经过认证的连接，因为平台会将会话绑定到创建该会话的连接
 class PlatformClient final : public QObject {
     Q_OBJECT
 public:
     struct Config {
-        QString address;            // host:port
-        QString playerPassword;     // platform player password
-        QString deviceId;           // local device id (digits only)
-        QString deviceName;         // display name
-        QString temporaryPassword;  // 32-character temporary password
+        QString address;            // 主机地址和端口
+        QString playerPassword;     // 平台玩家密码
+        QString deviceId;           // 本地设备 ID（仅数字）
+        QString deviceName;         // 显示名称
+        QString temporaryPassword;  // 32 位临时密码
         int passwordVersion = 1;
-        QString mode;               // "direct" or "approval"
+        QString mode;               // "direct" 或 "approval"
         int ttlSeconds = 24 * 60 * 60;
         bool tls = true;
-        bool allowInsecure = false; // dev only: skip certificate verification
+        bool allowInsecure = false; // 仅用于开发：跳过证书验证
         QString caFile;
-        // SHA-256 fingerprint of the server certificate, hex encoded. When set,
-        // the client accepts exactly this certificate instead of relying on a
-        // public CA. This keeps self-signed deployments usable without
-        // disabling certificate verification for arbitrary certificates.
+        // 服务器证书的 SHA-256 指纹，以十六进制编码
+        // 设置后，客户端只接受该证书，而不依赖公共 CA
+        // 这样使用自签名证书时无需关闭对任意证书的验证
         QString pinnedFingerprint;
-        // Most TUN adapters provide IPv4 routes only. This also avoids an IPv6
-        // route escaping the VPN when the server is configured with an address.
+        // 大多数 TUN 适配器只提供 IPv4 路由
+        // 同时避免服务器使用 IP 地址配置时，IPv6 路由绕过 VPN
         bool forceIPv4 = true;
-        // Some Windows Schannel builds fail the TLS 1.3 handshake against
-        // certain Go server configurations while TLS 1.2 succeeds. Setting this
-        // pins the connection to TLS 1.2.
+        // 某些 Windows Schannel 版本与特定 Go 服务端配置进行 TLS 1.3 握手时会失败，但 TLS 1.2 可以成功
+        // 设置此选项后，连接将固定使用 TLS 1.2
         bool forceTls12 = false;
         bool enabled = true;
     };
@@ -57,7 +53,7 @@ public:
     QString connectionId() const { return connectionId_; }
     QString state() const { return state_; }
 
-    // Device actions.
+    // 设备端操作
     void approveSession(const QString &sessionId);
     void rejectSession(const QString &sessionId);
     void sendCommandOutput(const QString &sessionId, const QString &requestId, const QString &stream,
@@ -76,7 +72,7 @@ public:
     void closeSession(const QString &sessionId);
     void cancelCommand(const QString &sessionId, const QString &requestId);
 
-    // Operator actions.
+    // 操作端操作
     void listDevices(const QString &requestId);
     void requestSession(const QString &deviceId, const QString &purpose,
                         const QStringList &permissions, const QString &temporaryPassword);
@@ -110,8 +106,8 @@ signals:
     void credentialsRenewed(const QString &password, int version);
     void platformError(const QString &code, const QString &message);
     void connectionError(const QString &message);
-    // Emitted when the server certificate cannot be verified. The user must
-    // explicitly trust the fingerprint before the client will connect.
+    // 服务器证书无法验证时发出
+    // 用户必须明确确认信任该指纹后，客户端才会连接
     void certificateUntrusted(const QString &fingerprint, const QString &subject,
                               const QString &details, bool changed);
 
@@ -148,12 +144,9 @@ private:
     bool proxyFallbackAttempted_ = false;
     bool forceDirectConnection_ = false;
     bool usingProxy_ = false;
-    // Set when a TLS verification failure has already been reported for the
-    // current connection, so the peer's abort does not replace the real cause
-    // with the generic "remote host closed" message.
-    // Set when the peer certificate could not be verified by the platform CA
-    // store. The decision is made once the handshake completes so the result is
-    // identical for the Schannel and OpenSSL backends.
+    // 当前连接已报告 TLS 验证失败时设置，避免对端中止连接后用笼统的“远程主机已关闭”替代真实原因
+    // 对端证书无法通过平台 CA 存储验证时设置
+    // 在握手完成后作出判断，确保 Schannel 和 OpenSSL 后端的结果一致
     bool sslErrorsSeen_ = false;
     bool tlsErrorReported_ = false;
     int reconnectAttempts_ = 0;

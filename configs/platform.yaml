@@ -1,7 +1,7 @@
-# Yiuk Switchboard 平台服务配置示例。
-#
+# AgentRemote 平台服务配置
+
 # 部署时复制为 platform.yaml 并设置为仅服务账户可读写。player_password 使用
-# 独立随机强密码，devices 的临时密码永远不写入本文件。
+# devices 的临时密码不写入本文件。
 platform:
   # 平台监听地址。
   listen: ":25664"

@@ -6,18 +6,18 @@ import (
 	"sync"
 	"time"
 
+	"agentremote/internal/platform/audit"
+	"agentremote/internal/platform/auth"
+	"agentremote/internal/platform/config"
+	"agentremote/internal/platform/device"
+	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platform/session"
+	"agentremote/internal/platform/task"
+	"agentremote/internal/platform/transfer"
+	"agentremote/internal/platform/transport"
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
-	"yiuk-switchboard/internal/platform/audit"
-	"yiuk-switchboard/internal/platform/auth"
-	"yiuk-switchboard/internal/platform/config"
-	"yiuk-switchboard/internal/platform/device"
-	"yiuk-switchboard/internal/platform/protocol"
-	"yiuk-switchboard/internal/platform/session"
-	"yiuk-switchboard/internal/platform/task"
-	"yiuk-switchboard/internal/platform/transfer"
-	"yiuk-switchboard/internal/platform/transport"
 )
 
 type role int
@@ -28,30 +28,28 @@ const (
 	roleDevice
 )
 
-// Server is the in-memory platform relay. It has no database and deliberately
-// loses all device, session and task state on restart.
+// 服务器是纯内存的中继平台。它没有数据库，并且故意在重新启动时丢弃所有状态
 type Server struct {
 	cfg      config.Config
 	log      *slog.Logger
-	codec    protocol.Codec
-	listener net.Listener
+	codec    protocol.Codec //TCP数据帧，编解码器
+	listener net.Listener   //TCP监听器，接收新连接
 
 	devices   *device.Manager
 	sessions  *session.Manager
 	tasks     *task.Manager
-	transfers *transfer.Manager
-	uploads   *transfer.Manager
+	transfers *transfer.Manager // 传输管理器
+	uploads   *transfer.Manager // 上传管理器
 	auth      *auth.Authenticator
-	audit     *audit.Logger
+	audit     *audit.Logger //用于记录事件和警告的审计日志记录器
 
 	mu        sync.Mutex
-	conns     map[string]*conn
-	closeOnce sync.Once
-	done      chan struct{}
+	conns     map[string]*conn // 连接映射，键是连接ID，值是连接对象，关闭时从这里清理连接
+	closeOnce sync.Once        //确保关闭逻辑只执行一次
+	done      chan struct{}    //通知 Goroutine 退出
 	wg        sync.WaitGroup
 }
 
-// New creates a platform server and binds its configured listener.
 // 新建一个平台服务器并绑定其配置的lintener。
 func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	ln, err := transport.Listen(cfg.Listen, cfg.TLSCert, cfg.TLSKey, cfg.AllowInsecure)
@@ -60,6 +58,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	}
 	return NewWithListener(cfg, log, ln), nil
 }
+
 // 创建一个新的平台服务器并绑定其配置的侦听器，测试
 // 这个用于避免 TLS 证书设置；生产环境应使用 New。
 func NewWithListener(cfg config.Config, log *slog.Logger, ln net.Listener) *Server {
@@ -83,11 +82,9 @@ func NewWithListener(cfg config.Config, log *slog.Logger, ln net.Listener) *Serv
 	}
 }
 
-// Addr returns the listener address, which is useful in tests.
+// 返回监听地址，测试用
 func (s *Server) Addr() net.Addr { return s.listener.Addr() }
 
-// Run accepts connections until the context is cancelled or the listener
-// fails. All connections and in-memory state are discarded on return.
 // Run 循环接受连接，直到上下文被取消或监听器失败。所有连接和内存中的状态在返回时都会被丢弃。
 func (s *Server) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
@@ -121,7 +118,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
-// Close stops the listener and closes every connection.
+// 关闭监听，不再接受新连接，并清理所有连接
 func (s *Server) Close() {
 	s.closeOnce.Do(func() {
 		close(s.done)
@@ -146,6 +143,7 @@ func (s *Server) isClosed() bool {
 		return false
 	}
 }
+
 // 处理单个连接的生命周期，包括读取和写入循环。每个连接在单独的 goroutine 中处理。
 func (s *Server) serveConn(nc net.Conn) {
 	if tcp, ok := nc.(*net.TCPConn); ok {
@@ -170,6 +168,7 @@ func (s *Server) serveConn(nc net.Conn) {
 	s.readLoop(c)
 }
 
+// 注册到map中
 func (s *Server) registerConn(c *conn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -199,6 +198,7 @@ func (s *Server) unregisterConn(c *conn) {
 	// clean up sessions owned by this connection in both roles.
 	s.cleanupOperator(c)
 }
+
 // 清理设备连接
 func (s *Server) cleanupDevice(c *conn) {
 	if c.deviceID == "" {

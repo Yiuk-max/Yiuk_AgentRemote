@@ -9,13 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"agentremote/internal/agenttools"
+	"agentremote/internal/platform/protocol"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
-	"yiuk-switchboard/internal/agenttools"
-	"yiuk-switchboard/internal/platform/protocol"
 )
 
 func (c *Client) ensureConnectedLocked() error {
@@ -44,10 +44,9 @@ func (c *Client) ensureConnectedLocked() error {
 	return nil
 }
 
-// heartbeatInterval is how often the operator connection pings the platform.
-// The server closes connections that stay silent longer than its
-// heartbeat_timeout_sec (45s by default), so an idle operator must keep the
-// connection warm or its sessions would be interrupted mid-flight.
+// heartbeatInterval 指定操作端连接向平台发送心跳的间隔
+// 服务端会在连接静默超过 heartbeat_timeout_sec（默认 45 秒）后将其关闭
+// 因此操作端必须保持空闲连接活跃，避免会话中断
 func (c *Client) heartbeatInterval() time.Duration {
 	seconds := c.cfg.HeartbeatIntervalSeconds
 	if seconds <= 0 {
@@ -59,8 +58,7 @@ func (c *Client) heartbeatInterval() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-// heartbeatLoop keeps an otherwise idle connection alive and detects a peer
-// that stopped answering pings without closing the socket.
+// heartbeatLoop 保持空闲连接有效，并检测未关闭套接字但不再响应心跳的对端
 func (c *Client) heartbeatLoop(conn net.Conn, done chan struct{}) {
 	ticker := time.NewTicker(c.heartbeatInterval())
 	defer ticker.Stop()
@@ -81,8 +79,7 @@ func (c *Client) heartbeatLoop(conn net.Conn, done chan struct{}) {
 		}
 		lastPongs = pongs
 		if misses >= maxMissedHeartbeats {
-			// The platform stopped answering: drop the connection so the next
-			// tool call reconnects instead of waiting for a TCP timeout.
+			// 平台已停止响应；断开连接，使下一次工具调用重新连接，而不是等待 TCP 超时
 			c.markDisconnected(done)
 			return
 		}
@@ -99,8 +96,7 @@ func (c *Client) heartbeatLoop(conn net.Conn, done chan struct{}) {
 	}
 }
 
-// writeMessage serializes one frame and bounds how long a stalled peer can
-// block the writer.
+// writeMessage 串行化单个数据帧，并限制无响应对端阻塞写入的时间
 func (c *Client) writeMessage(conn net.Conn, m protocol.Message) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -113,8 +109,7 @@ func (c *Client) writeMessage(conn net.Conn, m protocol.Message) error {
 func (c *Client) handshake() (net.Conn, *bufio.Reader, string, error) {
 	conn, err := c.dial()
 	if err != nil {
-		// Keep the underlying cause: it distinguishes an unreachable host from
-		// a rejected certificate fingerprint.
+		// 保留底层错误原因，以便区分主机不可达和证书指纹校验失败
 		return nil, nil, "", &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not reach platform: " + err.Error()}
 	}
 	reader := bufio.NewReaderSize(conn, c.codec.MaxFrameBytes+4)
@@ -145,10 +140,9 @@ func (c *Client) handshake() (net.Conn, *bufio.Reader, string, error) {
 	}
 }
 
-// certPinVerifier returns a tls.Config.VerifyPeerCertificate callback that
-// accepts exactly the certificate whose DER bytes hash to pin (lowercase hex
-// SHA-256). An empty pin is never valid here; callers only install the
-// callback when pinning is configured.
+// certPinVerifier 返回 tls.Config.VerifyPeerCertificate 回调
+// 该回调只接受 DER 字节的 SHA-256（小写十六进制）与 pin 完全匹配的证书
+// 此处空 pin 始终无效；调用方仅在配置证书固定时安装该回调
 func certPinVerifier(pin string) func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {
@@ -173,7 +167,7 @@ func (c *Client) dial() (net.Conn, error) {
 		cfg.InsecureSkipVerify = true
 	}
 	if pin := strings.ToLower(strings.TrimSpace(c.cfg.PinnedCertSHA256)); pin != "" {
-		// Verification is replaced by an exact certificate fingerprint check.
+		// 使用精确的证书指纹检查替代常规验证
 		cfg.InsecureSkipVerify = true
 		cfg.VerifyPeerCertificate = certPinVerifier(pin)
 	}
@@ -204,8 +198,7 @@ func (c *Client) readLoop(conn net.Conn, reader *bufio.Reader, inbox chan protoc
 			return
 		}
 		if m.Type == protocol.TypePong {
-			// Pongs only prove liveness; the heartbeat goroutine consumes the
-			// counter and the frame never needs to reach a tool call.
+			// Pong 只能证明连接仍有效；心跳 goroutine 会读取计数器，无需将该帧传递给工具调用
 			c.pongs.Add(1)
 			continue
 		}

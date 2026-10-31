@@ -18,8 +18,7 @@ QPainterPath starPath() {
     return path;
 }
 
-// A single-colour icon rendered at the sizes the UI asks for, so a 27px star is
-// drawn instead of a stretched 18px pixmap.
+// 按界面所需尺寸绘制单色图标，例如直接绘制 27px 星形，而不是拉伸 18px 位图
 static QIcon stateIcon(Glyph glyph, const QColor &normal, const QColor &active, const QColor &disabled) {
     static const int sizes[] = {16, 20, 24, 28, 32, 40, 48};
     QIcon icon;
@@ -72,7 +71,7 @@ void paintGlyph(QPainter &painter, Glyph glyph, const QColor &color) {
     case Glyph::StarFilled: {
         const QPainterPath path = starPath();
         if (glyph == Glyph::StarFilled) {
-            // Solid star for the "already saved" state.
+            // 已收藏状态使用实心星形
             painter.setPen(QPen(color, 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             painter.setBrush(color);
         }
@@ -102,7 +101,7 @@ QPixmap glyphPixmap(Glyph glyph, const QColor &color, int size) {
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    // Same 18x18 grid and 2px inset as before, scaled to the requested size.
+    // 沿用原有 18x18 网格和 2px 内边距，再缩放到所需尺寸
     const qreal factor = size / 18.0;
     painter.translate(2.0 * factor, 2.0 * factor);
     painter.scale(0.78 * factor, 0.78 * factor);
@@ -121,8 +120,6 @@ QIcon glyphIcon(Glyph glyph) {
 
 QIcon starIcon(bool filled) {
     if (!filled) return stateIcon(Glyph::Star, QColor("#66758a"), QColor("#1479ed"), QColor("#aab4c1"));
-    // Amber from the same family the warning banners use, so the filled state
-    // reads as "saved" without introducing a new colour.
+    // 使用与警告横幅同一色系的琥珀色表示已收藏状态，不引入新颜色
     return stateIcon(Glyph::StarFilled, QColor("#f0ad2a"), QColor("#d99314"), QColor("#e4d4ab"));
 }
-

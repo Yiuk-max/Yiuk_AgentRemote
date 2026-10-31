@@ -22,8 +22,7 @@ QString kindToken(ActivityKind kind) {
     }
 }
 
-// One line per message: newlines and backslashes are escaped, and the pipe is
-// safe because the panel only splits the first fields of a line.
+// 每条消息占一行：换行符和反斜杠会转义；面板只拆分每行的前几个字段，因此管道符无需转义
 QString escapeField(const QString &text) {
     QString out;
     out.reserve(text.size() + 8);
@@ -68,7 +67,7 @@ bool ActivityPanel::open(const QString &title, const QString &label, const QStri
                                QStringLiteral("--label"), label,
                                QStringLiteral("--state"), state,
                                QStringLiteral("--status"), status});
-        // stdout/stderr are unused by the panel; stdin carries the protocol.
+        // 面板不使用 stdout/stderr；stdin 用于传递协议数据
         process->setProcessChannelMode(QProcess::MergedChannels);
         connect(process, &QProcess::finished, this, [this] { cleanup(); });
         connect(process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
@@ -118,8 +117,7 @@ void ActivityPanel::send(const QString &line) {
 
 void ActivityPanel::close() {
     if (!process) return;
-    // Detach first: waiting below pumps the event loop, and the finished handler
-    // must not clear the pointer while this function still uses it.
+    // 先解除关联：下面的等待会处理事件循环，完成处理器不能在当前函数仍使用该指针时将其清空
     QProcess *target = process;
     process = nullptr;
     lastState.clear();

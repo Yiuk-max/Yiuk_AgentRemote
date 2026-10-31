@@ -5,9 +5,9 @@ import (
 	"errors"
 	"time"
 
+	"agentremote/internal/agenttools"
+	"agentremote/internal/platform/protocol"
 	"encoding/json"
-	"yiuk-switchboard/internal/agenttools"
-	"yiuk-switchboard/internal/platform/protocol"
 )
 
 type connectionRequest struct {
@@ -38,8 +38,8 @@ func (c *Client) requestConnection(ctx context.Context, raw json.RawMessage) (an
 	})
 }
 
-// createSession requests a session and, when requested, waits for the device
-// owner to approve it. Direct-mode devices are approved immediately.
+// createSession 请求会话，并在需要时等待设备所有者批准
+// 直连模式下的设备会立即批准会话
 func (c *Client) createSession(ctx context.Context, input connectionRequest) (map[string]any, error) {
 	if input.TemporaryPassword == "" {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "temporary_password is required; ask the device owner for the 32-character temporary password"}
@@ -129,9 +129,8 @@ func (c *Client) closeSessionInternal(ctx context.Context, sessionID string) (ma
 		return m.Type == protocol.TypeSessionStatus && isTerminalSession(m.Status)
 	})
 	if err != nil {
-		// Closing is idempotent. The platform drops sessions when it restarts
-		// (or an operator connection is replaced), so a session that is gone is
-		// already as closed as the caller wants it to be.
+		// 关闭操作是幂等的
+		// 平台重启（或替换操作端连接）时会清除会话，因此会话已不存在时也无需再次关闭
 		var toolErr *agenttools.Error
 		if errors.As(err, &toolErr) && toolErr.Code == "SESSION_NOT_FOUND" {
 			return map[string]any{

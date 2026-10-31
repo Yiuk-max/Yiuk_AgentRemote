@@ -6,8 +6,8 @@
 namespace yiuk {
 namespace {
 
-// Consolas covers Latin, Greek, Cyrillic, box drawing and the arrow blocks;
-// everything from CJK radicals upwards needs the CJK face.
+// Consolas 支持拉丁文、希腊文、西里尔文、制表符和箭头方块
+// CJK 部首及其后的字符需要使用中日韩字体
 bool IsCjk(wchar_t ch) {
     return ch >= 0x2E80;
 }
@@ -85,8 +85,7 @@ int TextMetrics::Advance(const std::wstring& text, size_t index, size_t* units) 
     if (IsSurrogateHigh(ch) && index + 1 < text.size()) consumed = 2;
     if (units) *units = consumed;
 
-    // Single code units are stable for both faces (the Latin face is
-    // monospaced), so the width only has to be measured once per character.
+    // 两种字体中的单个代码单元宽度都稳定（拉丁字体为等宽字体），因此每个字符只需测量一次宽度
     uint32_t key = static_cast<uint32_t>(ch);
     if (consumed == 2) key = 0x10000u | (static_cast<uint32_t>(text[index + 1]) & 0xFFFFu);
     auto cached = widthCache.find(key);

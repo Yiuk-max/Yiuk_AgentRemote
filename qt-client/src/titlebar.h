@@ -6,13 +6,11 @@
 
 class QPushButton;
 
-// Frameless window title bar: brand label, drag-to-move and the three window
-// buttons. Kept separate from MainWindow so the window class does not carry
-// paint/drag code.
+// 无边框窗口标题栏，包含品牌标签、拖动移动功能和三个窗口按钮
+// 与 MainWindow 分离，避免窗口类承担绘制和拖动逻辑
 //
-// Passing a title switches to dialog mode: the title is drawn on the left and
-// only the close button is kept, reusing the same glyph/behaviour as the main
-// window so every popup drops the native Windows chrome.
+// 传入标题后切换为对话框模式：标题显示在左侧，只保留关闭按钮
+// 复用主窗口的关闭图标和行为，让所有弹窗都不使用 Windows 原生边框
 class TitleBar final : public QWidget {
 public:
     explicit TitleBar(QWidget *parent = nullptr, const QString &title = QString());

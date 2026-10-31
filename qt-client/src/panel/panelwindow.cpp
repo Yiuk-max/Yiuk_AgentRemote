@@ -15,10 +15,8 @@ namespace {
 
 const wchar_t* kWindowClass = L"YiukActivityPanel";
 
-// A dark, slightly cool sheet: the panel has to stay readable over any desktop
-// wallpaper, and the ink follows pi's dark theme tokens — violet for the session
-// lifecycle, green for commands, blue for reads, orchid for downloads, muted for
-// output and red for errors.
+// 深色且略带冷色调的底板，确保面板在任何桌面壁纸上都清晰可读
+// 文字颜色沿用 pi 的深色主题标记：紫色表示会话生命周期，绿色表示命令，蓝色表示读取，兰紫色表示下载，弱化色表示输出，红色表示错误
 const Gdiplus::Color kCardFill(233, 20, 23, 30);
 const Gdiplus::Color kCardEdge(30, 255, 255, 255);
 const Gdiplus::Color kRule(18, 255, 255, 255);
@@ -42,8 +40,7 @@ Gdiplus::Color KindColor(Kind kind, BYTE alpha) {
     }
 }
 
-// Body ink stays close to the kind hue but is lifted towards white so a screen
-// full of commands and paths remains comfortable to read.
+// 正文颜色接近类型对应的色相，但会调亮至接近白色，确保充满命令和路径的屏幕仍易于阅读
 Gdiplus::Color KindInk(Kind kind) {
     switch (kind) {
         case Kind::Session: return Gdiplus::Color(255, 231, 214, 243);
@@ -146,8 +143,7 @@ std::vector<std::wstring> SplitFields(const std::wstring& line, size_t limit) {
     return fields;
 }
 
-// Shortens the header label so a long operator name never runs under the
-// window buttons.
+// 缩短标题栏标签，避免较长的操作端名称延伸到窗口按钮下方
 std::wstring Elide(const TextMetrics& metrics, const std::wstring& text, int maxWidth) {
     if (maxWidth <= 0) return std::wstring();
     if (metrics.Measure(text) <= maxWidth) return text;
@@ -209,7 +205,7 @@ std::wstring StatePath() {
     return directory;
 }
 
-// Tabs have no glyph in the log, so they are widened when an entry arrives.
+// 日志中不显示制表符字形，因此条目中出现制表符时会将其扩展为空格
 std::wstring ExpandTabs(const std::wstring& text) {
     if (text.find(L'\t') == std::wstring::npos) return text;
     std::wstring out;
@@ -227,7 +223,7 @@ PanelWindow::PanelWindow(PanelParams panelParams) : params(std::move(panelParams
 
 PanelWindow::~PanelWindow() {
     surface.reset();
-    // The DIB stays selected into the memory DC, so the DC goes first.
+    // DIB 仍选入内存 DC，因此先释放 DC
     if (memoryDC) DeleteDC(memoryDC);
     if (dib) DeleteObject(dib);
 }
@@ -296,8 +292,7 @@ LRESULT PanelWindow::Handle(UINT message, WPARAM wparam, LPARAM lparam) {
         case WM_NCHITTEST: {
             POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
             ScreenToClient(window, &point);
-            // The soft shadow is painted into the layered bitmap; clicks there
-            // belong to whatever is underneath.
+            // 柔和投影绘制在分层位图中；投影区域的点击应传递给下方窗口
             return CardContains(point) ? HTCLIENT : HTTRANSPARENT;
         }
         case WM_ERASEBKGND:
@@ -483,8 +478,7 @@ LRESULT PanelWindow::Handle(UINT message, WPARAM wparam, LPARAM lparam) {
             return 0;
         }
         case kMessageClosed:
-            // The client that feeds this panel is gone; the panel has nothing
-            // left to show, so it closes with it.
+            // 为面板提供数据的客户端已退出，面板没有可继续显示的内容，因此一并关闭
             PostMessageW(window, WM_CLOSE, 0, 0);
             return 0;
         case WM_CLOSE:
@@ -793,8 +787,7 @@ void PanelWindow::PerformButton(int id) {
 void PanelWindow::ToggleFullscreen() {
     if (!fullscreen) {
         GetWindowRect(window, &restoreRect);
-        // Flip the flag before resizing: WM_SIZE/WM_MOVE must not overwrite the
-        // rect we return to when the user leaves fullscreen.
+        // 调整大小前先切换标志，避免 WM_SIZE/WM_MOVE 覆盖退出全屏后要恢复的矩形区域
         fullscreen = true;
         MONITORINFO info{};
         info.cbSize = sizeof info;
@@ -816,8 +809,7 @@ void PanelWindow::ToggleFullscreen() {
 bool PanelWindow::EnsureSurface(int width, int height) {
     if (dib && width == surfaceWidth && height == surfaceHeight && surface) return true;
     surface.reset();
-    // Recreate the memory DC as well: deleting a bitmap that is still selected
-    // into a DC silently fails, which would leak one DIB per resize step.
+    // 同时重新创建内存 DC：删除仍选入 DC 的位图会静默失败，导致每次调整大小都泄漏一个 DIB
     if (memoryDC) {
         DeleteDC(memoryDC);
         memoryDC = nullptr;
@@ -916,7 +908,7 @@ void PanelWindow::DrawCard(Gdiplus::Graphics& graphics, const Gdiplus::RectF& ca
     Gdiplus::SolidBrush fill(kCardFill);
     graphics.FillPath(&fill, &path);
 
-    // A faint sheen on the top third gives the translucent sheet some depth.
+    // 在上方三分之一处添加淡淡的光泽，为半透明底板增加层次感
     const float sheenHeight = std::min(card.Height * 0.45f, static_cast<float>(Scale(180)));
     Gdiplus::LinearGradientBrush sheen(
         Gdiplus::RectF(card.X, card.Y, card.Width, sheenHeight),
@@ -1017,8 +1009,7 @@ void PanelWindow::DrawBody(Gdiplus::Graphics& graphics, const Gdiplus::RectF& ca
     const float textLeft = card.X + metrics.textX;
 
     if (entries.empty()) {
-        // A session may exist before the Agent sends anything, so the empty
-        // state has to say which of the two it is.
+        // Agent 尚未发送任何内容时会话也可能已经存在，因此空状态需要区分这两种情况
         const bool hasSession = params.state != SessionState::None;
         const std::wstring title = hasSession ? L"本会话还没有记录" : L"当前没有远程协助会话";
         const std::wstring hint = hasSession

@@ -1,10 +1,11 @@
 package server
 
-//send/sendToConnection/sendToDevice/notifySession；有界发送队列满就直接断开慢客户端；sendOK 回显 correlation_id
+//send/sendToConnection/sendToDevice/notifySession；
+// 有界发送队列满就直接断开慢客户端；sendOK 回显 correlation_id
 import (
-	"yiuk-switchboard/internal/platform/audit"
-	"yiuk-switchboard/internal/platform/protocol"
-	"yiuk-switchboard/internal/platform/session"
+	"agentremote/internal/platform/audit"
+	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platform/session"
 )
 
 // 发送信息
@@ -23,7 +24,7 @@ func (s *Server) send(c *conn, m protocol.Message) bool {
 	if m.BusinessType == "" {
 		m.BusinessType = protocol.BusinessAgentAssist
 	}
-	select {
+	select { //放入发送队列 or 连接断开 or 被janitor当慢客户端清理掉了
 	case c.send <- m:
 		return true
 	case <-c.done:
@@ -35,14 +36,14 @@ func (s *Server) send(c *conn, m protocol.Message) bool {
 	}
 }
 
-// 发送信息到指定连接，找到连接，上锁，发送信息
+// 找到连接
 func (s *Server) lookupConn(id string) *conn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conns[id]
 }
 
-// 发送信息到指定连接，找到连接，上锁，发送信息
+// 发送信息到指定连接
 func (s *Server) sendToConnection(id string, m protocol.Message) bool {
 	if id == "" {
 		return false
@@ -85,8 +86,8 @@ func (s *Server) notifySession(ses *session.Session) {
 	}
 }
 
-// sendOK sends a direct response and echoes the caller's correlation id.
-// Asynchronous events do not pass through this helper.
+// sendOK 发送一个直接的响应并回显调用者的关联 ID
+// 异步事件不会通过这个助手
 func (s *Server) sendOK(c *conn, req, resp protocol.Message) error {
 	resp.CorrelationID = req.CorrelationID
 	s.send(c, resp)

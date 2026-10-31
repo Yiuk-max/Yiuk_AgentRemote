@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy the Yiuk Switchboard platform server on a Linux host.
+# Deploy the AgentRemote platform server on a Linux host.
 #
 # Usage:
 #   sudo ./deploy/install-platform.sh <tls-cert> <tls-key>

@@ -140,8 +140,8 @@ QJsonObject MainWindow::downloadLocalFile(const QJsonObject &input) {
 }
 
 
-// uploadLocalFile copies a local file into this machine's uploads directory.
-// The local bridge has no remote device, so source and target share a host.
+// uploadLocalFile 将本地文件复制到本机的 uploads 目录
+// 本地桥接没有远程设备，因此源文件和目标文件位于同一台主机
 QJsonObject MainWindow::uploadLocalFile(const QJsonObject &input) {
     const QString sessionId = input.value("session_id").toString();
     expireSessionIfNeeded(sessionId);

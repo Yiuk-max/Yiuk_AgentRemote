@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"yiuk-switchboard/internal/platform/device"
+	"agentremote/internal/platform/device"
 )
 
 func newTestManager(now *time.Time) *Manager {

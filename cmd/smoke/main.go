@@ -19,7 +19,7 @@ import (
 	"os"
 	"time"
 
-	"yiuk-switchboard/internal/platform/protocol"
+	"agentremote/internal/platform/protocol"
 )
 
 type client struct {
