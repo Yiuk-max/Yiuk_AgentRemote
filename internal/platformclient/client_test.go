@@ -1,7 +1,6 @@
 package platformclient_test
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -22,6 +21,9 @@ import (
 	"agentremote/internal/platform/protocol"
 	"agentremote/internal/platform/server"
 	"agentremote/internal/platformclient"
+
+	"agentremote/internal/platform/transport"
+	"github.com/gorilla/websocket"
 )
 
 const playerPassword = "client-test-player-password"
@@ -29,9 +31,7 @@ const devicePassword = "0123456789abcdef0123456789abcdef"
 
 type fakeDevice struct {
 	t       *testing.T
-	conn    net.Conn
-	reader  *bufio.Reader
-	codec   protocol.Codec
+	conn    *websocket.Conn
 	pending []protocol.Message
 }
 
@@ -50,21 +50,22 @@ func startPlatform(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := server.NewWithListener(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), ln)
+	wsListener := transport.ServeWebSocketListener(ln, cfg.MaxFrameBytes)
+	srv := server.NewWithListener(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), wsListener)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); _ = srv.Run(ctx) }()
 	t.Cleanup(func() { cancel(); srv.Close(); <-done })
-	return ln.Addr().String()
+	return "ws://" + ln.Addr().String()
 }
 
 func dialFakeDevice(t *testing.T, address string) *fakeDevice {
 	t.Helper()
-	conn, err := net.DialTimeout("tcp", address, 3*time.Second)
+	conn, _, err := websocket.DefaultDialer.Dial(address, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &fakeDevice{t: t, conn: conn, reader: bufio.NewReader(conn), codec: protocol.NewCodec(protocol.DefaultMaxFrameBytes)}
+	d := &fakeDevice{t: t, conn: conn}
 	t.Cleanup(func() { _ = conn.Close() })
 	return d
 }
@@ -73,7 +74,11 @@ func (d *fakeDevice) send(m protocol.Message) {
 	d.t.Helper()
 	m.Version = protocol.Version
 	m.BusinessType = protocol.BusinessAgentAssist
-	if err := d.codec.Write(d.conn, m); err != nil {
+	data, err := protocol.NewCodec(protocol.DefaultMaxMessageBytes).Encode(m)
+	if err != nil {
+		d.t.Fatalf("encode %s: %v", m.Type, err)
+	}
+	if err := d.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 		d.t.Fatalf("send %s: %v", m.Type, err)
 	}
 }
@@ -88,7 +93,11 @@ func (d *fakeDevice) recv(want ...string) protocol.Message {
 	}
 	for {
 		_ = d.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		m, err := d.codec.Read(d.reader)
+		_, data, err := d.conn.ReadMessage()
+		var m protocol.Message
+		if err == nil {
+			m, err = protocol.NewCodec(protocol.DefaultMaxMessageBytes).Decode(data)
+		}
 		if err != nil {
 			d.t.Fatalf("receive %v: %v", want, err)
 		}
@@ -221,12 +230,13 @@ func TestPlatformClientDirectSessionFlow(t *testing.T) {
 // TestPlatformClientHeartbeatsIdleConnection 验证没有工具调用时操作端连接仍会持续发送心跳
 // 如果缺少此检查，平台会在 heartbeat_timeout_sec 后关闭连接，导致长会话中断
 func TestPlatformClientHeartbeatsIdleConnection(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	rawListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
+	ln := transport.ServeWebSocketListener(rawListener, protocol.DefaultMaxMessageBytes)
 	defer ln.Close()
-	codec := protocol.NewCodec(protocol.DefaultMaxFrameBytes)
+	codec := protocol.NewCodec(protocol.DefaultMaxMessageBytes)
 	pings := make(chan uint64, 8)
 	go func() {
 		conn, acceptErr := ln.Accept()
@@ -234,26 +244,35 @@ func TestPlatformClientHeartbeatsIdleConnection(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		reader := bufio.NewReader(conn)
 		for {
-			m, readErr := codec.Read(reader)
+			data, readErr := conn.ReadMessage()
+			m, err := codec.Decode(data)
+			if readErr != nil {
+				return
+			}
+			if err != nil {
+				return
+			}
 			if readErr != nil {
 				return
 			}
 			switch m.Type {
 			case protocol.TypeAuthenticatePlayer:
-				_ = codec.Write(conn, protocol.Message{Version: protocol.Version, Type: protocol.TypeAuthenticated, ConnectionID: "conn-heartbeat"})
+				response, _ := codec.Encode(protocol.Message{Version: protocol.Version, Type: protocol.TypeAuthenticated, ConnectionID: "conn-heartbeat"})
+				_ = conn.WriteMessage(response)
 			case protocol.TypePing:
 				pings <- m.Sequence
-				_ = codec.Write(conn, protocol.Message{Version: protocol.Version, Type: protocol.TypePong, Sequence: m.Sequence})
+				response, _ := codec.Encode(protocol.Message{Version: protocol.Version, Type: protocol.TypePong, Sequence: m.Sequence})
+				_ = conn.WriteMessage(response)
 			case protocol.TypeListDevices:
-				_ = codec.Write(conn, protocol.Message{Version: protocol.Version, Type: protocol.TypeDeviceList, CorrelationID: m.CorrelationID})
+				response, _ := codec.Encode(protocol.Message{Version: protocol.Version, Type: protocol.TypeDeviceList, CorrelationID: m.CorrelationID})
+				_ = conn.WriteMessage(response)
 			}
 		}
 	}()
 
 	backend, err := platformclient.New(platformclient.Config{
-		Address: ln.Addr().String(), PlayerPassword: playerPassword, AllowPlaintext: true,
+		Address: "ws://" + ln.Addr().String(), PlayerPassword: playerPassword, AllowPlaintext: true,
 		TimeoutSeconds: 5, HeartbeatIntervalSeconds: 1,
 	})
 	if err != nil {

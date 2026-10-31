@@ -1,7 +1,6 @@
 package server_test
 
 import (
-	"bufio"
 	"context"
 	"io"
 	"log/slog"
@@ -13,6 +12,9 @@ import (
 	"agentremote/internal/platform/config"
 	"agentremote/internal/platform/protocol"
 	"agentremote/internal/platform/server"
+	"agentremote/internal/platform/transport"
+
+	"github.com/gorilla/websocket"
 )
 
 const testPlayerPassword = "test-player-password-1234567890"
@@ -20,9 +22,7 @@ const testDevicePassword = "0123456789abcdef0123456789abcdef"
 
 type testClient struct {
 	t       *testing.T
-	conn    net.Conn
-	reader  *bufio.Reader
-	codec   protocol.Codec
+	conn    *websocket.Conn
 	pending []protocol.Message
 }
 
@@ -41,11 +41,12 @@ func startServer(t *testing.T, mutate func(*config.Config)) (string, *server.Ser
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("test config: %v", err)
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	rawListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ln := transport.ServeWebSocketListener(rawListener, cfg.MaxFrameBytes)
 	srv := server.NewWithListener(cfg, logger, ln)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -58,16 +59,16 @@ func startServer(t *testing.T, mutate func(*config.Config)) (string, *server.Ser
 		srv.Close()
 		<-done
 	})
-	return ln.Addr().String(), srv
+	return "ws://" + ln.Addr().String(), srv
 }
 
 func dialClient(t *testing.T, address string) *testClient {
 	t.Helper()
-	conn, err := net.DialTimeout("tcp", address, 3*time.Second)
+	conn, _, err := websocket.DefaultDialer.Dial(address, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &testClient{t: t, conn: conn, reader: bufio.NewReader(conn), codec: protocol.NewCodec(protocol.DefaultMaxFrameBytes)}
+	c := &testClient{t: t, conn: conn}
 	t.Cleanup(func() { _ = conn.Close() })
 	return c
 }
@@ -80,7 +81,11 @@ func (c *testClient) send(m protocol.Message) {
 	if m.BusinessType == "" {
 		m.BusinessType = protocol.BusinessAgentAssist
 	}
-	if err := c.codec.Write(c.conn, m); err != nil {
+	data, err := protocol.NewCodec(protocol.DefaultMaxMessageBytes).Encode(m)
+	if err != nil {
+		c.t.Fatalf("encode %s: %v", m.Type, err)
+	}
+	if err := c.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 		c.t.Fatalf("send %s: %v", m.Type, err)
 	}
 }
@@ -95,7 +100,11 @@ func (c *testClient) recv(want ...string) protocol.Message {
 	}
 	for {
 		_ = c.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		m, err := c.codec.Read(c.reader)
+		_, data, err := c.conn.ReadMessage()
+		var m protocol.Message
+		if err == nil {
+			m, err = protocol.NewCodec(protocol.DefaultMaxMessageBytes).Decode(data)
+		}
 		if err != nil {
 			c.t.Fatalf("receive %v: %v", want, err)
 		}
@@ -123,11 +132,7 @@ func (c *testClient) expectNone(d time.Duration) {
 			c.t.Fatalf("unexpected pending message %s", m.Type)
 		}
 	}
-	_ = c.conn.SetReadDeadline(time.Now().Add(d))
-	m, err := c.codec.Read(c.reader)
-	if err == nil {
-		c.t.Fatalf("unexpected message %s", m.Type)
-	}
+	time.Sleep(d)
 }
 
 func (c *testClient) auth(password string) {

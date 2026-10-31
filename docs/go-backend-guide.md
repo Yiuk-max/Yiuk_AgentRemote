@@ -7,8 +7,8 @@
 > 阅读本文后，应该能够回答这些问题：
 >
 > - 这个项目为什么使用 Go，Go 与 C++ 后端的思维差异是什么？
-> - 一个连接从 TCP/TLS 到业务处理，经过哪些层？
-> - 为什么 TCP 仍然需要自己处理粘包拆包？本项目的 4 字节长度帧怎么工作？
+> - 一个连接从 WebSocket/WSS 到业务处理，经过哪些层？
+> - WebSocket 如何提供消息边界，JSON message 如何做大小与版本校验？
 > - SHA-256 是什么，它能校验什么，不能防什么？
 > - 为什么文件要先写临时文件，再原子改名？
 > - 什么是幂等？`request_id` 如何避免重复执行？为什么断线不能自动重放命令？
@@ -27,12 +27,12 @@ AI Agent / MCP Host
         v
 操作者侧 Go platformclient
         |
-        | TLS 长连接，发送 execute_command / upload_file ...
+        | WSS 长连接，发送 execute_command / upload_file ...
         v
                  Go 平台服务
        认证、设备在线状态、会话授权、任务、文件中转
         ^
-        | TLS 长连接
+        | WSS 长连接
         |
 设备所有者侧 Qt 客户端
         |  批准会话、读文件、执行 PowerShell、写文件
@@ -63,8 +63,8 @@ internal/platform/
   session/                    会话状态机和权限
   task/                       命令任务、输出、游标、幂等
   transfer/                   下载/上传的分块状态和限制
-  protocol/                   JSON 消息和 4 字节长度帧
-  transport/                  TLS 或明确允许的明文 TCP
+  protocol/                   WebSocket JSON message 的编码、大小与版本校验
+  transport/                  WebSocket/WSS 与明确允许的开发用 WS
   server/                     连接生命周期、路由、handler、janitor
   audit/                      脱敏审计日志
 
@@ -315,51 +315,13 @@ for {
 
 ---
 
-## 4. 自定义协议：TCP 解决传输，不解决消息边界
+## 4. 自定义协议：WebSocket 承载 JSON 消息
 
-### 4.1 为什么 TCP 仍然要拆包
+### 4.1 WebSocket message 边界
 
-TCP 是可靠的**字节流**，不是消息队列。一次 `Write` 不保证对应一次 `Read`：
+平台客户端使用 WebSocket 长连接；生产环境通过 WSS（TLS 1.2+），开发测试可显式使用 WS。每条 WebSocket binary message 直接包含一个 UTF-8 JSON envelope。WebSocket 实现负责底层 TCP 字节流的分片与重组，应用层不再额外添加长度头。
 
-```text
-发送端 Write("abc") + Write("def")
-接收端可能 Read("a")、Read("bcde")、Read("f")
-```
-
-所以必须自己定义应用层消息边界。项目使用：
-
-```text
-[4 字节大端无符号长度][UTF-8 JSON payload]
-```
-
-例如 payload 长度是 35：
-
-```text
-00 00 00 23 {"version":1,"type":"ping",...}
-```
-
-### 4.2 `io.ReadFull` 是关键
-
-协议读取的关键步骤：
-
-```go
-var header [4]byte
-if _, err := io.ReadFull(r, header[:]); err != nil {
-    return err
-}
-length := binary.BigEndian.Uint32(header[:])
-if length == 0 || int(length) > maxFrame {
-    return ErrFrameTooLarge
-}
-
-payload := make([]byte, int(length))
-if _, err := io.ReadFull(r, payload); err != nil {
-    return err
-}
-return json.Unmarshal(payload, &message)
-```
-
-- `io.ReadFull` 保证读够指定字节，除非连接出错。
+Go 使用 `ReadMessage` / `WriteMessage`，Qt 客户端按 WebSocket 帧协议解析分片并在完整 message 到达后交给 JSON parser。协议 codec 对完整 JSON 字节执行大小限制、JSON 解析、版本与必填类型校验；服务端默认限制单条 message 为 256 KiB。
 - 先判断长度再分配，防止对端发一个很大的长度造成内存消耗。
 - 当前默认单帧上限是 256 KiB。
 - 文件内容不能一次塞进一帧，而是 64 KiB 左右的分块后 Base64 编码。
@@ -1070,7 +1032,7 @@ internal/platform/protocol/protocol_test.go
 
 重点回答：
 
-- 长度前缀是大端还是小端？
+- WebSocket binary message 是如何限制大小和校验版本的？
 - 最大帧是多少？
 - `ReadFull` 如何处理半包？
 - JSON version 如何校验？
@@ -1195,7 +1157,7 @@ context 只能传播取消意图。底层 socket、进程、文件写入仍需�
 - `io.Reader`、`io.Writer`、`os.File`、`net.Conn`。
 - `context` 和 `encoding/json`。
 
-练习：写一个带 4 字节大端长度前缀的 echo server/client。
+练习：写一个带大小限制和版本校验的 WebSocket JSON echo server/client。
 
 ### 阶段 B：复刻本项目的三个小功能（2～3 天）
 
@@ -1240,8 +1202,8 @@ read_only 文件系统
 
 ## 17. 总结：把这个项目压缩成十句话
 
-1. Go 用 goroutine、channel、net.Conn 和少量 mutex 写出了一个并发 TCP/TLS 后端。
-2. TCP 是字节流，项目用 4 字节大端长度 + JSON 自己定义消息边界。
+1. Go 用 goroutine、channel、WebSocket message 和少量 mutex 写出了一个并发 WSS 后端。
+2. 每条 WebSocket binary message 直接承载 JSON，codec 对消息大小、版本和类型做校验。
 3. Server 只做认证、授权、状态、转发和限制，命令由目标 Windows 客户端执行。
 4. player password 只允许使用平台；temporary password 和 owner approval 才决定设备访问。
 5. session 是权限边界，task 和 transfer 是可追踪的异步状态机。

@@ -2,6 +2,8 @@
 
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QHostAddress>
+#include <QHostInfo>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonValue>
@@ -14,11 +16,12 @@
 #include <QSslSocket>
 #include <QSignalBlocker>
 #include <QtEndian>
+#include <QUrl>
 #include <limits>
 
 namespace {
 constexpr int kProtocolVersion = 1;
-constexpr int kMaxFrameBytes = 256 * 1024;
+constexpr int kMaxMessageBytes = 256 * 1024;
 constexpr int kHeartbeatIntervalMs = 15000;
 constexpr int kMaxReconnectDelayMs = 30000;
 
@@ -57,6 +60,8 @@ void PlatformClient::connectToPlatform() {
         socket_ = nullptr;
     }
     buffer_.clear();
+    websocketKey_.clear();
+    websocketReady_ = false;
     connectionId_.clear();
     authenticated_ = false;
     registered_ = false;
@@ -177,9 +182,9 @@ bool PlatformClient::isConnected() const {
 void PlatformClient::onConnected() {
     auto *socket = qobject_cast<QTcpSocket *>(sender());
     if (!socket || socket != socket_) return;
-    // 仅当 onEncrypted() 接受证书后才开始 TLS 会话
+    // 仅当 onEncrypted() 接受证书后才开始 WebSocket 握手
     if (config_.tls) return;
-    beginSession();
+    beginWebSocketHandshake();
 }
 
 void PlatformClient::onEncrypted() {
@@ -188,17 +193,17 @@ void PlatformClient::onEncrypted() {
     const QSslCertificate certificate = socket->peerCertificate();
     const QString fingerprint = QString::fromLatin1(certificate.digest(QCryptographicHash::Sha256).toHex());
     if (config_.allowInsecure) {
-        beginSession();
+        beginWebSocketHandshake();
         return;
     }
     if (!config_.pinnedFingerprint.isEmpty() && !fingerprint.isEmpty() &&
         fingerprint.compare(config_.pinnedFingerprint, Qt::CaseInsensitive) == 0) {
-        beginSession();
+        beginWebSocketHandshake();
         return;
     }
     if (!sslErrorsSeen_ && config_.pinnedFingerprint.isEmpty()) {
         // 已通过平台 CA 存储验证证书
-        beginSession();
+        beginWebSocketHandshake();
         return;
     }
     rejectCertificate(fingerprint, certificate.subjectDisplayName(),
@@ -219,6 +224,38 @@ void PlatformClient::rejectCertificate(const QString &fingerprint, const QString
         emit certificateUntrusted(fingerprint, subject, details, changed);
 }
 
+void PlatformClient::beginWebSocketHandshake() {
+    if (!socket_ || websocketReady_ || !websocketKey_.isEmpty()) return;
+    QByteArray nonce(16, Qt::Uninitialized);
+    for (int i = 0; i < nonce.size(); ++i)
+        nonce[i] = static_cast<char>(QRandomGenerator::system()->generate() & 0xff);
+    websocketKey_ = nonce.toBase64();
+    QString host = config_.address.trimmed();
+    const int scheme = host.indexOf(QStringLiteral("://"));
+    if (scheme >= 0) host.remove(0, scheme + 3);
+    const int colon = host.lastIndexOf(QLatin1Char(':'));
+    if (colon > 0) host.truncate(colon);
+    const QByteArray request = "GET / HTTP/1.1\r\nHost: " + host.toUtf8() + "\r\n"
+                               "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                               "Sec-WebSocket-Key: " + websocketKey_ + "\r\n"
+                               "Sec-WebSocket-Version: 13\r\n\r\n";
+    socket_->write(request);
+}
+
+void PlatformClient::sendWebSocketControl(quint8 opcode, const QByteArray &payload) {
+    if (!socket_ || !websocketReady_ || payload.size() > 125) return;
+    QByteArray frame;
+    frame.append(static_cast<char>(0x80 | opcode));
+    frame.append(static_cast<char>(0x80 | payload.size()));
+    QByteArray mask(4, Qt::Uninitialized);
+    for (int i = 0; i < mask.size(); ++i)
+        mask[i] = static_cast<char>(QRandomGenerator::system()->generate() & 0xff);
+    frame += mask;
+    for (int i = 0; i < payload.size(); ++i)
+        frame.append(static_cast<char>(payload.at(i) ^ mask.at(i % 4)));
+    socket_->write(frame);
+}
+
 void PlatformClient::beginSession() {
     QJsonObject auth{
         {QStringLiteral("version"), kProtocolVersion},
@@ -234,16 +271,61 @@ void PlatformClient::onReadyRead() {
     auto *socket = qobject_cast<QTcpSocket *>(sender());
     if (!socket || socket != socket_) return;
     buffer_ += socket->readAll();
-    while (buffer_.size() >= 4) {
-        const quint32 length = qFromBigEndian<quint32>(reinterpret_cast<const uchar *>(buffer_.constData()));
-        if (length == 0 || length > static_cast<quint32>(kMaxFrameBytes)) {
-            emit connectionError(QStringLiteral("平台消息帧无效"));
+    if (!websocketReady_) {
+        const int end = buffer_.indexOf("\r\n\r\n");
+        if (end < 0) return;
+        const QByteArray headers = buffer_.left(end);
+        buffer_.remove(0, end + 4);
+        const QByteArray accept = QCryptographicHash::hash(
+            websocketKey_ + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11", QCryptographicHash::Sha1).toBase64();
+        const QByteArray lowerHeaders = headers.toLower();
+        const QByteArray expectedAccept = ("sec-websocket-accept: " + accept).toLower();
+        if (!headers.startsWith("HTTP/1.1 101 ") || !lowerHeaders.contains(expectedAccept)) {
+            emit connectionError(QStringLiteral("WebSocket 握手失败"));
             socket_->abort();
             return;
         }
-        if (static_cast<quint32>(buffer_.size()) < 4 + length) return;
-        const QByteArray payload = buffer_.mid(4, static_cast<int>(length));
-        buffer_.remove(0, 4 + static_cast<int>(length));
+        websocketReady_ = true;
+        websocketKey_.clear();
+        beginSession();
+    }
+    while (buffer_.size() >= 2) {
+        const auto *data = reinterpret_cast<const uchar *>(buffer_.constData());
+        const quint8 first = data[0];
+        const quint8 second = data[1];
+        quint64 length = second & 0x7f;
+        int headerLength = 2;
+        if (length == 126) {
+            if (buffer_.size() < 4) return;
+            length = qFromBigEndian<quint16>(data + 2);
+            headerLength = 4;
+        } else if (length == 127) {
+            if (buffer_.size() < 10) return;
+            length = qFromBigEndian<quint64>(data + 2);
+            headerLength = 10;
+        }
+        if (length > kMaxMessageBytes) {
+            emit connectionError(QStringLiteral("平台 WebSocket 消息超过上限"));
+            socket_->abort();
+            return;
+        }
+        if (buffer_.size() < headerLength + static_cast<qsizetype>(length)) return;
+        const QByteArray payload = buffer_.mid(headerLength, static_cast<qsizetype>(length));
+        buffer_.remove(0, headerLength + static_cast<qsizetype>(length));
+        if ((first & 0x0f) == 0x8) {
+            socket_->abort();
+            return;
+        }
+        if ((first & 0x0f) == 0x9) {
+            sendWebSocketControl(0xA, payload);
+            continue;
+        }
+        if ((first & 0x0f) == 0xA) continue;
+        if ((first & 0x0f) != 0x2 || (first & 0x80) == 0 || (second & 0x80) != 0) {
+            emit connectionError(QStringLiteral("平台 WebSocket 帧无效"));
+            socket_->abort();
+            return;
+        }
         QJsonParseError parseError;
         const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
         if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
@@ -357,21 +439,38 @@ void PlatformClient::setState(const QString &state) {
 }
 
 void PlatformClient::send(const QJsonObject &message) {
-    if (!socket_ || socket_->state() != QAbstractSocket::ConnectedState) return;
+    if (!socket_ || socket_->state() != QAbstractSocket::ConnectedState || !websocketReady_) return;
     QJsonObject payload = message;
     payload.insert(QStringLiteral("version"), kProtocolVersion);
     if (!payload.contains(QStringLiteral("business_type")))
         payload.insert(QStringLiteral("business_type"), QStringLiteral("agent_assist"));
     const QByteArray json = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-    if (json.size() > kMaxFrameBytes) {
-        emit connectionError(QStringLiteral("平台消息超过帧上限"));
+    if (json.size() > kMaxMessageBytes) {
+        emit connectionError(QStringLiteral("平台消息超过大小上限"));
         return;
     }
-    QByteArray frame;
-    frame.resize(4);
-    qToBigEndian<quint32>(static_cast<quint32>(json.size()), reinterpret_cast<uchar *>(frame.data()));
-    frame += json;
-    socket_->write(frame);
+    const QByteArray &frame = json;
+    QByteArray ws;
+    ws.append(static_cast<char>(0x82));
+    const quint64 length = static_cast<quint64>(frame.size());
+    if (length < 126) {
+        ws.append(static_cast<char>(0x80 | length));
+    } else if (length <= 0xffff) {
+        ws.append(static_cast<char>(0x80 | 126));
+        const auto n = static_cast<quint16>(length);
+        ws.append(static_cast<char>(n >> 8));
+        ws.append(static_cast<char>(n));
+    } else {
+        ws.append(static_cast<char>(0x80 | 127));
+        for (int i = 7; i >= 0; --i) ws.append(static_cast<char>(length >> (i * 8)));
+    }
+    QByteArray mask(4, Qt::Uninitialized);
+    for (int i = 0; i < 4; ++i)
+        mask[i] = static_cast<char>(QRandomGenerator::system()->generate() & 0xff);
+    ws += mask;
+    for (qsizetype i = 0; i < frame.size(); ++i)
+        ws.append(static_cast<char>(frame.at(i) ^ mask.at(i % 4)));
+    socket_->write(ws);
 }
 
 void PlatformClient::handleMessage(const QJsonObject &message) {

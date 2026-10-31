@@ -15,7 +15,7 @@
 - **文件上传**：独立 `write_file` 权限，64 KiB 分块推到目标设备，设备端先写临时文件，校验大小与 SHA-256 后再原子改名；默认拒绝覆盖已有文件。
 - **Agent 工具**：`list_devices`、`get_device_status`、`request_connection`、`run_command`、`get_session_status`、`execute_command`、`get_command_result`、`download_file`、`upload_file`、`cancel_command`、`close_session`，附 MCP stdio 适配器。
 - **只读活动面板**：远程协助过程由独立进程 `yiuk-activity-panel` 展示——半透明悬浮终端，按操作类型着色（读取 / 执行命令 / 下载 / 输出 / 错误）。随时可关、随时可开，新操作不会把它弹到前台。
-- **TLS 中转**：平台连接使用独立业务类型、端口、密码与资源限制，TLS 1.2+ 加密。
+- **WebSocket 中转**：平台连接使用独立业务类型、端口、密码与资源限制；控制消息保留 JSON，WSS 使用 TLS 1.2+ 加密，监听端口沿用部署配置，不要求 443。
 - **心跳保活**：设备与操作者连接都会定期心跳，闲置长会话不会被误判断线。
 - **错误与幂等**：稳定错误码、不可复用请求 ID、断线不自动重放。
 
@@ -69,6 +69,6 @@
 - [本机开发环境](docs/local-dev.md)：**仅限本机**的工具链路径、快捷命令与已知坑。
 - [远程部署操作记录 2026-10-23](docs/remote-deploy-session-2026-10-23.md)：通过 MCP 远端部署 dsh-pet 的全过程、本机/目标机改动清单、两个坑与回滚步骤。
 
-发布说明：`docs/release-notes-0.1.4.txt`；`release/` 下为构建好的 Windows x64 压缩包与 SHA-256（不进仓库）。
+发布说明：`docs/release-notes-0.1.5.txt`；`Release/` 下为当前构建好的 Windows x64 压缩包与 SHA-256（不进仓库）。
 
 > **命名兼容说明：** 当前 Go module/import path 和 MCP server 名称为 `agentremote`。`YIUK_*` 环境变量、`yiuk-platform` 服务/二进制及 `/var/lib/yiuk-platform` 数据目录仍保留旧名称，避免无计划地破坏已有部署、脚本和数据卷；后续如需统一，应配套迁移和兼容步骤。

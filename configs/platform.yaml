@@ -3,7 +3,7 @@
 # 部署时复制为 platform.yaml 并设置为仅服务账户可读写。player_password 使用
 # devices 的临时密码不写入本文件。
 platform:
-  # 平台监听地址。
+  # WebSocket/WSS
   listen: ":25664"
   tls_cert: "server.crt"
   tls_key: "server.key"

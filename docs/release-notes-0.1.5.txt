@@ -1,0 +1,14 @@
+Yiuk Device Assist 0.1.5
+========================
+
+协议升级
+- 平台连接改为 WebSocket / WSS，继续使用 JSON 消息。
+- 每个 WebSocket binary message 直接承载一个 JSON 对象，不再有应用层 4 字节长度头。
+- 与旧 TCP 客户端不兼容；服务端、桌面客户端和 MCP 客户端需配套升级。
+- 保留现有服务端监听端口配置。生产环境使用 WSS/TLS 1.2+。
+
+安装 / 升级
+- Windows 10/11 x64，解压即用：目录内同时有 yiuk-device-assist.exe、
+  yiuk-activity-panel.exe、yiuk-mcp.exe 与 Qt 运行库。
+- 更新平台服务后安装新版客户端；本机凭证保留在
+  %LOCALAPPDATA%\Yiuk\DeviceAssist。

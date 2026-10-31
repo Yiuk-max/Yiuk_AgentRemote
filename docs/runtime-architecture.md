@@ -31,7 +31,7 @@
 
 ## 1. 连接拓扑
 
-平台是**中继（relay）**，不是反向代理，也不做设备间直连。三条 TCP/TLS 连接全部由客户端**主动出站**连到平台的同一个监听端口：
+平台是**中继（relay）**，不是反向代理，也不做设备间直连。三条 WebSocket（WS/WSS）长连接全部由客户端**主动出站**连到平台的同一个监听端口；端口沿用部署配置，不要求使用 443：
 
 ```text
 操作者机                                         设备所有者机
@@ -93,12 +93,13 @@ s.readLoop(c)      // 当前 goroutine：读 + 处理
 
 ```go
 func (s *Server) readLoop(c *conn) {
-    r := bufio.NewReaderSize(c.nc, s.cfg.MaxFrameBytes+4)
     deadline := s.cfg.HandshakeTimeout()   // 默认 10s
     handshake := true
     for {
         _ = c.nc.SetReadDeadline(time.Now().Add(deadline))
-        m, err := s.codec.Read(r)
+        data, err := c.nc.ReadMessage()
+        if err != nil { ... return }
+        m, err := s.codec.Decode(data)
         if err != nil { ... return }
         c.lastSeen = time.Now()
         if err := s.handle(c, m); err != nil { ... }   // 同步，不是 go s.handle
@@ -143,7 +144,9 @@ func (c *conn) writeRaw(m protocol.Message) error {
     c.writeMu.Lock()
     defer c.writeMu.Unlock()
     _ = c.nc.SetWriteDeadline(time.Now().Add(10 * time.Second))
-    return c.srv.codec.Write(c.nc, m)
+    data, err := c.srv.codec.Encode(m)
+    if err != nil { return err }
+    return c.nc.WriteMessage(data)
 }
 ```
 
@@ -272,11 +275,11 @@ if s.DeviceConnectionID != deviceConnectionID {
 operator goroutine                 平台                            device goroutine
 ─────────────────                  ────                            ────────────────
 callStream()
-  writeMessage(frame)
+  writeMessage(message)
         │ TLS
         ▼
                     readLoop(connA)        ← 每连接一个读 goroutine
-                      codec.Read()         ← 4 字节大端长度 + JSON
+                      codec.Decode()       ← 完整 WebSocket binary message 中的 JSON
                       s.handle(c, m)
                         handleExecuteCommand()
                           Authorization              ← 会话绑定 + 权限
@@ -906,7 +909,7 @@ disconnected → connecting → authenticating → registering → connected
 
 要点：
 
-- **帧格式与 Go 一致**：4 字节大端长度 + JSON，`kMaxFrameBytes = 256 KiB`，`kProtocolVersion = 1`；
+- **消息格式与 Go 一致**：每条 WebSocket 二进制消息直接包含 JSON，单条上限 256 KiB，`kProtocolVersion = 1`；
 - **心跳**：`kHeartbeatIntervalMs = 15000`，定时发 `device_heartbeat`；
 - **重连**：指数退避 `min(30s, 1s << attempts)`；
 - **代理回退**：先走系统代理（适配 VPN），TLS 握手失败再直连一次；

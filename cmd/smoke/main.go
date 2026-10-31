@@ -7,7 +7,6 @@
 package main
 
 import (
-	"bufio"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -15,17 +14,16 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"net"
 	"os"
 	"time"
 
 	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platform/transport"
 )
 
 type client struct {
 	name  string
-	conn  net.Conn
-	r     *bufio.Reader
+	conn  transport.Conn
 	codec protocol.Codec
 }
 
@@ -55,7 +53,7 @@ func main() {
 		}
 		cfg.RootCAs = pool
 	}
-	conn, err := tls.Dial("tcp", *addr, cfg)
+	conn, err := transport.DialWebSocket(*addr, cfg)
 	if err != nil {
 		fail("dial: %v", err)
 	}
@@ -69,13 +67,13 @@ func main() {
 	operatorID := "200000002"
 	operatorPassword := randomHex(20)
 
-	device := &client{name: "device", conn: conn, r: bufio.NewReader(conn), codec: protocol.NewCodec(protocol.DefaultMaxFrameBytes)}
-	operatorConn, err := tls.Dial("tcp", *addr, cfg)
+	device := &client{name: "device", conn: conn, codec: protocol.NewCodec(protocol.DefaultMaxMessageBytes)}
+	operatorConn, err := transport.DialWebSocket(*addr, cfg)
 	if err != nil {
 		fail("dial operator: %v", err)
 	}
 	defer operatorConn.Close()
-	operator := &client{name: "operator", conn: operatorConn, r: bufio.NewReader(operatorConn), codec: protocol.NewCodec(protocol.DefaultMaxFrameBytes)}
+	operator := &client{name: "operator", conn: operatorConn, codec: protocol.NewCodec(protocol.DefaultMaxMessageBytes)}
 
 	// 1. player authentication (both sides)
 	device.auth(*password)
@@ -142,12 +140,12 @@ func main() {
 	step("result readable", "chunks", len(paged.Chunks), "status", paged.Status)
 
 	// 9. unapproved/other-connection access must be rejected
-	intruderConn, err := tls.Dial("tcp", *addr, cfg)
+	intruderConn, err := transport.DialWebSocket(*addr, cfg)
 	if err != nil {
 		fail("dial intruder: %v", err)
 	}
 	defer intruderConn.Close()
-	intruder := &client{name: "intruder", conn: intruderConn, r: bufio.NewReader(intruderConn), codec: protocol.NewCodec(protocol.DefaultMaxFrameBytes)}
+	intruder := &client{name: "intruder", conn: intruderConn, codec: protocol.NewCodec(protocol.DefaultMaxMessageBytes)}
 	intruder.auth(*password)
 	intruder.send(protocol.Message{
 		Type: protocol.TypeExecuteCommand, SessionID: sessionID, RequestID: randomHex(8), Command: "whoami",
@@ -159,12 +157,12 @@ func main() {
 	step("cross-connection rejected", "code", denied)
 
 	// 10. wrong player password must fail
-	badConn, err := tls.Dial("tcp", *addr, cfg)
+	badConn, err := transport.DialWebSocket(*addr, cfg)
 	if err != nil {
 		fail("dial bad-auth: %v", err)
 	}
 	defer badConn.Close()
-	bad := &client{name: "bad-auth", conn: badConn, r: bufio.NewReader(badConn), codec: protocol.NewCodec(protocol.DefaultMaxFrameBytes)}
+	bad := &client{name: "bad-auth", conn: badConn, codec: protocol.NewCodec(protocol.DefaultMaxMessageBytes)}
 	bad.send(protocol.Message{Type: protocol.TypeAuthenticatePlayer, IdentityType: "player", PlayerPassword: "wrong-password-value"})
 	if code := bad.recvError(); code != "BAD_PASSWORD" {
 		fail("wrong password accepted: %s", code)
@@ -201,7 +199,11 @@ func (c *client) send(m protocol.Message) {
 	if m.BusinessType == "" {
 		m.BusinessType = protocol.BusinessAgentAssist
 	}
-	if err := c.codec.Write(c.conn, m); err != nil {
+	data, err := c.codec.Encode(m)
+	if err != nil {
+		fail("%s encode %s: %v", c.name, m.Type, err)
+	}
+	if err := c.conn.WriteMessage(data); err != nil {
 		fail("%s send %s: %v", c.name, m.Type, err)
 	}
 }
@@ -213,9 +215,13 @@ func (c *client) recv(types ...string) protocol.Message {
 	}
 	for {
 		_ = c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-		m, err := c.codec.Read(c.r)
+		data, err := c.conn.ReadMessage()
 		if err != nil {
 			fail("%s receive %v: %v", c.name, types, err)
+		}
+		m, err := c.codec.Decode(data)
+		if err != nil {
+			fail("%s decode %v: %v", c.name, types, err)
 		}
 		if len(want) == 0 || want[m.Type] {
 			if m.Type == protocol.TypeError {
@@ -230,9 +236,13 @@ func (c *client) recv(types ...string) protocol.Message {
 func (c *client) recvError() string {
 	for {
 		_ = c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-		m, err := c.codec.Read(c.r)
+		data, err := c.conn.ReadMessage()
 		if err != nil {
 			fail("%s receive error: %v", c.name, err)
+		}
+		m, err := c.codec.Decode(data)
+		if err != nil {
+			fail("%s decode error: %v", c.name, err)
 		}
 		if m.Type == protocol.TypeError {
 			return m.Code

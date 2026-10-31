@@ -84,7 +84,7 @@ func New(cfg Config) (*Client, error) {
 	}
 	return &Client{
 		cfg:       cfg,
-		codec:     protocol.NewCodec(protocol.DefaultMaxFrameBytes),
+		codec:     protocol.NewCodec(protocol.DefaultMaxMessageBytes),
 		sessions:  make(map[string]protocol.SessionInfo),
 		tasks:     make(map[string]*taskCache),
 		downloads: make(map[string]*downloadCache),

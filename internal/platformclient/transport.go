@@ -1,16 +1,17 @@
 package platformclient
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	"agentremote/internal/agenttools"
 	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platform/transport"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -30,7 +31,7 @@ func (c *Client) ensureConnectedLocked() error {
 	}
 	c.mu.Unlock()
 
-	conn, reader, connID, err := c.handshake()
+	conn, connID, err := c.handshake()
 	if err != nil {
 		return err
 	}
@@ -39,7 +40,7 @@ func (c *Client) ensureConnectedLocked() error {
 	c.mu.Lock()
 	c.conn, c.connID, c.inbox, c.connDone, c.connected = conn, connID, inbox, done, true
 	c.mu.Unlock()
-	go c.readLoop(conn, reader, inbox, done)
+	go c.readLoop(conn, inbox, done)
 	go c.heartbeatLoop(conn, done)
 	return nil
 }
@@ -59,7 +60,7 @@ func (c *Client) heartbeatInterval() time.Duration {
 }
 
 // heartbeatLoop 保持空闲连接有效，并检测未关闭套接字但不再响应心跳的对端
-func (c *Client) heartbeatLoop(conn net.Conn, done chan struct{}) {
+func (c *Client) heartbeatLoop(conn transport.Conn, done chan struct{}) {
 	ticker := time.NewTicker(c.heartbeatInterval())
 	defer ticker.Stop()
 	lastPongs := c.pongs.Load()
@@ -97,45 +98,53 @@ func (c *Client) heartbeatLoop(conn net.Conn, done chan struct{}) {
 }
 
 // writeMessage 串行化单个数据帧，并限制无响应对端阻塞写入的时间
-func (c *Client) writeMessage(conn net.Conn, m protocol.Message) error {
+func (c *Client) writeMessage(conn transport.Conn, m protocol.Message) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	err := c.codec.Write(conn, m)
+	data, err := c.codec.Encode(m)
+	if err == nil {
+		err = conn.WriteMessage(data)
+	}
 	_ = conn.SetWriteDeadline(time.Time{})
 	return err
 }
 
-func (c *Client) handshake() (net.Conn, *bufio.Reader, string, error) {
+func (c *Client) handshake() (transport.Conn, string, error) {
 	conn, err := c.dial()
 	if err != nil {
 		// 保留底层错误原因，以便区分主机不可达和证书指纹校验失败
-		return nil, nil, "", &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not reach platform: " + err.Error()}
+		return nil, "", &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not reach platform: " + err.Error()}
 	}
-	reader := bufio.NewReaderSize(conn, c.codec.MaxFrameBytes+4)
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	auth := protocol.Message{Version: protocol.Version, BusinessType: protocol.BusinessAgentAssist, Type: protocol.TypeAuthenticatePlayer, IdentityType: "player", PlayerPassword: c.cfg.PlayerPassword}
-	if err := c.codec.Write(conn, auth); err != nil {
+	authData, err := c.codec.Encode(auth)
+	if err != nil || conn.WriteMessage(authData) != nil {
 		_ = conn.Close()
-		return nil, nil, "", &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not authenticate with platform"}
+		return nil, "", &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not authenticate with platform"}
 	}
 	for {
-		m, err := c.codec.Read(reader)
+		data, err := conn.ReadMessage()
 		if err != nil {
 			_ = conn.Close()
-			return nil, nil, "", &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "platform authentication failed"}
+			return nil, "", &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "platform authentication failed"}
+		}
+		m, err := c.codec.Decode(data)
+		if err != nil {
+			_ = conn.Close()
+			return nil, "", &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "platform authentication failed"}
 		}
 		switch m.Type {
 		case protocol.TypeAuthenticated:
-			_ = conn.SetDeadline(time.Time{})
-			return conn, reader, m.ConnectionID, nil
+			_ = conn.SetReadDeadline(time.Time{})
+			return conn, m.ConnectionID, nil
 		case protocol.TypeError:
 			_ = conn.Close()
 			code := m.Code
 			if code == "" {
 				code = "PLATFORM_AUTH_FAILED"
 			}
-			return nil, nil, "", &agenttools.Error{Code: code, Message: m.Message}
+			return nil, "", &agenttools.Error{Code: code, Message: m.Message}
 		}
 	}
 }
@@ -156,11 +165,11 @@ func certPinVerifier(pin string) func(rawCerts [][]byte, _ [][]*x509.Certificate
 	}
 }
 
-func (c *Client) dial() (net.Conn, error) {
+func (c *Client) dial() (transport.Conn, error) {
 	address := c.cfg.Address
-	address = strings.TrimPrefix(address, "tls://")
 	if c.cfg.AllowPlaintext {
-		return net.DialTimeout("tcp", address, 5*time.Second)
+		address = "ws://" + strings.TrimPrefix(strings.TrimPrefix(address, "ws://"), "wss://")
+		return transport.DialWebSocket(address, nil)
 	}
 	cfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: hostOnly(address)}
 	if c.cfg.InsecureSkipVerify {
@@ -178,22 +187,20 @@ func (c *Client) dial() (net.Conn, error) {
 		}
 		cfg.RootCAs = pool
 	}
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	return dialTLSWithFallback(dialer, address, cfg)
-}
-
-func dialTLSWithFallback(dialer *net.Dialer, address string, cfg *tls.Config) (net.Conn, error) {
-	conn, err := tls.DialWithDialer(dialer, "tcp4", address, cfg)
-	if err == nil {
-		return conn, nil
+	if strings.HasPrefix(address, "ws://") {
+		address = "wss://" + strings.TrimPrefix(address, "ws://")
 	}
-	return tls.DialWithDialer(dialer, "tcp", address, cfg)
+	return transport.DialWebSocket(address, cfg)
 }
 
-func (c *Client) readLoop(conn net.Conn, reader *bufio.Reader, inbox chan protocol.Message, done chan struct{}) {
+func (c *Client) readLoop(conn transport.Conn, inbox chan protocol.Message, done chan struct{}) {
 	defer c.markDisconnected(done)
 	for {
-		m, err := c.codec.Read(reader)
+		data, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		m, err := c.codec.Decode(data)
 		if err != nil {
 			return
 		}
@@ -237,6 +244,11 @@ func loadCertPool(path string) (*x509.CertPool, error) {
 }
 
 func hostOnly(address string) string {
+	address = strings.TrimPrefix(strings.TrimPrefix(address, "wss://"), "ws://")
+	address = strings.TrimPrefix(strings.TrimPrefix(address, "tls://"), "tcp://")
+	if parsed, err := url.Parse("//" + address); err == nil && parsed.Hostname() != "" {
+		return parsed.Hostname()
+	}
 	if host, _, err := net.SplitHostPort(address); err == nil {
 		return host
 	}

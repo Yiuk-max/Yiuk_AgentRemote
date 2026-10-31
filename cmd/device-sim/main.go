@@ -13,7 +13,6 @@
 package main
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -21,7 +20,6 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -31,6 +29,7 @@ import (
 	"time"
 
 	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platform/transport"
 )
 
 func main() {
@@ -76,20 +75,19 @@ func main() {
 		cfg.RootCAs = pool
 	}
 
-	conn, err := tls.Dial("tcp", *addr, cfg)
+	conn, err := transport.DialWebSocket(*addr, cfg)
 	if err != nil {
 		fail("dial: %v", err)
 	}
 	defer conn.Close()
 
-	codec := protocol.NewCodec(protocol.DefaultMaxFrameBytes)
-	reader := bufio.NewReader(conn)
+	codec := protocol.NewCodec(protocol.DefaultMaxMessageBytes)
 	send := func(m protocol.Message) {
 		m.Version = protocol.Version
 		if m.BusinessType == "" {
 			m.BusinessType = protocol.BusinessAgentAssist
 		}
-		if err := codec.Write(conn, m); err != nil {
+		if err := writeMessage(codec, conn, m); err != nil {
 			fail("send %s: %v", m.Type, err)
 		}
 	}
@@ -114,7 +112,7 @@ func main() {
 
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		msg, err := codec.Read(reader)
+		msg, err := readMessage(codec, conn)
 		if err != nil {
 			select {
 			case <-stop:
@@ -187,7 +185,7 @@ type uploadState struct {
 	chunks     []byte
 }
 
-func (u *uploadStore) start(codec protocol.Codec, conn net.Conn, msg protocol.Message) {
+func (u *uploadStore) start(codec protocol.Codec, conn transport.Conn, msg protocol.Message) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	name := strings.TrimSpace(msg.FileName)
@@ -233,7 +231,7 @@ func (u *uploadStore) start(codec protocol.Codec, conn net.Conn, msg protocol.Me
 	}
 }
 
-func (u *uploadStore) appendChunk(codec protocol.Codec, conn net.Conn, msg protocol.Message) {
+func (u *uploadStore) appendChunk(codec protocol.Codec, conn transport.Conn, msg protocol.Message) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	state, ok := u.active[msg.RequestID]
@@ -276,7 +274,7 @@ func (u *uploadStore) appendChunk(codec protocol.Codec, conn net.Conn, msg proto
 	u.complete(codec, conn, msg, state)
 }
 
-func (u *uploadStore) complete(codec protocol.Codec, conn net.Conn, msg protocol.Message, state *uploadState) {
+func (u *uploadStore) complete(codec protocol.Codec, conn transport.Conn, msg protocol.Message, state *uploadState) {
 	sum := sha256.Sum256(state.chunks)
 	actual := hex.EncodeToString(sum[:])
 	if state.received != state.expected {
@@ -299,7 +297,7 @@ func (u *uploadStore) complete(codec protocol.Codec, conn net.Conn, msg protocol
 	u.finish(codec, conn, msg, "succeeded", state.targetPath, state.received, state.fileName, "")
 }
 
-func (u *uploadStore) cancel(codec protocol.Codec, conn net.Conn, msg protocol.Message) {
+func (u *uploadStore) cancel(codec protocol.Codec, conn transport.Conn, msg protocol.Message) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if state, ok := u.active[msg.RequestID]; ok {
@@ -310,14 +308,14 @@ func (u *uploadStore) cancel(codec protocol.Codec, conn net.Conn, msg protocol.M
 	u.finish(codec, conn, msg, "cancelled", "", 0, msg.FileName, "")
 }
 
-func (u *uploadStore) fail(codec protocol.Codec, conn net.Conn, msg protocol.Message, state *uploadState, reason string) {
+func (u *uploadStore) fail(codec protocol.Codec, conn transport.Conn, msg protocol.Message, state *uploadState, reason string) {
 	_ = os.Remove(state.tempPath)
 	delete(u.active, msg.RequestID)
 	logf("upload %s failed: %s", short(msg.RequestID), reason)
 	u.finish(codec, conn, msg, "failed", "", 0, state.fileName, reason)
 }
 
-func (u *uploadStore) finish(codec protocol.Codec, conn net.Conn, msg protocol.Message, status, remotePath string, size int64, fileName, detail string) {
+func (u *uploadStore) finish(codec protocol.Codec, conn transport.Conn, msg protocol.Message, status, remotePath string, size int64, fileName, detail string) {
 	if detail != "" {
 		logf("upload %s %s: %s", short(msg.RequestID), status, detail)
 	}
@@ -334,18 +332,18 @@ func (u *uploadStore) finish(codec protocol.Codec, conn net.Conn, msg protocol.M
 		ResultKnown:  true,
 	}
 	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	_ = codec.Write(conn, result)
+	_ = writeMessage(codec, conn, result)
 }
 
 // answer reports a canned successful result for a simulated command.
-func answer(codec protocol.Codec, conn net.Conn, msg protocol.Message) {
+func answer(codec protocol.Codec, conn transport.Conn, msg protocol.Message) {
 	time.Sleep(150 * time.Millisecond)
 	output := fmt.Sprintf("device-sim: would run: %s\n", msg.Command)
 	write := func(m protocol.Message) {
 		m.Version = protocol.Version
 		m.BusinessType = protocol.BusinessAgentAssist
 		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		_ = codec.Write(conn, m)
+		_ = writeMessage(codec, conn, m)
 	}
 	write(protocol.Message{
 		Type: protocol.TypeCommandOutput, SessionID: msg.SessionID, RequestID: msg.RequestID,
@@ -356,6 +354,22 @@ func answer(codec protocol.Codec, conn net.Conn, msg protocol.Message) {
 		Type: protocol.TypeCommandResult, SessionID: msg.SessionID, RequestID: msg.RequestID,
 		Status: string(protocol.TaskSucceeded), ExitCode: &exit, ResultKnown: true,
 	})
+}
+
+func writeMessage(codec protocol.Codec, conn transport.Conn, msg protocol.Message) error {
+	data, err := codec.Encode(msg)
+	if err != nil {
+		return err
+	}
+	return conn.WriteMessage(data)
+}
+
+func readMessage(codec protocol.Codec, conn transport.Conn) (protocol.Message, error) {
+	data, err := conn.ReadMessage()
+	if err != nil {
+		return protocol.Message{}, err
+	}
+	return codec.Decode(data)
 }
 
 func sessionField(msg protocol.Message, field string) string {

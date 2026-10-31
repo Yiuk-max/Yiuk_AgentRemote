@@ -126,7 +126,9 @@ private:
     void setState(const QString &state);
     void scheduleReconnect();
     void retryWithoutProxy();
+    void beginWebSocketHandshake();
     void beginSession();
+    void sendWebSocketControl(quint8 opcode, const QByteArray &payload);
     void rejectCertificate(const QString &fingerprint, const QString &subject, const QString &details, bool changed);
 
     QTcpSocket *socket_ = nullptr;
@@ -134,6 +136,8 @@ private:
     QTimer reconnectTimer_;
     Config config_;
     QByteArray buffer_;
+    QByteArray websocketKey_;
+    bool websocketReady_ = false;
     QString connectionId_;
     QString state_ = QStringLiteral("disconnected");
     bool manualDisconnect_ = false;

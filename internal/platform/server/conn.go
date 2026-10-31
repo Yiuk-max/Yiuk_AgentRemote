@@ -1,9 +1,8 @@
 package server
 
-//conn 结构 + readLoop（握手期用 handshake_timeout，
+// conn 结构 + readLoop（WebSocket/协议握手期用 handshake_timeout，
 //认证后切 heartbeat_timeout 作读 deadline）+ writeLoop + writeMu 保证帧不交错
 import (
-	"bufio"
 	"errors"
 	"net"
 	"sync"
@@ -11,11 +10,12 @@ import (
 
 	"agentremote/internal/platform/audit"
 	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platform/transport"
 )
 
 type conn struct {
 	id        string
-	nc        net.Conn
+	nc        transport.Conn
 	remote    net.Addr
 	srv       *Server
 	send      chan protocol.Message
@@ -31,35 +31,38 @@ type conn struct {
 }
 
 func (s *Server) readLoop(c *conn) {
-	r := bufio.NewReaderSize(c.nc, s.cfg.MaxFrameBytes+4)
 	deadline := s.cfg.HandshakeTimeout()
 	handshake := true
 	for {
 		_ = c.nc.SetReadDeadline(time.Now().Add(deadline))
-		m, err := s.codec.Read(r) //读一帧
+		data, err := c.nc.ReadMessage()
 		if err != nil {
 			if handshake {
-				s.log.Warn("platform TLS/protocol handshake failed", "remote", c.remoteString(), "error", err)
+				s.log.Warn("platform WebSocket/protocol handshake failed", "remote", c.remoteString(), "error", err)
 			} else if !errors.Is(err, net.ErrClosed) {
 				s.log.Debug("platform connection read ended", "remote", c.remoteString(), "error", err)
 			}
 			return
 		}
-		c.lastSeen = time.Now() //更新上次活跃时间点
-		//handle开始处理业务逻辑
+
+		m, err := s.codec.Decode(data)
+		if err != nil {
+			s.log.Debug("platform message decode failed", "connection", audit.RedactID(c.id), "error", err)
+			return
+		}
+		c.lastSeen = time.Now()
+
 		if err := s.handle(c, m); err != nil {
-			// 出问题，返回报错信息
 			var pe *protoError
 			if errors.As(err, &pe) {
 				errMsg := protocol.ErrorMessage(pe.code, pe.message)
 				errMsg.CorrelationID = m.CorrelationID
-				// 致命错误是同步写入的，因此对等方在连接被拆除之前可以观察到错误代码
 				if pe.fatal {
 					_ = c.writeRaw(errMsg)
 					return
 				}
 				s.send(c, errMsg)
-			} else { //没成功开始处理消息，直接返回报错
+			} else {
 				s.log.Error("platform request failed", "connection", audit.RedactID(c.id), "error", err)
 				errMsg := protocol.ErrorMessage("INTERNAL", "request failed")
 				errMsg.CorrelationID = m.CorrelationID
@@ -93,7 +96,11 @@ func (c *conn) writeRaw(m protocol.Message) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	_ = c.nc.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	return c.srv.codec.Write(c.nc, m)
+	data, err := c.srv.codec.Encode(m)
+	if err != nil {
+		return err
+	}
+	return c.nc.WriteMessage(data)
 }
 
 func (c *conn) close(reason string) {

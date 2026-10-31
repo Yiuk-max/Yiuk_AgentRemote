@@ -1,16 +1,11 @@
-// Package protocol 实现了版本化、长度分隔的平台协议。
-// 控制消息是由 4 字节大端长度框定的 JSON 对象
-// 该封装是版本化的，因此以后可以改为protobuf
+//通过 WebSocket 传输的版本化 JSON 消息
 
 package protocol
 
 import (
-	"bufio"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 )
 
 // 协议版本
@@ -97,11 +92,10 @@ const (
 	ModeApproval = "approval"
 )
 
-// 默认最大帧字节数。设备客户端将命令输出分块
-const DefaultMaxFrameBytes = 256 << 10
+// 默认最大消息体字节数
+const DefaultMaxMessageBytes = 256 << 10
 
-// 帧过大，返回报错
-var ErrFrameTooLarge = errors.New("protocol frame exceeds configured maximum")
+var ErrMessageTooLarge = errors.New("protocol message exceeds configured maximum")
 
 // Message 是每个平台消息的通用信封。字段仅在需要它们的消息类型中填充。密码字段仅在身份验证/设备注册消息中有效，且从不记录。
 type Message struct {
@@ -204,43 +198,40 @@ type OutputChunk struct {
 	Data     string `json:"data"`
 }
 
-// Codec 读取和写入具有可配置最大大小的帧消息。
-type Codec struct {
-	MaxFrameBytes int
-}
+// Codec 验证 JSON WebSocket 消息的大小和封装字段
+type Codec struct{ MaxMessageBytes int }
 
-// NewCodec 返回具有给定帧限制的编解码器，当限制不是正数时，回退到包默认值。
 func NewCodec(max int) Codec {
 	if max <= 0 {
-		max = DefaultMaxFrameBytes
+		max = DefaultMaxMessageBytes
 	}
-	return Codec{MaxFrameBytes: max}
+	return Codec{MaxMessageBytes: max}
 }
 
-// 读出一帧
-func (c Codec) Read(r *bufio.Reader) (Message, error) {
-	var header [4]byte
-	if _, err := io.ReadFull(r, header[:]); err != nil {
-		return Message{}, err
+func (c Codec) Encode(m Message) ([]byte, error) {
+	if m.Version == 0 {
+		m.Version = Version
 	}
-	length := binary.BigEndian.Uint32(header[:])
-	max := c.MaxFrameBytes
-	if max <= 0 {
-		max = DefaultMaxFrameBytes
+	data, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("encode protocol message: %w", err)
 	}
-	if length == 0 {
-		return Message{}, errors.New("empty protocol frame")
+	if len(data) > c.maxMessageBytes() {
+		return nil, fmt.Errorf("%w: %d > %d", ErrMessageTooLarge, len(data), c.maxMessageBytes())
 	}
-	if int(length) > max {
-		return Message{}, fmt.Errorf("%w: %d > %d", ErrFrameTooLarge, length, max)
+	return data, nil
+}
+
+func (c Codec) Decode(data []byte) (Message, error) {
+	if len(data) == 0 {
+		return Message{}, errors.New("empty protocol message")
 	}
-	data := make([]byte, int(length))
-	if _, err := io.ReadFull(r, data); err != nil {
-		return Message{}, err
+	if len(data) > c.maxMessageBytes() {
+		return Message{}, fmt.Errorf("%w: %d > %d", ErrMessageTooLarge, len(data), c.maxMessageBytes())
 	}
 	var m Message
 	if err := json.Unmarshal(data, &m); err != nil {
-		return Message{}, fmt.Errorf("decode protocol frame: %w", err)
+		return Message{}, fmt.Errorf("decode protocol message: %w", err)
 	}
 	if m.Version != Version {
 		return Message{}, fmt.Errorf("unsupported protocol version %d", m.Version)
@@ -251,36 +242,11 @@ func (c Codec) Read(r *bufio.Reader) (Message, error) {
 	return m, nil
 }
 
-// 写一帧消息
-func (c Codec) Write(w io.Writer, m Message) error {
-	if m.Version == 0 {
-		m.Version = Version
+func (c Codec) maxMessageBytes() int {
+	if c.MaxMessageBytes <= 0 {
+		return DefaultMaxMessageBytes
 	}
-	data, err := json.Marshal(m)
-	if err != nil {
-		return fmt.Errorf("encode protocol message: %w", err)
-	}
-	max := c.MaxFrameBytes
-	if max <= 0 {
-		max = DefaultMaxFrameBytes
-	}
-	if len(data) > max {
-		return fmt.Errorf("%w: %d > %d", ErrFrameTooLarge, len(data), max)
-	}
-	frame := make([]byte, 4+len(data))
-	binary.BigEndian.PutUint32(frame[:4], uint32(len(data)))
-	copy(frame[4:], data)
-	for len(frame) > 0 {
-		n, err := w.Write(frame)
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
-		frame = frame[n:]
-	}
-	return nil
+	return c.MaxMessageBytes
 }
 
 // ErrorMessage 构建一个协议错误响应

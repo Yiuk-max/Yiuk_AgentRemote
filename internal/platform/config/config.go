@@ -24,7 +24,7 @@ const (
 
 // 服务器配置.所有字段都映射到 YAML 文件的 `platform:` 部分
 type Config struct {
-	Listen string `yaml:"listen"` //端口
+	Listen string `yaml:"listen"` // WebSocket 监听地址与端口
 
 	TLSCert string `yaml:"tls_cert"` //证书文件
 	TLSKey  string `yaml:"tls_key"`  //私钥文件
@@ -47,7 +47,7 @@ type Config struct {
 	MaxOutputBytes        int    `yaml:"max_output_bytes"`           // 最大输出字节数
 	MaxDownloadBytes      int    `yaml:"max_download_bytes"`         // 最大下载字节数
 	MaxUploadBytes        int    `yaml:"max_upload_bytes"`           // 最大上传字节数
-	MaxFrameBytes         int    `yaml:"max_frame_bytes"`            // 最大帧字节数
+	MaxFrameBytes         int    `yaml:"max_frame_bytes"`            // 单条 WebSocket JSON 消息最大字节数
 	AuthRatePerMin        int    `yaml:"auth_rate_per_min"`          // 认证频率（每分钟），ip限流用
 	TemporaryPasswordMin  int    `yaml:"temporary_password_min_sec"` // 临时密码最小生存时间（秒）
 	TemporaryPasswordMax  int    `yaml:"temporary_password_max_sec"` // 临时密码最大生存时间（秒）

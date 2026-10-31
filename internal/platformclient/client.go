@@ -5,13 +5,13 @@ package platformclient
 
 import (
 	"context"
-	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"agentremote/internal/agenttools"
 	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platform/transport"
 )
 
 // Client 表示与平台保持的持久操作端连接
@@ -25,7 +25,7 @@ type Client struct {
 	writeMu sync.Mutex
 
 	mu        sync.Mutex
-	conn      net.Conn
+	conn      transport.Conn
 	connID    string
 	inbox     chan protocol.Message
 	connDone  chan struct{}

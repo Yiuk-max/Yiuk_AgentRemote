@@ -32,8 +32,8 @@ const (
 type Server struct {
 	cfg      config.Config
 	log      *slog.Logger
-	codec    protocol.Codec //TCP数据帧，编解码器
-	listener net.Listener   //TCP监听器，接收新连接
+	codec    protocol.Codec // JSON WebSocket 消息编解码器
+	listener *transport.WebSocketListener
 
 	devices   *device.Manager
 	sessions  *session.Manager
@@ -52,7 +52,7 @@ type Server struct {
 
 // 新建一个平台服务器并绑定其配置的lintener。
 func New(cfg config.Config, log *slog.Logger) (*Server, error) {
-	ln, err := transport.Listen(cfg.Listen, cfg.TLSCert, cfg.TLSKey, cfg.AllowInsecure)
+	ln, err := transport.ListenWebSocket(cfg.Listen, cfg.TLSCert, cfg.TLSKey, cfg.AllowInsecure, cfg.MaxFrameBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +61,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 
 // 创建一个新的平台服务器并绑定其配置的侦听器，测试
 // 这个用于避免 TLS 证书设置；生产环境应使用 New。
-func NewWithListener(cfg config.Config, log *slog.Logger, ln net.Listener) *Server {
+func NewWithListener(cfg config.Config, log *slog.Logger, ln *transport.WebSocketListener) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -145,10 +145,7 @@ func (s *Server) isClosed() bool {
 }
 
 // 处理单个连接的生命周期，包括读取和写入循环。每个连接在单独的 goroutine 中处理。
-func (s *Server) serveConn(nc net.Conn) {
-	if tcp, ok := nc.(*net.TCPConn); ok {
-		_ = tcp.SetKeepAlive(true)
-	}
+func (s *Server) serveConn(nc transport.Conn) {
 	c := &conn{
 		id:       newID(),
 		nc:       nc,

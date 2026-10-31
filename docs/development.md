@@ -120,7 +120,7 @@ go run ./cmd/device-sim -addr host:29564 -password '<player-password>' \
 只有一个 Windows x64 绿色目录（无安装器），目录里放三个 exe 与 Qt 运行库，再压 zip：
 
 ```sh
-VERSION=0.1.4
+VERSION=0.1.5
 BUILD=qt-client/build-qt
 OUT=release/YiukDeviceAssist-$VERSION-win64
 
@@ -133,7 +133,7 @@ windeployqt --release --no-translations $OUT/yiuk-device-assist.exe
 ```
 
 - 只对主客户端跑 `windeployqt`：`yiuk-activity-panel.exe` 只依赖系统 DLL，`yiuk-mcp.exe` 是纯 Go 静态产物。
-- `windeployqt` 会一并带上 `opengl32sw.dll`、`D3Dcompiler_47.dll` 与 MinGW 运行库（Qt 的软件 OpenGL 回退，在不装显卡驱动的机器上更稳）。0.1.4 包为 24 个文件、解压约 74 MB、zip 约 31 MB。
+- `windeployqt` 会一并带上 `opengl32sw.dll`、`D3Dcompiler_47.dll` 与 MinGW 运行库（Qt 的软件 OpenGL 回退，在不装显卡驱动的机器上更稳）。0.1.5 包的文件数和体积以实际构建结果为准。
 - 版本号来自 `qt-client/CMakeLists.txt` 的 `project(... VERSION ...)`，会显示在窗口标题与「关于」信息里；改版本必须重新构建。
 - 打包后检查：目录里同时有 `Qt6Core/Gui/Widgets/Network.dll`、`platforms/qwindows.dll` 与三个 exe；在**不把 Qt 加进 `PATH`** 的情况下双击 `yiuk-device-assist.exe` 能启动，并确认窗口标题里的版本号正确。
 - 再验一次面板：启动客户端后从托盘菜单打开活动面板（或直接向 `yiuk-activity-panel.exe` 的 stdin 馈协议行，见[本机开发环境](local-dev.md)）；缺少面板时会提示找不到 `yiuk-activity-panel.exe`。
@@ -156,7 +156,7 @@ sudo ./deploy/install-platform.sh /path/to/server.crt /path/to/server.key
 
 脚本：构建 `cmd/platform` 到 `/opt/yiuk-platform`；证书复制到 `certs`（私钥 `600`）；首次运行生成并打印 `player_password`；安装启动 `yiuk-platform.service`（`Restart=always`）。已存在 `platform.yaml` 时不覆盖。
 
-`player_password` 最少 8 字符，少于 16 字符启动告警。监听 `:29564`，需放行安全组；验证：
+`player_password` 最少 8 字符，少于 16 字符启动告警。平台使用 WebSocket；WSS 监听 `:29564`，端口可按配置修改，不要求使用 443。需放行安全组；验证 TLS：
 
 ```sh
 openssl s_client -connect <host>:29564 -CAfile <server.crt> </dev/null | head
@@ -215,7 +215,7 @@ docker compose down        # 加 -v 一并删除卷（配置、证书、日志�
 - 生产用真实证书：把 `server.crt` / `server.key` 放进卷的 `certs/`（或按 compose 注释挂载），并设 `YIUK_TLS_SELF_SIGNED=false`；私钥在容器内为 `600`、归属 `10001`。
 - 卷用命名卷：bind mount 的主机目录属主必须是 `10001`，否则入口脚本写不了 `platform.yaml`（会带提示退出）。compose 的 `read_only: true` 只放开该卷与 `/tmp`。
 - 平台状态全在内存：容器重启即清空在线设备、临时密码、会话与任务，客户端需重连。
-- 自签证书要在客户端「设置」页按 SHA-256 指纹信任；换证书后客户端会提示「证书已变更」。
+- 自签证书要在客户端「设置」页按 SHA-256 指纹信任；换证书后客户端会提示「证书已变更」。客户端通过 WSS 连接，旧版 TCP 客户端不兼容，发布新版客户端后再切换服务端。
 - 本机 Docker Desktop 实测通过：自签 TLS + `cmd/smoke` 全链路（注册、申请、批准、执行、取结果、越权拒绝、关闭会话）、`YIUK_PLAYER_PASSWORD_FILE`、含 `# : ' \` 的密码渲染、明文模式与 `docker compose up` 健康检查。
 
 ## 7. 客户端配置与证书

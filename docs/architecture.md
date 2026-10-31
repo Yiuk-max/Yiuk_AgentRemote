@@ -11,13 +11,13 @@
 | 桌面应用 | Qt 6 Widgets + C++17 + CMake | 同一安装包同时提供设备所有者与协助者能力 |
 | 中转服务 | Go（单进程、模块分层） | 内存状态，暂无数据库 |
 | Agent 集成 | 独立 MCP stdio adapter（`yiuk-mcp`） | Agent 以本机子进程方式启动，只做协议映射 |
-| 客户端传输 | TCP + TLS 1.2+，4 字节长度前缀帧 + JSON | 全部由客户端主动出站，适配 NAT |
+| 客户端传输 | WebSocket（WS/WSS）+ TLS 1.2+，每条二进制消息直接承载 JSON | 全部由客户端主动出站，适配 NAT；监听端口保持部署配置不变 |
 | 设备执行 | `PowerShellRunner`（`pwsh` 优先，`powershell` 回退） | 独立参数传递、临时脚本文件、超时/取消/输出上限 |
 | 身份与授权 | 设备码 + 设备临时密码 + 会话授权 | 设备码只作查找标识；临时密码永不出现在服务端日志 |
 | 保活 | 设备与操作者双向 ping 心跳 | 操作者连接空闲时仍需保活，避免长会话被误判断线 |
 | 发布 | Windows x64 绿色目录 + zip | 见[打包发布](development.md#打包发布) |
 
-被否掉的方案：Web UI（用户明确偏好 Qt）、HTTP/WebSocket（长会话与分块流需额外设计，非标准端口在当前部署可用）、复用旧 Protobuf（字段语义已过时）、把 MCP 直接写进 GUI 主程序（GUI 生命周期不适合 stdio 子进程）。
+被否掉的方案：Web UI（用户明确偏好 Qt）、复用旧 Protobuf（字段语义已过时）、把 MCP 直接写进 GUI 主程序（GUI 生命周期不适合 stdio 子进程）。当前客户端使用 WebSocket；它不要求 443 端口，继续使用现有监听端口。
 
 ## 2. 进程与模块
 
@@ -29,7 +29,7 @@
 |   internal/agenttools    |            |   PowerShellRunner       |
 |   internal/platformclient|            |   yiuk-activity-panel    |
 +------------+-------------+            +------------+-------------+
-             |  TLS 长连接                            |  TLS 长连接
+             |  WSS 长连接                            |  WSS 长连接
              +------------------+--------------------+
                                 |
                          +------v-------+
@@ -127,9 +127,9 @@ queued -> running -> succeeded | failed | timed_out | cancelled | result_unknown
 
 ## 6. 协议基线
 
-- 帧：4 字节大端长度前缀 + UTF-8 JSON envelope，帧上限 `max_frame_bytes`（默认 256 KiB）。
+- 传输：客户端通过 WS/WSS 连接平台监听地址；每个 WebSocket 二进制消息直接承载一个 UTF-8 JSON envelope。单条消息上限由 `max_frame_bytes` 控制（默认 256 KiB），WebSocket 自带消息边界，不再使用应用层长度前缀。
 - envelope 字段：`version`、`type`、`correlation_id`、`session_id`、`request_id`、`sequence`；直接响应回显 `correlation_id`，异步事件不回显。
-- 传输约束：TLS 最低 1.2；未配置证书且未显式 `allow_insecure` 时拒绝启动；握手/心跳/写均有 deadline；每连接有界发送队列，慢客户端直接断开；连接、设备、会话、任务均有上限。
+- 传输约束：WSS 时 TLS 最低 1.2；未配置证书且未显式 `allow_insecure` 时拒绝启动；HTTP Upgrade、协议握手、心跳和写均有 deadline；每连接有界发送队列，慢客户端直接断开；连接、设备、会话、任务均有上限。开发测试可显式使用 WS 明文。
 - 保活：设备连接每 15 秒发 `device_heartbeat`；操作者连接（`internal/platformclient`）空闲时每 15 秒发 `ping`，连续 3 个周期没有 `pong` 就主动断开，下次工具调用重连。`ping` 间隔可用 `heartbeat_interval_seconds` 覆盖，下限 1 秒。
 - 消息集合：
 
