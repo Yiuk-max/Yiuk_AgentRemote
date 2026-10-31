@@ -35,7 +35,7 @@ FROM alpine:3.22
 
 # openssl: optional throwaway self-signed certificate generation.
 # ca-certificates: keeps outbound TLS usable for anything running in the image later.
-RUN apk add --no-cache ca-certificates openssl \
+RUN apk add --no-cache ca-certificates openssl netcat-openbsd \
     && addgroup -S -g 10001 yiuk \
     && adduser -S -u 10001 -G yiuk -h /var/lib/yiuk-platform -s /sbin/nologin yiuk \
     && mkdir -p /var/lib/yiuk-platform/certs \

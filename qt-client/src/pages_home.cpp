@@ -215,6 +215,10 @@ void MainWindow::lookupDeviceBeforeConnecting(const QString &deviceId) {
 
 
 void MainWindow::promptAndRequestConnection(const QString &deviceId) {
+    if (hasOtherLiveSession()) {
+        showWarningMessage(this, "已有活动会话", "当前客户端已有一个活动或待批准会话，请先结束它再发起新的连接。");
+        return;
+    }
     if (!platform || !platform->isConnected()) return;
     QString temporary;
     if (!askText(this, "输入临时密码",

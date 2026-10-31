@@ -48,6 +48,7 @@ QJsonObject MainWindow::invokeLocalTool(const QString &tool, const QJsonObject &
 QJsonObject MainWindow::requestLocalSession(const QJsonObject &input) {
     const QString target = input.value("device_id").toString();
     if (target != deviceId()) return fail("DEVICE_NOT_FOUND", "只能连接当前设备");
+    if (hasOtherLiveSession()) return fail("SESSION_LIMIT_REACHED", "当前已有一个活动或待批准会话");
     const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const QDateTime createdAt = QDateTime::currentDateTimeUtc();
     const QDateTime expiresAt = createdAt.addSecs(600);

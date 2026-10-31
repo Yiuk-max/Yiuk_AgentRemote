@@ -127,14 +127,20 @@ void MainWindow::setupSystemTray() {
     auto *open = menu->addAction("打开 Yiuk Device Assist");
     auto *activity = menu->addAction("打开远程协助活动");
     auto *quit = menu->addAction("退出");
-    connect(open, &QAction::triggered, this, [this] { showNormal(); activateWindow(); });
+    connect(open, &QAction::triggered, this, [this] { showMainWindow(); });
     connect(activity, &QAction::triggered, this, [this] { showActivityWindow(); });
-    connect(quit, &QAction::triggered, qApp, &QApplication::quit);
+    connect(quit, &QAction::triggered, this, [this] {
+        if (trayIcon) trayIcon->hide();
+        qApp->quit();
+    });
     trayIcon->setContextMenu(menu);
+    connect(trayIcon, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
+        if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick)
+            showMainWindow();
+    });
     connect(trayIcon, &QSystemTrayIcon::messageClicked, this, [this] {
         if (notificationSessions.isEmpty()) {
-            showNormal();
-            activateWindow();
+            showMainWindow();
             return;
         }
         const QString sessionId = notificationSessions.keys().first();
@@ -142,6 +148,25 @@ void MainWindow::setupSystemTray() {
         showApprovalDialog(sessionId);
     });
     trayIcon->show();
+}
+
+
+void MainWindow::showMainWindow() {
+    showNormal();
+    raise();
+    activateWindow();
+}
+
+
+void MainWindow::closeEvent(QCloseEvent *event) {
+    // Closing the frameless window keeps the resident client alive; use the tray
+    // menu's Quit action to terminate the client and its local bridge.
+    if (trayIcon && trayIcon->isVisible()) {
+        hide();
+        event->ignore();
+        return;
+    }
+    QMainWindow::closeEvent(event);
 }
 
 
@@ -249,7 +274,7 @@ void MainWindow::loadSessionState() {
         if (!value.isObject()) continue;
         QJsonObject session = value.toObject();
         const QString status = session.value("status").toString();
-        if (status == "active" || status == "pending_approval") {
+        if (status == "active" || status == "approved" || status == "pending_approval" || status == "requested") {
             session.insert("status", "interrupted");
             session.insert("end_reason", "客户端退出或重启");
         }
@@ -508,6 +533,29 @@ void MainWindow::copyToClipboard(const QString &text, const QString &message) {
 
 void MainWindow::showStatusMessage(const QString &message, int timeout) {
     if (statusFooter) statusFooter->showMessage(message, timeout);
+}
+
+
+bool MainWindow::hasOtherLiveSession(const QString &exceptId) const {
+    for (auto it = sessions.cbegin(); it != sessions.cend(); ++it) {
+        if (it.key() == exceptId) continue;
+        const QString status = it.value().value("status").toString();
+        if (status == QLatin1String("requested") || status == QLatin1String("pending_approval") ||
+            status == QLatin1String("approved") || status == QLatin1String("active"))
+            return true;
+    }
+    return false;
+}
+
+
+bool MainWindow::acceptPlatformSession(const QJsonObject &session) const {
+    const QString id = session.value("session_id").toString();
+    if (id.isEmpty() || sessions.contains(id) || session.value("device_id").toString() != deviceId()) return true;
+    const QString status = session.value("status").toString();
+    if (status != QLatin1String("requested") && status != QLatin1String("pending_approval") &&
+        status != QLatin1String("approved") && status != QLatin1String("active"))
+        return true;
+    return !hasOtherLiveSession();
 }
 
 

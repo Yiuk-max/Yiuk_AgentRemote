@@ -9,6 +9,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QClipboard>
 #include <QComboBox>
 #include <QFrame>
@@ -63,6 +64,7 @@ public:
     MainWindow();
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void closeEvent(QCloseEvent *event) override;
 private:
     QString deviceCode = loadOrCreateDeviceCode();
     QString temporaryPassword = randomPassword(32);
@@ -138,6 +140,9 @@ private:
     ActivityPanel *activityPanel = nullptr;
     QHash<QString, QVector<ActivityEntry>> activityLogs;
     void setupSystemTray();
+    void showMainWindow();
+    bool hasOtherLiveSession(const QString &exceptId = QString()) const;
+    bool acceptPlatformSession(const QJsonObject &session) const;
     static QString loadOrCreateDeviceCode();
     QWidget *createSidebar();
     QPushButton *navButton(const QString &text, Glyph glyph, bool active = false);

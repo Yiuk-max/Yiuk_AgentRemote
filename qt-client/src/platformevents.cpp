@@ -10,6 +10,10 @@
 void MainWindow::adoptDeviceSession(const QJsonObject &session, bool approved) {
     const QString id = session.value("session_id").toString();
     if (id.isEmpty()) return;
+    if (!acceptPlatformSession(session)) {
+        if (platform && platform->isConnected()) platform->closeSession(id);
+        return;
+    }
     const bool fresh = !sessions.contains(id);
     QJsonObject record = session;
     record.insert("source", "platform");
@@ -42,7 +46,19 @@ void MainWindow::adoptDeviceSession(const QJsonObject &session, bool approved) {
 
 void MainWindow::onPlatformSessionRequested(const QJsonObject &session) {
     const QString id = session.value("session_id").toString();
-    if (id.isEmpty()) return;
+    if (id.isEmpty() || sessions.contains(id)) return;
+    if (!acceptPlatformSession(session)) {
+        if (platform && platform->isConnected()) platform->rejectSession(id);
+        QJsonObject rejected = session;
+        rejected.insert("source", "platform");
+        rejected.insert("status", "rejected");
+        rejected.insert("end_reason", "已有活动会话");
+        sessions.insert(id, rejected);
+        persistSessionState();
+        refreshSessionsPage();
+        showStatusMessage("已有一个远程会话，已拒绝新的连接请求", 5000);
+        return;
+    }
     adoptDeviceSession(session, false);
     if (trayIcon && QSystemTrayIcon::supportsMessages()) return;
     QTimer::singleShot(0, this, [this, id] { showApprovalDialog(id); });
@@ -54,6 +70,17 @@ void MainWindow::onPlatformSessionUpdated(const QJsonObject &session) {
     if (id.isEmpty()) return;
     const QJsonObject existing = sessions.value(id);
     const bool known = existing.contains("source");
+    if (!acceptPlatformSession(session)) {
+        if (platform && platform->isConnected()) platform->closeSession(id);
+        QJsonObject rejected = session;
+        rejected.insert("source", "platform");
+        rejected.insert("status", "closed");
+        rejected.insert("end_reason", "已有活动会话");
+        sessions.insert(id, rejected);
+        persistSessionState();
+        refreshSessionsPage();
+        return;
+    }
     QJsonObject record = session;
     if (!record.contains("source")) {
         if (known) {
@@ -74,9 +101,11 @@ void MainWindow::onPlatformSessionUpdated(const QJsonObject &session) {
         if (record.value("source_device").toString().isEmpty())
             record.insert("source_device", record.value("operator_device").toString());
     }
+    const bool statusChanged = existing.value("status").toString() != record.value("status").toString();
     sessions.insert(id, record);
-    appendActivity(id, QString("平台会话状态：%1").arg(session.value("status").toString()),
-                   ActivityKind::Session);
+    if (statusChanged)
+        appendActivity(id, QString("平台会话状态：%1").arg(session.value("status").toString()),
+                       ActivityKind::Session);
     persistSessionState();
     const QString status = session.value("status").toString();
     if (status != "active" && status != "approved" && status != "pending_approval") {
@@ -91,6 +120,11 @@ void MainWindow::onPlatformSessionUpdated(const QJsonObject &session) {
 
 void MainWindow::onPlatformSessionCreated(const QJsonObject &session) {
     if (session.value("device_id").toString() == deviceId()) {
+        if (!acceptPlatformSession(session)) {
+            const QString id = session.value("session_id").toString();
+            if (platform && platform->isConnected()) platform->closeSession(id);
+            return;
+        }
         adoptDeviceSession(session, session.value("status").toString() == "approved");
         return;
     }
@@ -535,6 +569,13 @@ void MainWindow::onPlatformFileUploadChunk(const QString &sessionId, const QStri
 
 void MainWindow::onPlatformCommandRequested(const QString &sessionId, const QString &requestId, const QString &command,
                                 const QString &workingDirectory, int timeoutSeconds) {
+    if (requestId.isEmpty() || runs.contains(requestId)) return;
+    const QString sessionState = sessions.value(sessionId).value("status").toString();
+    if (sessionState != QLatin1String("active") && sessionState != QLatin1String("approved")) {
+        if (platform && platform->isConnected())
+            platform->sendCommandResult(sessionId, requestId, "cancelled", QJsonValue(), true, false);
+        return;
+    }
     appendActivity(sessionId, QString("Agent 开始执行任务 %1\nPowerShell> %2").arg(requestId.left(8), command),
                    ActivityKind::Execute);
     executePlatformCommand(sessionId, requestId, command, workingDirectory, timeoutSeconds);

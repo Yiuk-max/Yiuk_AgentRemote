@@ -1,11 +1,10 @@
 {
   "mcpServers": {
-    "agentremote": {
-      "command": "go",
-      "args": ["run", "./cmd/yiuk-mcp"],
-      "cwd": ".",
+    "yiuk": {
+      "command": "C:/Users/34345/.pi/agent/bin/yiuk-mcp.exe",
+      "args": [],
       "exposure": "direct",
-      "description": "Unified remote device and session tools for AgentRemote. The platform backend is not configured yet."
+      "description": "AgentRemote remote device and session tools over the WebSocket platform backend."
     }
   }
 }
