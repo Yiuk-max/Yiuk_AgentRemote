@@ -112,6 +112,7 @@ func (c *Client) downloadFile(ctx context.Context, raw json.RawMessage) (any, er
 	}, nil
 }
 
+// writeDownload 将分块写入同目录临时文件，完成同步后再原子替换为目标文件。
 func writeDownload(destination string, chunks [][]byte, hash io.Writer) error {
 	dir := filepath.Dir(destination)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -151,6 +152,7 @@ func writeDownload(destination string, chunks [][]byte, hash io.Writer) error {
 	return nil
 }
 
+// safeRemoteBase 从远端路径提取适合作为本地文件名的部分，并替换非法字符。
 func safeRemoteBase(remotePath string) string {
 	base := path.Base(strings.ReplaceAll(remotePath, "\\", "/"))
 	base = strings.Map(func(r rune) rune {

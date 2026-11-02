@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 )
 
+// executeCommand 校验并提交已授权会话中的 PowerShell 命令。
 func (c *Client) executeCommand(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {
 		SessionID        string `json:"session_id"`
@@ -26,6 +27,7 @@ func (c *Client) executeCommand(ctx context.Context, raw json.RawMessage) (any, 
 	return map[string]any{"session_id": input.SessionID, "request_id": requestID, "status": status}, nil
 }
 
+// executeCommandInternal 分配请求标识并等待平台确认命令已接收。
 func (c *Client) executeCommandInternal(ctx context.Context, sessionID, command, workingDirectory string, timeoutSeconds int) (string, string, error) {
 	requestID := randomID()
 	resp, err := c.call(ctx, protocol.Message{
@@ -40,6 +42,7 @@ func (c *Client) executeCommandInternal(ctx context.Context, sessionID, command,
 	return requestID, resp.Status, nil
 }
 
+// getCommandResult 解析分页参数，并查询指定命令的输出与状态。
 func (c *Client) getCommandResult(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {
 		SessionID string `json:"session_id"`
@@ -52,6 +55,7 @@ func (c *Client) getCommandResult(ctx context.Context, raw json.RawMessage) (any
 	return c.getCommandResultInternal(ctx, input.SessionID, input.RequestID, input.Cursor)
 }
 
+// getCommandResultInternal 优先返回终态缓存，否则向平台请求最新结果。
 func (c *Client) getCommandResultInternal(ctx context.Context, sessionID, requestID string, cursor int) (map[string]any, error) {
 	if result, ok := c.cachedResult(sessionID, requestID, cursor); ok {
 		return result, nil
@@ -134,6 +138,7 @@ func (c *Client) runCommand(ctx context.Context, raw json.RawMessage) (any, erro
 	return result, nil
 }
 
+// waitCommandResult 定期查询命令结果，直到任务结束或达到等待时限。
 func (c *Client) waitCommandResult(ctx context.Context, sessionID, requestID string, timeout time.Duration) (map[string]any, error) {
 	deadline := time.Now().Add(timeout)
 	for {
@@ -161,6 +166,7 @@ func (c *Client) waitCommandResult(ctx context.Context, sessionID, requestID str
 	}
 }
 
+// cancelCommand 请求平台取消指定会话中的命令。
 func (c *Client) cancelCommand(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {
 		SessionID string `json:"session_id"`

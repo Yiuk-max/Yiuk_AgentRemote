@@ -1109,3 +1109,14 @@ Go 单测重点覆盖：帧边界、鉴权限流、临时密码版本/过期/撤
 | 命令执行 | `qt-client/src/powershellrunner.{h,cpp}` |
 | 凭据保护 | `qt-client/src/securestore.cpp` |
 | 回环 bridge 服务 | `qt-client/src/localbridge.{h,cpp}` |
+
+宿主(pi) ──stdio JSON-RPC──► internal/mcpadapter   ← MCP 协议实现，tools/list、tools/call
+                                       │
+                                       ▼
+                                internal/agenttools    ← 工具名/参数校验/Backend 接口
+                                       │ Invoke(ctx, Request)
+                                       ▼
+                       internal/platformclient  ← 这里：真正的客户端，连远端平台
+                                       │ TLS + protocol 帧
+                                       ▼
+                                Go 平台 (cmd/platform)

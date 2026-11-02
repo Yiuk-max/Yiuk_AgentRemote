@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 )
 
+// connectionRequest 聚合创建远程会话所需的参数，供独立请求和一次性命令流程共用。
 type connectionRequest struct {
 	DeviceID          string
 	Purpose           string
@@ -18,6 +19,7 @@ type connectionRequest struct {
 	WaitForApproval   time.Duration
 }
 
+// requestConnection 解析工具参数，并按指定等待时长请求远程会话。
 func (c *Client) requestConnection(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {
 		DeviceID               string   `json:"device_id"`
@@ -68,6 +70,7 @@ func (c *Client) createSession(ctx context.Context, input connectionRequest) (ma
 	return result, nil
 }
 
+// waitForApproval 轮询会话状态直到审批完成、上下文取消或等待时限到达。
 func (c *Client) waitForApproval(ctx context.Context, sessionID string, timeout time.Duration) (timedOut bool) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -94,6 +97,7 @@ func (c *Client) waitForApproval(ctx context.Context, sessionID string, timeout 
 	return true
 }
 
+// getSessionStatus 解析参数并查询远程会话状态。
 func (c *Client) getSessionStatus(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {
 		SessionID string `json:"session_id"`
@@ -104,6 +108,7 @@ func (c *Client) getSessionStatus(ctx context.Context, raw json.RawMessage) (any
 	return c.getSessionStatusInternal(ctx, input.SessionID)
 }
 
+// getSessionStatusInternal 查询指定会话，并转换为工具结果结构。
 func (c *Client) getSessionStatusInternal(ctx context.Context, sessionID string) (map[string]any, error) {
 	resp, err := c.call(ctx, protocol.Message{Type: protocol.TypeSessionStatus, SessionID: sessionID}, func(m protocol.Message) bool {
 		return m.Type == protocol.TypeSessionStatus
@@ -114,6 +119,7 @@ func (c *Client) getSessionStatusInternal(ctx context.Context, sessionID string)
 	return sessionResult(resp), nil
 }
 
+// closeSession 解析参数并执行关闭会话操作。
 func (c *Client) closeSession(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {
 		SessionID string `json:"session_id"`
@@ -124,6 +130,7 @@ func (c *Client) closeSession(ctx context.Context, raw json.RawMessage) (any, er
 	return c.closeSessionInternal(ctx, input.SessionID)
 }
 
+// closeSessionInternal 关闭会话；对已不存在的会话按幂等成功处理。
 func (c *Client) closeSessionInternal(ctx context.Context, sessionID string) (map[string]any, error) {
 	resp, err := c.call(ctx, protocol.Message{Type: protocol.TypeCloseSession, SessionID: sessionID}, func(m protocol.Message) bool {
 		return m.Type == protocol.TypeSessionStatus && isTerminalSession(m.Status)

@@ -59,7 +59,7 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// Invoke 实现 agenttools.Backend
+// Invoke 按工具名称分发调用，并将原始 JSON 参数交给对应的平台操作。
 func (c *Client) Invoke(ctx context.Context, req agenttools.Request) (any, error) {
 	switch req.Name {
 	case agenttools.ListDevices:
@@ -89,10 +89,12 @@ func (c *Client) Invoke(ctx context.Context, req agenttools.Request) (any, error
 	}
 }
 
+// call 使用客户端配置的默认超时发送请求。
 func (c *Client) call(ctx context.Context, req protocol.Message, match func(protocol.Message) bool) (protocol.Message, error) {
 	return c.callTimeout(ctx, req, match, time.Duration(c.cfg.TimeoutSeconds)*time.Second)
 }
 
+// callTimeout 使用指定超时发送不需要额外数据帧的请求。
 func (c *Client) callTimeout(ctx context.Context, req protocol.Message, match func(protocol.Message) bool, timeout time.Duration) (protocol.Message, error) {
 	return c.callStream(ctx, req, nil, match, timeout)
 }
@@ -161,6 +163,7 @@ func (c *Client) callStream(ctx context.Context, req protocol.Message, frames fu
 	}
 }
 
+// drainInbox 处理当前已排队的消息，使事件缓存不会滞后于下一次请求。
 func (c *Client) drainInbox(inbox chan protocol.Message) {
 	for {
 		select {

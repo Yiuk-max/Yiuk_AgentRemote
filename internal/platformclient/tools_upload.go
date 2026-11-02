@@ -134,6 +134,7 @@ func (c *Client) uploadFile(ctx context.Context, raw json.RawMessage) (any, erro
 
 // readUploadChunk 最多读取一个上传分块
 // 仅当没有剩余数据时才返回 io.EOF，以便调用方将前一个分块标记为最后一块
+// readUploadChunk 读取不超过协议分块上限的数据，供上传循环逐块发送。
 func readUploadChunk(file *os.File) ([]byte, error) {
 	buffer := make([]byte, uploadChunkBytes)
 	n, err := io.ReadFull(file, buffer)

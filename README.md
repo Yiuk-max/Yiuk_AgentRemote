@@ -66,6 +66,7 @@
 - [运行时架构：消息转发、MCP 工具与客户端](docs/runtime-architecture.md)：连接拓扑、读写循环、设备/操作者连接绑定、命令去程与结果回程、失败收敛、MCP 工具清单与错误码、operator 与设备客户端非界面逻辑。
 - [Go 后端技术说明与入门指南](docs/go-backend-guide.md)：面向 C++ 后端开发者的 Go 入门、架构、幂等、SHA-256、文件原子落盘和 Docker 说明。
 - [开发与构建](docs/development.md)：环境、构建、测试、打包发布、服务器部署（systemd / [Docker](docs/development.md#61-容器部署docker--compose)）。
+- [系统串讲：服务器上的 pi Agent 如何操作远端设备](docs/system-walkthrough.md)：后端 / Agent 侧 server / 设备客户端各自是什么、文件归属地图、帧级时序，以及一次真实形状的调用（服务器上的 pi 在远端设备装 dsh + dsh-pet 并落一键启动脚本）全流程、服务器侧部署与错误码对照。
 - [本机开发环境](docs/local-dev.md)：**仅限本机**的工具链路径、快捷命令与已知坑。
 - [远程部署操作记录 2026-10-23](docs/remote-deploy-session-2026-10-23.md)：通过 MCP 远端部署 dsh-pet 的全过程、本机/目标机改动清单、两个坑与回滚步骤。
 

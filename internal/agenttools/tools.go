@@ -1,3 +1,4 @@
+// Package agenttools 定义 Agent 可调用的工具目录、输入校验和统一后端接口。
 package agenttools
 
 import (
@@ -9,12 +10,13 @@ import (
 )
 
 const (
+	// 以下常量是工具目录中的稳定名称，也用于分发后端调用。
 	ListDevices       = "list_devices"
 	GetDeviceStatus   = "get_device_status"
 	RequestConnection = "request_connection"
-	RunCommand        = "run_command"
+	RunCommand        = "run_command" //一站式执行
 	GetSessionStatus  = "get_session_status"
-	ExecuteCommand    = "execute_command"
+	ExecuteCommand    = "execute_command" //在已有会话里提交命令
 	GetCommandResult  = "get_command_result"
 	DownloadFile      = "download_file"
 	UploadFile        = "upload_file"
@@ -22,6 +24,7 @@ const (
 	CloseSession      = "close_session"
 )
 
+// ToolSpec 描述一个可供 Agent 调用的工具及其输入、输出结构。
 type ToolSpec struct {
 	Name         string          `json:"name"`
 	Description  string          `json:"description"`
@@ -30,20 +33,13 @@ type ToolSpec struct {
 	Annotations  ToolAnnotations `json:"annotations"`
 }
 
-// ToolAnnotations 是 MCP 提示，供 pi 等宿主展示工具和应用确认策略时使用
-// 它们不能替代服务端授权检查
-type ToolAnnotations struct {
-	ReadOnly    bool
-	Destructive *bool
-	Idempotent  bool
-	OpenWorld   *bool
-}
-
+// Request 是后端收到的工具名称和原始 JSON 参数。
 type Request struct {
 	Name  string
 	Input json.RawMessage
 }
 
+// Response 是工具调用的统一结果格式；业务错误通过 Code 和 Message 返回。
 type Response struct {
 	OK      bool   `json:"ok"`
 	Code    string `json:"code"`
@@ -53,17 +49,20 @@ type Response struct {
 
 // Backend 是稳定且独立于 Agent 的接口，由本地客户端或远程平台连接实现
 type Backend interface {
-	Invoke(context.Context, Request) (any, error)
+	Invoke(context.Context, Request) (any, error) // Invoke 调用工具，返回结构化结果或业务错误
 }
 
 type Core struct {
 	backend Backend
 }
 
+// NewCore 创建工具分发核心
 func NewCore(backend Backend) *Core { return &Core{backend: backend} }
 
+// 告诉agent 有哪些工具可用
 func (c *Core) Tools() []ToolSpec { return append([]ToolSpec(nil), toolSpecs...) }
 
+// Call 校验工具名称和参数，再调用后端并将错误归一化为 Response。
 func (c *Core) Call(ctx context.Context, name string, input json.RawMessage) Response {
 	spec, ok := specByName[name]
 	if !ok {
@@ -86,6 +85,7 @@ func (c *Core) Call(ctx context.Context, name string, input json.RawMessage) Res
 	return Response{OK: true, Code: "OK", Data: data}
 }
 
+// Error 表示可安全传递给工具调用方的结构化业务错误。
 type Error struct {
 	Code    string
 	Message string
@@ -95,12 +95,23 @@ func (e *Error) Error() string { return e.Code + ": " + e.Message }
 
 var responseSchema = json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"},"code":{"type":"string"},"message":{"type":"string"},"data":{}},"required":["ok","code"],"additionalProperties":false}`)
 
+// ToolAnnotations 是 MCP 提示，供 pi 等宿主展示工具和应用确认策略时使用
+type ToolAnnotations struct {
+	ReadOnly    bool
+	Destructive *bool //可能破坏性
+	Idempotent  bool  //幂等
+	OpenWorld   *bool //可能与本系统之外的外部实体或环境交互
+}
+
+// 表达可选的布尔提示。
+func boolPtr(value bool) *bool { return &value }
+
+// tool 构造工具定义，并为所有工具附加相同的响应结构。
 func tool(name, description, input string, annotations ToolAnnotations) ToolSpec {
 	return ToolSpec{Name: name, Description: description, InputSchema: json.RawMessage(input), OutputSchema: append(json.RawMessage(nil), responseSchema...), Annotations: annotations}
 }
 
-func boolPtr(value bool) *bool { return &value }
-
+// toolSpecs 是 MCP 暴露给 Agent 的唯一工具目录，输入 schema 与运行时校验需保持一致。
 var toolSpecs = []ToolSpec{
 	tool(ListDevices, "List devices available to the current operator.", `{"type":"object","properties":{},"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
 	tool(GetDeviceStatus, "Get online and session status for a device.", `{"type":"object","properties":{"device_id":{"type":"string","minLength":1,"maxLength":128}},"required":["device_id"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
@@ -115,6 +126,7 @@ var toolSpecs = []ToolSpec{
 	tool(CloseSession, "Close a remote session and revoke its authorization.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128}},"required":["session_id"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), Idempotent: true, OpenWorld: boolPtr(false)}),
 }
 
+// 名称->工具定义 映射
 var specByName = func() map[string]ToolSpec {
 	m := make(map[string]ToolSpec, len(toolSpecs))
 	for _, spec := range toolSpecs {
@@ -123,6 +135,7 @@ var specByName = func() map[string]ToolSpec {
 	return m
 }()
 
+// validateInput 在调用后端前执行严格校验，拒绝未知字段及不符合约束的参数。
 func validateInput(raw json.RawMessage, name string) error {
 	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
 		return fmt.Errorf("arguments must be a JSON object")
@@ -235,6 +248,7 @@ func validateInput(raw json.RawMessage, name string) error {
 	return nil
 }
 
+// schemaFields 按工具记录允许的字段，用于补充 JSON Schema 的未知字段检查。
 var schemaFields = map[string]map[string]struct{}{
 	ListDevices:       fieldSet(),
 	GetDeviceStatus:   fieldSet("device_id"),
@@ -249,6 +263,7 @@ var schemaFields = map[string]map[string]struct{}{
 	CloseSession:      fieldSet("session_id"),
 }
 
+// fieldSet 将字段名切片转换为便于查询的集合。
 func fieldSet(keys ...string) map[string]struct{} {
 	fields := make(map[string]struct{}, len(keys))
 	for _, key := range keys {

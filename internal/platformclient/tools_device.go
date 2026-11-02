@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 )
 
+// listDevices 请求当前操作端可见的设备列表。
 func (c *Client) listDevices(ctx context.Context) (any, error) {
 	resp, err := c.call(ctx, protocol.Message{Type: protocol.TypeListDevices}, func(m protocol.Message) bool {
 		return m.Type == protocol.TypeDeviceList
@@ -18,6 +19,7 @@ func (c *Client) listDevices(ctx context.Context) (any, error) {
 	return resp.Devices, nil
 }
 
+// getDeviceStatus 从设备列表中查找指定设备，并返回其在线及会话状态。
 func (c *Client) getDeviceStatus(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {
 		DeviceID string `json:"device_id"`

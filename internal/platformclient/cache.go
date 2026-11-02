@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 )
 
+// taskCache 保存命令执行期间收到的输出块及最终状态。
 type taskCache struct {
 	sessionID   string
 	status      string
@@ -17,6 +18,7 @@ type taskCache struct {
 	chunks      []protocol.OutputChunk
 }
 
+// downloadCache 暂存一次文件下载的分块和平台返回的完整性信息。
 type downloadCache struct {
 	sessionID   string
 	status      string
@@ -27,6 +29,7 @@ type downloadCache struct {
 	chunks      [][]byte
 }
 
+// sessionIDFromResult 从结构化会话结果中提取会话标识。
 func sessionIDFromResult(result map[string]any) string {
 	id, _ := result["session_id"].(string)
 	return id
@@ -75,6 +78,7 @@ func aggregateResult(result map[string]any) map[string]any {
 	}
 }
 
+// observe 根据消息类型更新会话、命令、文件和设备缓存。
 func (c *Client) observe(m protocol.Message) {
 	switch m.Type {
 	case protocol.TypeSessionCreated, protocol.TypeSessionStatus, protocol.TypeSessionRequest:
@@ -98,6 +102,7 @@ func (c *Client) observe(m protocol.Message) {
 	}
 }
 
+// observeOutput 缓存增量命令输出，并按序列号丢弃重复分块。
 func (c *Client) observeOutput(m protocol.Message) {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
@@ -119,6 +124,7 @@ func (c *Client) observeOutput(m protocol.Message) {
 	}
 }
 
+// observeFileChunk 解码并缓存一个下载文件分块。
 func (c *Client) observeFileChunk(m protocol.Message) {
 	data, err := base64.StdEncoding.DecodeString(m.Data)
 	if err != nil {
@@ -131,6 +137,7 @@ func (c *Client) observeFileChunk(m protocol.Message) {
 	d.bytes += int64(len(data))
 }
 
+// observeFileResult 记录下载结束状态和平台提供的文件元数据。
 func (c *Client) observeFileResult(m protocol.Message) {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
@@ -154,6 +161,7 @@ func (c *Client) download(sessionID, requestID string) *downloadCache {
 	return d
 }
 
+// observeResult 合并最终响应中的输出块，并更新命令的终态信息。
 func (c *Client) observeResult(m protocol.Message) {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
@@ -187,6 +195,7 @@ func (c *Client) task(sessionID, requestID string) *taskCache {
 	return t
 }
 
+// cachedResult 在结果已进入终态时从本地缓存分页读取命令输出。
 func (c *Client) cachedResult(sessionID, requestID string, cursor int) (map[string]any, bool) {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
@@ -214,6 +223,7 @@ func (c *Client) cachedResult(sessionID, requestID string, cursor int) (map[stri
 	}, true
 }
 
+// sessionResult 将协议会话消息转换为稳定的工具返回字段。
 func sessionResult(m protocol.Message) map[string]any {
 	if m.Session != nil {
 		return map[string]any{
@@ -233,6 +243,7 @@ func sessionResult(m protocol.Message) map[string]any {
 	return map[string]any{"session_id": m.SessionID, "device_id": m.DeviceID, "status": m.Status}
 }
 
+// resultMap 将命令结果消息转换为工具返回结构。
 func resultMap(m protocol.Message) map[string]any {
 	return map[string]any{
 		"session_id":   m.SessionID,
@@ -247,6 +258,7 @@ func resultMap(m protocol.Message) map[string]any {
 	}
 }
 
+// isTerminalTaskStatus 判断命令状态是否已结束，不再需要等待后续结果。
 func isTerminalTaskStatus(status string) bool {
 	switch status {
 	case string(protocol.TaskSucceeded), string(protocol.TaskFailed), string(protocol.TaskTimedOut), string(protocol.TaskCancelled), string(protocol.TaskResultUnknown):
@@ -256,6 +268,7 @@ func isTerminalTaskStatus(status string) bool {
 	}
 }
 
+// isTerminalSession 判断会话状态是否已关闭、拒绝、过期或中断。
 func isTerminalSession(status string) bool {
 	switch status {
 	case protocol.StatusClosed, protocol.StatusRejected, protocol.StatusExpired, protocol.StatusInterrupted:

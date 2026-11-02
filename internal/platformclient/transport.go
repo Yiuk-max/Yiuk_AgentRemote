@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 )
 
+// ensureConnectedLocked 在首次调用时建立认证连接；调用方需持有 callMu。
 func (c *Client) ensureConnectedLocked() error {
 	c.mu.Lock()
 	if c.closed {
@@ -98,6 +99,7 @@ func (c *Client) heartbeatLoop(conn transport.Conn, done chan struct{}) {
 }
 
 // writeMessage 串行化单个数据帧，并限制无响应对端阻塞写入的时间
+// writeMessage 对单帧写入加锁，并设置有限的写超时，避免对端失效时永久阻塞。
 func (c *Client) writeMessage(conn transport.Conn, m protocol.Message) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -110,6 +112,7 @@ func (c *Client) writeMessage(conn transport.Conn, m protocol.Message) error {
 	return err
 }
 
+// handshake 建立 WebSocket 连接并完成操作端密码认证。
 func (c *Client) handshake() (transport.Conn, string, error) {
 	conn, err := c.dial()
 	if err != nil {
@@ -165,6 +168,7 @@ func certPinVerifier(pin string) func(rawCerts [][]byte, _ [][]*x509.Certificate
 	}
 }
 
+// dial 根据明文、CA 信任或证书指纹固定配置创建平台连接。
 func (c *Client) dial() (transport.Conn, error) {
 	address := c.cfg.Address
 	if c.cfg.AllowPlaintext {
@@ -193,6 +197,7 @@ func (c *Client) dial() (transport.Conn, error) {
 	return transport.DialWebSocket(address, cfg)
 }
 
+// readLoop 持续解码平台消息，将普通事件放入收件箱并单独统计心跳响应。
 func (c *Client) readLoop(conn transport.Conn, inbox chan protocol.Message, done chan struct{}) {
 	defer c.markDisconnected(done)
 	for {
@@ -217,6 +222,7 @@ func (c *Client) readLoop(conn transport.Conn, inbox chan protocol.Message, done
 	}
 }
 
+// markDisconnected 仅关闭当前连接对应的状态，避免旧连接协程影响新连接。
 func (c *Client) markDisconnected(done chan struct{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -231,6 +237,7 @@ func (c *Client) markDisconnected(done chan struct{}) {
 	close(done)
 }
 
+// loadCertPool 读取 PEM 格式的 CA 文件并构建 TLS 根证书池。
 func loadCertPool(path string) (*x509.CertPool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -243,6 +250,7 @@ func loadCertPool(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
+// hostOnly 从连接地址中提取 TLS 校验所需的主机名。
 func hostOnly(address string) string {
 	address = strings.TrimPrefix(strings.TrimPrefix(address, "wss://"), "ws://")
 	address = strings.TrimPrefix(strings.TrimPrefix(address, "tls://"), "tcp://")
@@ -255,6 +263,7 @@ func hostOnly(address string) string {
 	return address
 }
 
+// randomID 生成请求关联标识；随机源不可用时退回到纳秒时间戳。
 func randomID() string {
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {

@@ -175,3 +175,6 @@ Get-Process yiuk-device-assist,yiuk-activity-panel,yiuk-mcp -ErrorAction Silentl
 ```
 
 发布产物在 `release\`（不进仓库，见[打包发布](development.md#5-打包发布)）。
+
+MCP 没配就该先配 MCP，不要自己造客户端
+会话（session）归属于「一次 operator 连接」，不是密码
