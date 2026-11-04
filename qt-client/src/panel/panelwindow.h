@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <shellapi.h>
 // GDI+ 需要 PROPID，而 WIN32_LEAN_AND_MEAN 会阻止 <windows.h> 引入该定义
 #include <objidl.h>
 #include <gdiplus.h>
@@ -15,7 +16,7 @@
 namespace yiuk {
 
 // 这是无边框、逐像素透明的窗口，只接收当前远程会话的日志
-// 它运行在独立进程中，用户可随时关闭并从客户端重新打开；此处不会主动将窗口置于前台
+// 它运行在独立进程中；最小化后留在系统托盘，可从托盘恢复或关闭
 class PanelWindow {
 public:
     explicit PanelWindow(PanelParams params);
@@ -36,16 +37,14 @@ private:
     };
 
     struct Metrics {
-        int shadow = 18;
+        int shadow = 10;
         int header = 42;
-        int footer = 28;
-        int padL = 16;
-        int padR = 14;
-        int padT = 10;
-        int padB = 8;
+        int padL = 20;
+        int padR = 16;
+        int padT = 14;
+        int padB = 12;
         int timeW = 52;
-        int barW = 2;
-        int labelW = 28;
+        int labelW = 40;
         int gap = 6;
         int textX = 120;
         int lineHeight = 20;
@@ -64,6 +63,7 @@ private:
     LRESULT Handle(UINT message, WPARAM wparam, LPARAM lparam);
 
     void HandleProtocolLine(const std::wstring& line);
+    void SeedPreviewData();
     void AppendEntry(Entry entry);
     void UpdateMetrics();
     void Relayout();
@@ -83,18 +83,20 @@ private:
     bool Present();
     bool EnsureSurface(int width, int height);
     void Draw(Gdiplus::Graphics& graphics, int width, int height);
-    void DrawShadow(Gdiplus::Graphics& graphics, const Gdiplus::RectF& card);
     void DrawCard(Gdiplus::Graphics& graphics, const Gdiplus::RectF& card);
     void DrawHeader(Gdiplus::Graphics& graphics, const Gdiplus::RectF& card,
                     const Gdiplus::GraphicsPath& cardPath);
     void DrawBody(Gdiplus::Graphics& graphics, const Gdiplus::RectF& card,
                   const Gdiplus::GraphicsPath& cardPath);
-    void DrawFooter(Gdiplus::Graphics& graphics, const Gdiplus::RectF& card,
-                    const Gdiplus::GraphicsPath& cardPath);
     void DrawScrollBar(Gdiplus::Graphics& graphics);
     void DrawButton(Gdiplus::Graphics& graphics, const Gdiplus::RectF& rect, int id, bool hot);
     void ToggleFullscreen();
     void PerformButton(int id);
+    bool AddTrayIcon();
+    void RemoveTrayIcon();
+    void HideToTray();
+    void RestoreFromTray();
+    void ShowTrayMenu();
     void UpdateHover(POINT point);
     void UpdateCursor();
     void LoadState();
@@ -127,6 +129,9 @@ private:
     POINT mouse{-1, -1};
     bool trackingMouse = false;
     HCURSOR cursor = nullptr;
+    NOTIFYICONDATAW trayIcon{};
+    UINT taskbarCreatedMessage = 0;
+    bool trayIconAdded = false;
 
     HDC memoryDC = nullptr;
     HBITMAP dib = nullptr;

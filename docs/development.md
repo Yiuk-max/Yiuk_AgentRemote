@@ -120,7 +120,7 @@ go run ./cmd/device-sim -addr host:29564 -password '<player-password>' \
 只有一个 Windows x64 绿色目录（无安装器），目录里放三个 exe 与 Qt 运行库，再压 zip：
 
 ```sh
-VERSION=0.1.5
+VERSION=0.1.6
 BUILD=qt-client/build-qt
 OUT=release/YiukDeviceAssist-$VERSION-win64
 

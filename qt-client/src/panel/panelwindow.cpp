@@ -2,11 +2,13 @@
 
 #include <windowsx.h>
 #include <shlobj.h>
+#include <shellapi.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cwchar>
+#include <string>
 
 #include "panelpipe.h"
 
@@ -14,31 +16,17 @@ namespace yiuk {
 namespace {
 
 const wchar_t* kWindowClass = L"YiukActivityPanel";
+constexpr UINT kTrayIconMessage = WM_APP + 3;
+constexpr UINT kTrayMenuRestore = 1;
+constexpr UINT kTrayMenuClose = 2;
 
 // 深色且略带冷色调的底板，确保面板在任何桌面壁纸上都清晰可读
 // 文字颜色沿用 pi 的深色主题标记：紫色表示会话生命周期，绿色表示命令，蓝色表示读取，兰紫色表示下载，弱化色表示输出，红色表示错误
-const Gdiplus::Color kCardFill(233, 20, 23, 30);
-const Gdiplus::Color kCardEdge(30, 255, 255, 255);
-const Gdiplus::Color kRule(18, 255, 255, 255);
+const Gdiplus::Color kCardFill(210, 20, 23, 30);
 const Gdiplus::Color kTitleInk(235, 238, 245);
 const Gdiplus::Color kMutedInk(151, 161, 178);
 const Gdiplus::Color kDimInk(107, 117, 134);
 const Gdiplus::Color kIconInk(205, 204, 212, 226);
-
-Gdiplus::Color KindColor(Kind kind, BYTE alpha) {
-    switch (kind) {
-        case Kind::Session: return Gdiplus::Color(alpha, 196, 138, 222);
-        case Kind::Execute: return Gdiplus::Color(alpha, 111, 211, 168);
-        case Kind::Read: return Gdiplus::Color(alpha, 143, 167, 240);
-        case Kind::Download: return Gdiplus::Color(alpha, 214, 152, 226);
-        case Kind::Upload: return Gdiplus::Color(alpha, 226, 176, 106);
-        case Kind::Error: return Gdiplus::Color(alpha, 239, 142, 114);
-        case Kind::Success: return Gdiplus::Color(alpha, 111, 211, 168);
-        case Kind::Output: return Gdiplus::Color(alpha, 152, 161, 178);
-        case Kind::Info:
-        default: return Gdiplus::Color(alpha, 138, 148, 164);
-    }
-}
 
 // 正文颜色接近类型对应的色相，但会调亮至接近白色，确保充满命令和路径的屏幕仍易于阅读
 Gdiplus::Color KindInk(Kind kind) {
@@ -68,26 +56,6 @@ std::wstring KindLabel(Kind kind) {
         case Kind::Output: return L"输出";
         case Kind::Info:
         default: return L"信息";
-    }
-}
-
-Gdiplus::Color StateColor(SessionState state, BYTE alpha) {
-    switch (state) {
-        case SessionState::Active: return Gdiplus::Color(alpha, 111, 211, 168);
-        case SessionState::Pending: return Gdiplus::Color(alpha, 217, 200, 90);
-        case SessionState::Closed: return Gdiplus::Color(alpha, 138, 148, 164);
-        case SessionState::None:
-        default: return Gdiplus::Color(alpha, 110, 120, 137);
-    }
-}
-
-Gdiplus::Color StateInk(SessionState state) {
-    switch (state) {
-        case SessionState::Active: return Gdiplus::Color(228, 143, 214, 178);
-        case SessionState::Pending: return Gdiplus::Color(228, 226, 212, 130);
-        case SessionState::Closed: return Gdiplus::Color(224, 150, 160, 176);
-        case SessionState::None:
-        default: return kDimInk;
     }
 }
 
@@ -230,6 +198,7 @@ PanelWindow::~PanelWindow() {
 
 bool PanelWindow::Create(HINSTANCE instance) {
     dpi = static_cast<int>(QueryDpi(nullptr));
+    taskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
     LoadState();
 
     WNDCLASSEXW cls{};
@@ -243,7 +212,8 @@ bool PanelWindow::Create(HINSTANCE instance) {
 
     const int width = initialRect.right - initialRect.left;
     const int height = initialRect.bottom - initialRect.top;
-    window = CreateWindowExW(WS_EX_LAYERED, kWindowClass, params.title.c_str(), WS_POPUP,
+    window = CreateWindowExW(WS_EX_LAYERED | WS_EX_APPWINDOW, kWindowClass,
+                             params.title.c_str(), WS_POPUP,
                              initialRect.left, initialRect.top, width, height, nullptr, nullptr, instance,
                              this);
     if (!window) return false;
@@ -253,9 +223,24 @@ bool PanelWindow::Create(HINSTANCE instance) {
     UpdateMetrics();
     Relayout();
     Present();
-    ShowWindow(window, SW_SHOW);
-    StartStdinReader(window);
+    if (!IsWindowVisible(window)) ShowWindow(window, SW_SHOW);
+    AddTrayIcon();
+    if (!StartStdinReader(window)) SeedPreviewData();
     return true;
+}
+
+// 直接双击运行时没有父客户端的管道，面板用一组固定的样例条目展示配色与排版；
+// 由客户端启动时这里不会执行，显示的是真实活动记录
+void PanelWindow::SeedPreviewData() {
+    HandleProtocolLine(L"H|远程协助活动|独立预览|active|样例数据");
+    HandleProtocolLine(L"E|session|14:32:08|会话已连接，正在执行远程协助");
+    HandleProtocolLine(L"E|read|14:32:10|读取项目配置与客户端源码");
+    HandleProtocolLine(L"E|exec|14:32:13|PowerShell -File inspect.ps1");
+    HandleProtocolLine(L"E|out|14:32:14|找到 12 个活动任务，面板正在更新");
+    HandleProtocolLine(L"E|err|14:32:16|示例：读取被拒绝，路径不在允许范围");
+    HandleProtocolLine(L"E|file|14:32:19|已生成 Release 预览版本");
+    HandleProtocolLine(L"E|ok|14:32:21|面板子进程启动成功");
+    Present();
 }
 
 int PanelWindow::RunMessageLoop() {
@@ -288,6 +273,11 @@ LRESULT CALLBACK PanelWindow::WndProc(HWND window, UINT message, WPARAM wparam, 
 }
 
 LRESULT PanelWindow::Handle(UINT message, WPARAM wparam, LPARAM lparam) {
+    if (taskbarCreatedMessage != 0 && message == taskbarCreatedMessage) {
+        trayIconAdded = false;
+        AddTrayIcon();
+        return 0;
+    }
     switch (message) {
         case WM_NCHITTEST: {
             POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
@@ -304,14 +294,18 @@ LRESULT PanelWindow::Handle(UINT message, WPARAM wparam, LPARAM lparam) {
             Present();
             return 0;
         }
-        case WM_SIZE:
+        case WM_SIZE: {
+            // Minimizing sends a zero-sized client and may also move the popup to its
+            // minimized position. Keep the last usable rectangle for restore/fullscreen.
+            if (wparam == SIZE_MINIMIZED) return 0;
+            if (!fullscreen && window && !IsIconic(window)) GetWindowRect(window, &restoreRect);
+            UpdateMetrics();
+            Relayout();
+            InvalidateRect(window, nullptr, FALSE);
+            return 0;
+        }
         case WM_MOVE: {
-            if (!fullscreen && window) GetWindowRect(window, &restoreRect);
-            if (message == WM_SIZE) {
-                UpdateMetrics();
-                Relayout();
-                InvalidateRect(window, nullptr, FALSE);
-            }
+            if (!fullscreen && window && !IsIconic(window)) GetWindowRect(window, &restoreRect);
             return 0;
         }
         case WM_MOUSEMOVE: {
@@ -469,6 +463,10 @@ LRESULT PanelWindow::Handle(UINT message, WPARAM wparam, LPARAM lparam) {
             draggingScroll = false;
             pressedButton = -1;
             return 0;
+        case kTrayIconMessage:
+            if (lparam == WM_LBUTTONUP || lparam == WM_LBUTTONDBLCLK) RestoreFromTray();
+            else if (lparam == WM_RBUTTONUP || lparam == WM_CONTEXTMENU) ShowTrayMenu();
+            return 0;
         case kMessageLine: {
             auto* payload = reinterpret_cast<std::wstring*>(wparam);
             if (payload) {
@@ -482,10 +480,12 @@ LRESULT PanelWindow::Handle(UINT message, WPARAM wparam, LPARAM lparam) {
             PostMessageW(window, WM_CLOSE, 0, 0);
             return 0;
         case WM_CLOSE:
+            RemoveTrayIcon();
             SaveState();
             DestroyWindow(window);
             return 0;
         case WM_DESTROY:
+            RemoveTrayIcon();
             PostQuitMessage(0);
             return 0;
         default:
@@ -560,17 +560,15 @@ int PanelWindow::Scale(int value) const {
 
 void PanelWindow::UpdateMetrics() {
     Metrics next;
-    next.shadow = Scale(18);
+    next.shadow = Scale(10);
     next.header = Scale(42);
-    next.footer = Scale(28);
-    next.padL = Scale(16);
-    next.padR = Scale(14);
-    next.padT = Scale(10);
-    next.padB = Scale(8);
+    next.padL = Scale(20);
+    next.padR = Scale(16);
+    next.padT = Scale(14);
+    next.padB = Scale(12);
     next.timeW = Scale(52);
-    next.barW = Scale(2);
-    next.labelW = Scale(28);
-    next.gap = Scale(6);
+    next.labelW = Scale(40);
+    next.gap = Scale(10);
     next.lineHeight = Scale(20);
     next.entryGap = Scale(6);
     next.radius = Scale(14);
@@ -579,7 +577,7 @@ void PanelWindow::UpdateMetrics() {
     next.buttonH = Scale(24);
     next.buttonGap = Scale(4);
     next.padding = Scale(8);
-    next.textX = next.padL + next.timeW + next.gap + next.barW + Scale(8) + next.labelW + Scale(10);
+    next.textX = next.padL + next.timeW + next.gap + next.labelW + next.gap;
     metrics = next;
 
     body.Init(static_cast<float>(Scale(13)), false);
@@ -600,7 +598,7 @@ Gdiplus::RectF PanelWindow::CardRect() const {
 Gdiplus::RectF PanelWindow::BodyRect() const {
     const Gdiplus::RectF card = CardRect();
     const float top = card.Y + metrics.header;
-    const float height = std::max(0.0f, card.Height - metrics.header - metrics.footer);
+    const float height = std::max(0.0f, card.Height - metrics.header);
     return Gdiplus::RectF(card.X, top, card.Width, height);
 }
 
@@ -777,11 +775,63 @@ void PanelWindow::UpdateCursor() {
 
 void PanelWindow::PerformButton(int id) {
     switch (id) {
-        case 0: ShowWindow(window, SW_MINIMIZE); break;
+        case 0: HideToTray(); break;
         case 1: ToggleFullscreen(); break;
         case 2: PostMessageW(window, WM_CLOSE, 0, 0); break;
         default: break;
     }
+}
+
+bool PanelWindow::AddTrayIcon() {
+    if (trayIconAdded) return true;
+    trayIcon = {};
+    trayIcon.cbSize = sizeof(trayIcon);
+    trayIcon.hWnd = window;
+    trayIcon.uID = 1;
+    trayIcon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    trayIcon.uCallbackMessage = kTrayIconMessage;
+    trayIcon.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wcsncpy(trayIcon.szTip, L"远程协助活动：左键恢复，右键打开菜单",
+            ARRAYSIZE(trayIcon.szTip) - 1);
+    trayIconAdded = Shell_NotifyIconW(NIM_ADD, &trayIcon) != FALSE;
+    return trayIconAdded;
+}
+
+void PanelWindow::RemoveTrayIcon() {
+    if (!trayIconAdded) return;
+    Shell_NotifyIconW(NIM_DELETE, &trayIcon);
+    trayIconAdded = false;
+}
+
+void PanelWindow::HideToTray() {
+    if (trayIconAdded) ShowWindow(window, SW_HIDE);
+    else ShowWindow(window, SW_MINIMIZE);  // WS_EX_APPWINDOW leaves a taskbar restore entry.
+}
+
+void PanelWindow::RestoreFromTray() {
+    ShowWindow(window, SW_RESTORE);
+    ShowWindow(window, SW_SHOW);
+    SetForegroundWindow(window);
+    InvalidateRect(window, nullptr, FALSE);
+    Present();
+}
+
+void PanelWindow::ShowTrayMenu() {
+    if (!trayIconAdded) return;
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    AppendMenuW(menu, MF_STRING, kTrayMenuRestore, L"恢复活动面板");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kTrayMenuClose, L"关闭面板");
+    POINT point{};
+    GetCursorPos(&point);
+    SetForegroundWindow(window);
+    const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                                         point.x, point.y, 0, window, nullptr);
+    DestroyMenu(menu);
+    PostMessageW(window, WM_NULL, 0, 0);
+    if (command == kTrayMenuRestore) RestoreFromTray();
+    else if (command == kTrayMenuClose) PostMessageW(window, WM_CLOSE, 0, 0);
 }
 
 void PanelWindow::ToggleFullscreen() {
@@ -792,8 +842,9 @@ void PanelWindow::ToggleFullscreen() {
         MONITORINFO info{};
         info.cbSize = sizeof info;
         if (GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &info)) {
-            SetWindowPos(window, nullptr, info.rcWork.left, info.rcWork.top,
-                         info.rcWork.right - info.rcWork.left, info.rcWork.bottom - info.rcWork.top,
+            SetWindowPos(window, nullptr, info.rcMonitor.left, info.rcMonitor.top,
+                         info.rcMonitor.right - info.rcMonitor.left,
+                         info.rcMonitor.bottom - info.rcMonitor.top,
                          SWP_NOZORDER | SWP_NOACTIVATE);
         }
     } else {
@@ -879,67 +930,45 @@ void PanelWindow::Draw(Gdiplus::Graphics& graphics, int width, int height) {
     Gdiplus::GraphicsPath cardPath;
     AddRoundRect(cardPath, card, static_cast<float>(metrics.radius));
 
-    DrawShadow(graphics, card);
     DrawCard(graphics, card);
     DrawHeader(graphics, card, cardPath);
     DrawBody(graphics, card, cardPath);
-    DrawFooter(graphics, card, cardPath);
     DrawScrollBar(graphics);
 }
 
-void PanelWindow::DrawShadow(Gdiplus::Graphics& graphics, const Gdiplus::RectF& card) {
-    const int depth = std::max(4, metrics.shadow);
-    for (int i = depth; i >= 1; --i) {
-        const float inset = static_cast<float>(i) - 0.5f;
-        Gdiplus::RectF ring(card.X - inset, card.Y - inset + 3.0f, card.Width + inset * 2.0f,
-                            card.Height + inset * 2.0f);
-        const float distance = 1.0f - static_cast<float>(i) / static_cast<float>(depth);
-        const BYTE alpha = static_cast<BYTE>(3.0f + 24.0f * distance * distance);
-        Gdiplus::Pen pen(Gdiplus::Color(alpha, 0, 0, 0), 1.8f);
-        Gdiplus::GraphicsPath path;
-        AddRoundRect(path, ring, metrics.radius + inset);
-        graphics.DrawPath(&pen, &path);
-    }
-}
-
 void PanelWindow::DrawCard(Gdiplus::Graphics& graphics, const Gdiplus::RectF& card) {
+    const float r = static_cast<float>(metrics.radius);
+
+    // 极淡阴影：仅用于使卡片边缘与壁纸稍作区分
+    for (int i = 5; i >= 1; --i) {
+        const float expand = static_cast<float>(i) * static_cast<float>(metrics.shadow) / 5.0f;
+        const BYTE alpha = static_cast<BYTE>((5 - i + 1) * 8 / 5);
+        FillRoundRect(graphics, {card.X - expand, card.Y - expand,
+                                  card.Width + expand * 2.f, card.Height + expand * 2.f},
+                      r + expand, Gdiplus::Color(alpha, 0, 0, 0));
+    }
+
+    // 极低不透明度的深色薄膜，壁纸直接透出，参照系统通知栏效果
     Gdiplus::GraphicsPath path;
-    AddRoundRect(path, card, static_cast<float>(metrics.radius));
-    Gdiplus::SolidBrush fill(kCardFill);
+    AddRoundRect(path, card, r);
+    Gdiplus::SolidBrush fill(Gdiplus::Color(160, 14, 17, 24));
     graphics.FillPath(&fill, &path);
 
-    // 在上方三分之一处添加淡淡的光泽，为半透明底板增加层次感
-    const float sheenHeight = std::min(card.Height * 0.45f, static_cast<float>(Scale(180)));
-    Gdiplus::LinearGradientBrush sheen(
-        Gdiplus::RectF(card.X, card.Y, card.Width, sheenHeight),
-        Gdiplus::Color(20, 255, 255, 255), Gdiplus::Color(0, 255, 255, 255),
-        Gdiplus::LinearGradientModeVertical);
-    graphics.SetClip(&path);
-    graphics.FillRectangle(&sheen, Gdiplus::RectF(card.X, card.Y, card.Width, sheenHeight));
-    graphics.ResetClip();
-
-    Gdiplus::Pen edge(kCardEdge, 1.0f);
-    graphics.DrawPath(&edge, &path);
+    // 极淡白色描边：单色、无装饰
+    Gdiplus::GraphicsPath borderPath;
+    const float pw = 1.0f;
+    const Gdiplus::RectF inset(card.X + pw * 0.5f, card.Y + pw * 0.5f,
+                               card.Width - pw, card.Height - pw);
+    AddRoundRect(borderPath, inset, std::max(0.0f, r - pw * 0.5f));
+    Gdiplus::Pen borderPen(Gdiplus::Color(0x22, 0xFF, 0xFF, 0xFF), pw);
+    graphics.DrawPath(&borderPen, &borderPath);
 }
 
 void PanelWindow::DrawHeader(Gdiplus::Graphics& graphics, const Gdiplus::RectF& card,
                              const Gdiplus::GraphicsPath& cardPath) {
     graphics.SetClip(&cardPath);
-    Gdiplus::Pen rule(kRule, 1.0f);
-    const float ruleInset = metrics.radius * 0.5f;
-    graphics.DrawLine(&rule, card.X + ruleInset, card.Y + metrics.header,
-                      card.X + card.Width - ruleInset, card.Y + metrics.header);
-
     const float centerY = card.Y + metrics.header * 0.5f;
-    const float dotX = card.X + metrics.padL + Scale(2);
-    const float radius = static_cast<float>(Scale(4));
-    const float halo = radius + Scale(3);
-    Gdiplus::SolidBrush glow(StateColor(params.state, 40));
-    graphics.FillEllipse(&glow, dotX - halo, centerY - halo, halo * 2.0f, halo * 2.0f);
-    Gdiplus::SolidBrush dot(StateColor(params.state, 240));
-    graphics.FillEllipse(&dot, dotX - radius, centerY - radius, radius * 2.0f, radius * 2.0f);
-
-    float x = dotX + radius + Scale(10);
+    float x = card.X + metrics.padL;
     const float titleBaseline = centerY - bodyStrong.Height() * 0.5f + bodyStrong.Ascent();
     bodyStrong.Draw(graphics, params.title, 0, params.title.size(), x, titleBaseline, kTitleInk);
     x += static_cast<float>(bodyStrong.Measure(params.title));
@@ -947,12 +976,14 @@ void PanelWindow::DrawHeader(Gdiplus::Graphics& graphics, const Gdiplus::RectF& 
     Gdiplus::RectF buttons[3];
     ButtonRects(buttons);
     const int labelRoom = static_cast<int>(buttons[0].X - x) - Scale(22);
-    if (!params.label.empty() && labelRoom > Scale(24)) {
+    std::wstring metadata = params.label;
+    if (!params.status.empty()) {
+        if (!metadata.empty()) metadata += L" · ";
+        metadata += params.status;
+    }
+    if (!metadata.empty() && labelRoom > Scale(24)) {
         x += Scale(10);
-        Gdiplus::Pen separator(Gdiplus::Color(34, 255, 255, 255), 1.0f);
-        graphics.DrawLine(&separator, x, centerY - Scale(6), x, centerY + Scale(6));
-        x += Scale(10);
-        const std::wstring label = Elide(small, params.label, labelRoom - Scale(12));
+        const std::wstring label = Elide(small, metadata, labelRoom);
         const float baseline = centerY - small.Height() * 0.5f + small.Ascent();
         small.Draw(graphics, label, 0, label.size(), x, baseline, kMutedInk);
     }
@@ -1027,7 +1058,7 @@ void PanelWindow::DrawBody(Gdiplus::Graphics& graphics, const Gdiplus::RectF& ca
 
     float y = bodyRect.Y + metrics.padT - scroll;
     const float bottom = bodyRect.Y + metrics.padT + BodyHeight();
-    const float barX = card.X + metrics.padL + metrics.timeW + metrics.gap;
+    const float kindX = card.X + metrics.padL + metrics.timeW + metrics.gap;
     for (size_t i = 0; i < lines.size(); ++i) {
         const Line& line = lines[i];
         if (line.first && i > 0) y += metrics.entryGap;
@@ -1037,18 +1068,13 @@ void PanelWindow::DrawBody(Gdiplus::Graphics& graphics, const Gdiplus::RectF& ca
             const float centerY = y + metrics.lineHeight * 0.5f;
             const float baseline = centerY - body.Height() * 0.5f + body.Ascent();
             if (line.first) {
-                FillRoundRect(graphics,
-                              Gdiplus::RectF(barX, y + Scale(3), static_cast<Gdiplus::REAL>(metrics.barW),
-                                             static_cast<Gdiplus::REAL>(metrics.lineHeight - Scale(6))),
-                              metrics.barW * 0.5f, KindColor(entry.kind, 215));
                 if (!entry.time.empty()) {
                     const float timeX = card.X + metrics.padL + metrics.timeW - small.Measure(entry.time);
                     const float timeBaseline = centerY - small.Height() * 0.5f + small.Ascent();
                     small.Draw(graphics, entry.time, 0, entry.time.size(), timeX, timeBaseline, kDimInk);
                 }
                 const std::wstring label = KindLabel(entry.kind);
-                body.Draw(graphics, label, 0, label.size(), barX + metrics.barW + Scale(8), baseline,
-                          KindColor(entry.kind, 238));
+                body.Draw(graphics, label, 0, label.size(), kindX, baseline, KindInk(entry.kind));
             }
             if (line.begin < line.end) {
                 body.Draw(graphics, entry.text, static_cast<size_t>(line.begin),
@@ -1057,32 +1083,6 @@ void PanelWindow::DrawBody(Gdiplus::Graphics& graphics, const Gdiplus::RectF& ca
         }
         y += metrics.lineHeight;
     }
-    graphics.ResetClip();
-}
-
-void PanelWindow::DrawFooter(Gdiplus::Graphics& graphics, const Gdiplus::RectF& card,
-                             const Gdiplus::GraphicsPath& cardPath) {
-    graphics.SetClip(&cardPath);
-    const float top = card.Y + card.Height - metrics.footer;
-    Gdiplus::Pen rule(kRule, 1.0f);
-    const float ruleInset = metrics.radius * 0.5f;
-    graphics.DrawLine(&rule, card.X + ruleInset, top, card.X + card.Width - ruleInset, top);
-
-    const float centerY = top + metrics.footer * 0.5f;
-    const float dotX = card.X + metrics.padL + Scale(3);
-    const float radius = static_cast<float>(Scale(2.5f));
-    Gdiplus::SolidBrush dot(StateColor(params.state, 220));
-    graphics.FillEllipse(&dot, dotX - radius, centerY - radius, radius * 2.0f, radius * 2.0f);
-
-    const float baseline = centerY - small.Height() * 0.5f + small.Ascent();
-    small.Draw(graphics, params.status, 0, params.status.size(), dotX + radius + Scale(8), baseline,
-               StateInk(params.state));
-
-    wchar_t buffer[64];
-    swprintf(buffer, 64, L"只读 · %d 条记录", static_cast<int>(entries.size()));
-    const std::wstring count = buffer;
-    const float countX = card.X + card.Width - metrics.padR - small.Measure(count);
-    small.Draw(graphics, count, 0, count.size(), countX, baseline, kDimInk);
     graphics.ResetClip();
 }
 

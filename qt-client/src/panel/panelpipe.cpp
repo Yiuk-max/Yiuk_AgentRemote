@@ -49,6 +49,9 @@ unsigned __stdcall ReaderMain(void* argument) {
 bool StartStdinReader(HWND window) {
     const HANDLE pipe = GetStdHandle(STD_INPUT_HANDLE);
     if (pipe == nullptr || pipe == INVALID_HANDLE_VALUE) return false;
+    // The panel is often double-clicked for a visual preview. Only treat redirected
+    // pipes as a live parent protocol; console/no-stdin launches use local sample data.
+    if (GetFileType(pipe) != FILE_TYPE_PIPE) return false;
     const uintptr_t handle = _beginthreadex(nullptr, 0, ReaderMain, window, 0, nullptr);
     return handle != 0;
 }

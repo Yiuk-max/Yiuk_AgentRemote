@@ -70,6 +70,6 @@
 - [本机开发环境](docs/local-dev.md)：**仅限本机**的工具链路径、快捷命令与已知坑。
 - [远程部署操作记录 2026-10-23](docs/remote-deploy-session-2026-10-23.md)：通过 MCP 远端部署 dsh-pet 的全过程、本机/目标机改动清单、两个坑与回滚步骤。
 
-发布说明：`docs/release-notes-0.1.5.txt`；`Release/` 下为当前构建好的 Windows x64 压缩包与 SHA-256（不进仓库）。
+发布说明：`docs/release-notes-0.1.6.txt`；`Release/` 下为当前构建好的 Windows x64 压缩包与 SHA-256（不进仓库）。
 
 > **命名兼容说明：** 当前 Go module/import path 和 MCP server 名称为 `agentremote`。`YIUK_*` 环境变量、`yiuk-platform` 服务/二进制及 `/var/lib/yiuk-platform` 数据目录仍保留旧名称，避免无计划地破坏已有部署、脚本和数据卷；后续如需统一，应配套迁移和兼容步骤。
