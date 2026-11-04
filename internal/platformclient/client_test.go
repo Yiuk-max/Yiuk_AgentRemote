@@ -318,7 +318,10 @@ func TestPlatformClientCloseSessionIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestPlatformClientRejectsMissingTemporaryPassword(t *testing.T) {
+// TestPlatformClientRequestWithoutPasswordCreatesApprovalSession 覆盖不带临时密码的申请流程：
+// 平台会创建 pending_approval 会话并把申请转给设备所有者，由人在客户端批准；
+// 客户端不再在本地拦截空密码，否则审批流永远无法从 MCP 发起。
+func TestPlatformClientRequestWithoutPasswordCreatesApprovalSession(t *testing.T) {
 	address := startPlatform(t)
 	device := dialFakeDevice(t, address)
 	device.register("device-2")
@@ -331,11 +334,16 @@ func TestPlatformClientRejectsMissingTemporaryPassword(t *testing.T) {
 	}
 	defer backend.Close()
 
-	raw := json.RawMessage(`{"device_id":"device-2","purpose":"x","permissions":["execute_command"]}`)
-	_, err = backend.Invoke(context.Background(), agenttools.Request{Name: agenttools.RequestConnection, Input: raw})
-	var toolErr *agenttools.Error
-	if err == nil || !errors.As(err, &toolErr) || toolErr.Code != "INVALID_ARGUMENT" {
-		t.Fatalf("got %v, want INVALID_ARGUMENT", err)
+	session := invoke(t, backend, agenttools.RequestConnection, map[string]any{
+		"device_id": "device-2", "purpose": "x", "permissions": []string{"execute_command"},
+	}).(map[string]any)
+	sessionID, _ := session["session_id"].(string)
+	if sessionID == "" || session["status"] != protocol.StatusPendingApproval {
+		t.Fatalf("unexpected session: %#v", session)
+	}
+	request := device.recv(protocol.TypeSessionRequest)
+	if request.SessionID != sessionID {
+		t.Fatalf("unexpected session request: %#v", request)
 	}
 }
 
@@ -612,7 +620,10 @@ func TestPlatformClientUploadFileRejectsInvalidLocalPath(t *testing.T) {
 	}
 	defer backend.Close()
 
-	for _, localPath := range []string{"relative/file.txt", "C:/definitely/missing/file.bin"} {
+	// 用临时目录下必定不存在的文件构造绝对路径；写死 "C:/..." 在 Linux 上会被当成相对路径，
+	// 那样校验阶段就以 INVALID_ARGUMENT 失败，测不到“本地文件读不到”这条分支。
+	missingPath := filepath.Join(t.TempDir(), "missing-file.bin")
+	for _, localPath := range []string{"relative/file.txt", missingPath} {
 		raw, _ := json.Marshal(map[string]any{"session_id": "session-x", "local_path": localPath})
 		_, err := backend.Invoke(context.Background(), agenttools.Request{Name: agenttools.UploadFile, Input: raw})
 		var toolErr *agenttools.Error

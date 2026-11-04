@@ -150,7 +150,8 @@ func validateInput(raw json.RawMessage, name string) error {
 	case GetDeviceStatus:
 		required = []string{"device_id"}
 	case RequestConnection:
-		required = []string{"device_id", "purpose", "permissions", "temporary_password"}
+		// 不提供 temporary_password 时走审批流：由设备所有者在客户端批准，因此它不是必填项。
+		required = []string{"device_id", "purpose", "permissions"}
 	case RunCommand:
 		required = []string{"device_id", "temporary_password", "command"}
 	case GetSessionStatus, CloseSession:

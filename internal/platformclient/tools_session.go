@@ -43,9 +43,8 @@ func (c *Client) handleRequestConnection(ctx context.Context, arguments json.Raw
 // requestSession 向平台请求创建会话，并在需要时等待设备所有者审批。
 // 直连模式下的设备会立即批准会话。
 func (c *Client) requestSession(ctx context.Context, input sessionRequestOptions) (map[string]any, error) {
-	if input.TemporaryPassword == "" {
-		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "temporary_password is required; ask the device owner for the 32-character temporary password"}
-	}
+	// 不提供临时密码时平台会创建审批请求（status=pending_approval），由设备所有者批准；
+	// 提供当前临时密码则直接进入 direct 会话。两种流程都由服务端决定，这里不再本地拦截。
 	response, err := c.sendRequest(ctx, protocol.Message{
 		Type: protocol.TypeRequestSession, DeviceID: input.DeviceID, Purpose: input.Purpose,
 		Permissions: input.Permissions, TemporaryPassword: input.TemporaryPassword,
