@@ -1,5 +1,13 @@
 <RCC>
     <qresource prefix="/icons">
         <file>check.svg</file>
+        <file alias="home.svg">home.svg</file>
+        <file alias="devices.svg">devices.svg</file>
+        <file alias="history.svg">history.svg</file>
+        <file alias="settings.svg">settings.svg</file>
+        <file alias="copy.svg">copy.svg</file>
+        <file alias="refresh.svg">refresh.svg</file>
+        <file alias="eye-open.svg">eye-open.svg</file>
+        <file alias="eye-closed.svg">eye-closed.svg</file>
     </qresource>
 </RCC>

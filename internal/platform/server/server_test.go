@@ -185,7 +185,7 @@ func TestApprovalSessionCommandFlow(t *testing.T) {
 	}
 
 	operator.send(protocol.Message{
-		Type: protocol.TypeRequestSession, DeviceID: "device-1", TemporaryPassword: testDevicePassword,
+		Type: protocol.TypeRequestSession, DeviceID: "device-1",
 		Purpose: "fix the printer", Permissions: []string{"execute_command"},
 	})
 	created := operator.recv(protocol.TypeSessionCreated)
@@ -358,10 +358,13 @@ func TestTemporaryPasswordRotationRevokesSessions(t *testing.T) {
 	operator := dialClient(t, address)
 	operator.auth(testPlayerPassword)
 	operator.send(protocol.Message{
-		Type: protocol.TypeRequestSession, DeviceID: "device-rotate", TemporaryPassword: testDevicePassword,
+		Type: protocol.TypeRequestSession, DeviceID: "device-rotate",
 		Purpose: "rotate", Permissions: []string{"execute_command"},
 	})
 	created := operator.recv(protocol.TypeSessionCreated)
+	if created.Status != protocol.StatusPendingApproval {
+		t.Fatalf("initial session status = %s, want pending_approval", created.Status)
+	}
 	device.recv(protocol.TypeSessionRequest)
 	device.send(protocol.Message{Type: protocol.TypeApproveSession, SessionID: created.SessionID})
 	operator.recv(protocol.TypeSessionStatus)
@@ -402,8 +405,8 @@ func TestTemporaryPasswordRotationRevokesSessions(t *testing.T) {
 		Type: protocol.TypeRequestSession, DeviceID: "device-rotate", TemporaryPassword: newPassword,
 		Purpose: "new", Permissions: []string{"execute_command"},
 	})
-	if created := operator2.recv(protocol.TypeSessionCreated); created.Status != protocol.StatusPendingApproval {
-		t.Fatalf("new password status = %s, want pending_approval", created.Status)
+	if created := operator2.recv(protocol.TypeSessionCreated); created.Status != protocol.StatusApproved {
+		t.Fatalf("new password status = %s, want approved", created.Status)
 	}
 }
 

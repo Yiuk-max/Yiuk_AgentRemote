@@ -71,14 +71,9 @@ void MainWindow::loadPlatformConfig() {
     const QSignalBlocker blockAddress(platformAddress);
     const QSignalBlocker blockPassword(platformPassword);
     const QSignalBlocker blockTls(platformTls);
-    const QSignalBlocker blockMode(platformMode);
     if (platformAddress) platformAddress->setText(platformConfig.address);
     if (platformPassword) platformPassword->setText(platformConfig.playerPassword);
     if (platformTls) platformTls->setChecked(platformConfig.tls);
-    if (platformMode) {
-        const int index = platformMode->findData(platformConfig.mode);
-        platformMode->setCurrentIndex(index >= 0 ? index : 0);
-    }
     if (passwordValue) passwordValue->setText(passwordVisible ? formatTemporaryPassword(temporaryPassword) : "********");
     writeMcpPlatformClientConfig(platformConfig);
 }
@@ -96,7 +91,6 @@ void MainWindow::savePlatformConfig() {
     if (platformTls) platformConfig.tls = platformTls->isChecked();
     platformConfig.enabled = true;
     platformConfig.allowInsecure = false;
-    if (platformMode) platformConfig.mode = platformMode->currentData().toString();
     platform->setConfig(platformConfig);
     QDir().mkpath(QFileInfo(platformConfigPath()).absolutePath());
     const QJsonObject object{
@@ -123,10 +117,20 @@ QString MainWindow::mcpExecutablePath() const {
 }
 
 
-QString MainWindow::mcpAgentConfigText() const {
-    QJsonObject server{{"command", mcpExecutablePath()}, {"args", QJsonArray{}}};
-    QJsonObject root{{"mcpServers", QJsonObject{{"agentremote", server}}}};
-    return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented));
+QString MainWindow::mcpSetupPromptText() const {
+    const QString sourceExe = QDir::toNativeSeparators(mcpExecutablePath());
+    const QString clientConfig = QDir::toNativeSeparators(yiukConfigPath("platform-client.json"));
+    return QStringLiteral(
+        "请帮我把 Yiuk AgentRemote 的 MCP Server 接入当前 Agent。\n\n"
+        "MCP Server 可执行文件：\n%1\n\n"
+        "请按以下步骤操作：\n"
+        "1. 检查该文件存在，并将 yiuk-mcp.exe 复制到你管理的本地工具目录；不要移动或覆盖原文件。\n"
+        "2. 按当前 Agent 的 MCP 配置格式注册一个名为 agentremote 的 stdio MCP Server，command 指向复制后的 yiuk-mcp.exe，args 为空。不要假设 MCP 配置格式或路径对所有 Agent 通用；先识别当前 Agent 并使用它自己的注册方式。\n"
+        "3. 本机平台连接配置由 Yiuk 客户端维护，位置为：\n%2\n"
+        "   其中包含平台地址、Player 密码和 TLS 设置。不要在 MCP 配置里复制、输出或泄露密码；MCP Server 会从该配置文件读取连接信息。\n"
+        "4. 检查 MCP 配置语法并告知我如何重启/重新加载当前 Agent 以启用工具。不要擅自修改平台地址、凭据或 TLS 安全选项。\n\n"
+        "可用工具包括 list_devices、get_device_status、request_connection、run_command、execute_command、get_command_result、download_file、upload_file、cancel_command 和 close_session。远程操作前先确认目标设备与任务；没有有效临时密码时，连接请求需要目标设备所有者批准。"
+    ).arg(sourceExe, clientConfig);
 }
 
 
@@ -153,9 +157,9 @@ bool MainWindow::writeMcpPlatformClientConfig(const PlatformClient::Config &plat
 }
 
 
-void MainWindow::copyMcpAgentConfig() {
-    copyToClipboard(mcpAgentConfigText(), "Agent MCP 配置已复制");
-    showStatusMessage("把配置粘贴到 Agent 的 MCP 设置中即可", 4000);
+void MainWindow::copyMcpSetupPrompt() {
+    copyToClipboard(mcpSetupPromptText(), "MCP 安装提示词已复制");
+    showStatusMessage("已复制提示词，请粘贴给当前 Agent 执行接入", 4000);
 }
 
 

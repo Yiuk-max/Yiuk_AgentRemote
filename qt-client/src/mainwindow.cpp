@@ -250,7 +250,7 @@ QPushButton *MainWindow::iconButton(Glyph glyph, const QString &tooltip) {
     auto *button = new QPushButton;
     button->setObjectName("toolIcon");
     button->setIcon(glyphIcon(glyph));
-    button->setIconSize(QSize(18, 18));
+    button->setIconSize(glyph == Glyph::Refresh ? QSize(20, 20) : QSize(18, 18));
     button->setFixedSize(30, 30);
     button->setToolTip(tooltip);
     button->setAccessibleName(tooltip);
@@ -342,9 +342,22 @@ QWidget *MainWindow::deviceRow(const QString &code, const QString &name, bool lo
     details->addWidget(nameLabel);
     details->addWidget(codeLabel);
     layout->addLayout(details, 1);
-    auto *action = makeButton(local ? "复制" : "发起协助");
-    action->setToolTip(local ? "复制设备码" : "发起协助");
+    auto *action = makeButton(local ? "复制" : "连接");
+    action->setToolTip(local ? "复制设备码" : "连接设备");
     layout->addWidget(action);
+    QPushButton *favorite = nullptr;
+    if (!local) {
+        favorite = iconButton(Glyph::Star, "从收藏中移除");
+        favorite->setIcon(starIcon(true));
+        layout->insertWidget(layout->count() - 1, favorite);
+        connect(favorite, &QPushButton::clicked, this, [this, code] {
+            savedDevices = QSettings().value("savedDevices").toStringList();
+            savedDevices.removeAll(code);
+            QSettings().setValue("savedDevices", savedDevices);
+            refreshDevicesPage();
+            showStatusMessage("设备已从收藏中移除", 1800);
+        });
+    }
     if (local) {
         connect(action, &QPushButton::clicked, this, [this] { copyToClipboard(deviceCode, "设备码已复制"); });
     } else {
@@ -354,16 +367,13 @@ QWidget *MainWindow::deviceRow(const QString &code, const QString &name, bool lo
         auto startAssist = [this, code] {
             QString digits;
             for (const QChar ch : code) if (ch.isDigit()) digits += ch;
-            remoteCode->setText(code);
-            showPage(0);
-            remoteCode->setFocus();
             lookupDeviceBeforeConnecting(digits);
         };
         connect(action, &QPushButton::clicked, this, startAssist);
         auto showContextMenu = [this, row, code, startAssist] {
             QMenu menu(row);
             auto *connectAction = menu.addAction("发起连接");
-            auto *deleteAction = menu.addAction("删除设备");
+            auto *deleteAction = menu.addAction("从收藏中移除");
             QAction *chosen = menu.exec(QCursor::pos());
             if (chosen == connectAction) {
                 startAssist();
@@ -371,8 +381,7 @@ QWidget *MainWindow::deviceRow(const QString &code, const QString &name, bool lo
                 savedDevices.removeAll(code);
                 QSettings().setValue("savedDevices", savedDevices);
                 refreshDevicesPage();
-                refreshFavoriteState();
-                showStatusMessage("设备已从列表删除", 1800);
+                showStatusMessage("设备已从收藏中移除", 1800);
             }
         };
         auto attachContextMenu = [this, showContextMenu](QWidget *widget) {
@@ -396,8 +405,6 @@ void MainWindow::showPage(int index) {
     navDevices->setChecked(index == 1);
     navHistory->setChecked(index == 2);
     navSettings->setChecked(index == 3);
-    // 收藏列表可能在其他页面发生变化（添加或删除），因此每次返回主页时都重新检查收藏星标
-    if (index == 0) refreshFavoriteState();
     if (index == 3 && settingsPage) {
         // 页面隐藏时加载文本字段可能导致设置页自动滚动；始终从页面标题位置显示
         QTimer::singleShot(0, this, [this] {
@@ -420,7 +427,6 @@ void MainWindow::refreshDevicesPage() {
     for (const QString &code : savedDevices)
         deviceListLayout->addWidget(deviceRow(code, "已添加设备", false));
     deviceListLayout->addStretch(1);
-    refreshFavoriteState();
 }
 
 
@@ -560,9 +566,5 @@ bool MainWindow::canAdmitPlatformSession(const QJsonObject &session) const {
 
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
-    // QComboBox 默认会在滚动滚轮时切换选项
-    // 只有用户主动聚焦授权模式选择框时才处理滚轮输入
-    if (watched == platformMode && event->type() == QEvent::Wheel && !platformMode->hasFocus())
-        return true;
     return QMainWindow::eventFilter(watched, event);
 }

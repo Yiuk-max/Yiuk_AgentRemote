@@ -86,17 +86,6 @@ QWidget *MainWindow::createSettingsPage() {
     platformTls->setChecked(true);
     addFormRow(platformLayout, "连接安全", platformTls);
 
-    platformMode = new QComboBox;
-    platformMode->setObjectName("settingsField");
-    platformMode->setMinimumHeight(32);
-    // 用户滚动设置页时，滚轮事件不能改变授权模式
-    // 只有选择框获得焦点时才允许滚轮切换
-    platformMode->setFocusPolicy(Qt::StrongFocus);
-    platformMode->installEventFilter(this);
-    platformMode->addItem("等待对方同意", "approval");
-    platformMode->addItem("直接远程", "direct");
-    addFormRow(platformLayout, "授权模式", platformMode);
-
     auto *platformActionRow = new QHBoxLayout;
     platformActionRow->setContentsMargins(110, 1, 0, 0);
     platformActionRow->setSpacing(12);
@@ -113,13 +102,13 @@ QWidget *MainWindow::createSettingsPage() {
     agentSection->setObjectName("settingsCard");
     auto *agentLayout = new QHBoxLayout(agentSection);
     agentLayout->setContentsMargins(16, 8, 16, 8);
-    auto *agentTitle = makeLabel("Agent 集成", "font-size: 16px; font-weight: 650; color: #263446;");
-    agentLayout->addWidget(agentTitle);
+    agentLayout->setSpacing(8);
+    agentLayout->addWidget(makeLabel("Agent / MCP 接入", "font-size: 16px; font-weight: 650; color: #263446;"));
+    auto *copyMcpPrompt = iconButton(Glyph::Copy, "复制 MCP 安装提示词。提示词包含本机 MCP Server 路径与配置方法；粘贴给 Agent 后，让它按当前 Agent 的方式注册 MCP Server。");
+    agentLayout->addWidget(copyMcpPrompt);
     agentLayout->addStretch();
-    auto *copyMcpConfig = makePrimaryButton(QStringLiteral("复制 Agent 配置"));
-    agentLayout->addWidget(copyMcpConfig);
     settingsContentLayout->addWidget(agentSection);
-    connect(copyMcpConfig, &QPushButton::clicked, this, [this] { copyMcpAgentConfig(); });
+    connect(copyMcpPrompt, &QPushButton::clicked, this, [this] { copyMcpSetupPrompt(); });
 
     auto *dataSection = new QFrame;
     dataSection->setObjectName("settingsCard");
@@ -157,13 +146,6 @@ QWidget *MainWindow::createSettingsPage() {
     });
     connect(platformPassword, &QLineEdit::editingFinished, this, [this] { savePlatformConfig(); });
     connect(platformTls, &QCheckBox::toggled, this, [this] { savePlatformConfig(); });
-    connect(platformMode, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
-        savePlatformConfig();
-        if (platform && platform->isConnected() && platformMode) {
-            platform->updateTemporaryPassword(temporaryPassword, passwordVersion, platformMode->currentData().toString(), platform->config().ttlSeconds);
-            showStatusMessage("授权模式已同步到平台", 1800);
-        }
-    });
     connect(clearHistory, &QPushButton::clicked, this, [this] {
         if (!askConfirm(this, "清除本地记录",
                         "清除所有本机会话和任务记录？\n\n正在运行的任务不会因此停止。清除后无法恢复。",

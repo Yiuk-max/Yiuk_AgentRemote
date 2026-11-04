@@ -628,7 +628,7 @@ func TestPlatformClientUploadFileRejectsInvalidLocalPath(t *testing.T) {
 	}
 }
 
-func TestPlatformClientRunCommandApprovalMode(t *testing.T) {
+func TestPlatformClientRunCommandPasswordCreatesDirectSession(t *testing.T) {
 	address := startPlatform(t)
 	device := dialFakeDevice(t, address)
 	device.registerWithMode("device-approval", protocol.ModeApproval)
@@ -655,8 +655,6 @@ func TestPlatformClientRunCommandApprovalMode(t *testing.T) {
 		done <- outcome{data: data, err: err}
 	}()
 
-	request := device.recv(protocol.TypeSessionRequest)
-	device.send(protocol.Message{Type: protocol.TypeApproveSession, SessionID: request.SessionID})
 	forwarded := device.recv(protocol.TypeExecuteCommand)
 	if forwarded.Command != "ipconfig" {
 		t.Fatalf("unexpected command: %#v", forwarded)
@@ -677,7 +675,7 @@ func TestPlatformClientRunCommandApprovalMode(t *testing.T) {
 	}
 	data := result.data.(map[string]any)
 	if data["authorization"] != protocol.StatusApproved || data["status"] != string(protocol.TaskSucceeded) {
-		t.Fatalf("unexpected approval-mode result: %#v", data)
+		t.Fatalf("unexpected direct-mode result: %#v", data)
 	}
 	if stdout, _ := data["stdout"].(string); stdout != "ok\n" {
 		t.Fatalf("stdout = %q", stdout)

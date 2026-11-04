@@ -72,8 +72,6 @@ private:
     QLabel *passwordValue = nullptr;
     QPushButton *togglePassword = nullptr;
     bool passwordVisible = false;
-    QLineEdit *remoteCode = nullptr;
-    QPushButton *favoriteButton = nullptr;
     QStackedWidget *pages = nullptr;
     QPushButton *navHome = nullptr;
     QPushButton *navDevices = nullptr;
@@ -102,7 +100,6 @@ private:
     QLineEdit *platformAddress = nullptr;
     QLineEdit *platformPassword = nullptr;
     QCheckBox *platformTls = nullptr;
-    QComboBox *platformMode = nullptr;
     QLabel *platformStatusValue = nullptr;
     QPushButton *platformConnectButton = nullptr;
     QString pendingDeviceLookupCorrelationId;
@@ -159,8 +156,6 @@ private:
     QWidget *createSettingsPage();
     void showPage(int index);
     void refreshDevicesPage();
-    // 主页上的收藏星标：设备代码尚未收藏时显示描边，收藏后显示琥珀色实心图标
-    void refreshFavoriteState();
     void refreshSessionsPage();
     QString sessionConnectorCode(const QJsonObject &session) const;
     QString sessionTargetCode(const QJsonObject &session) const;
@@ -173,9 +168,9 @@ private:
     void loadPlatformConfig();
     void savePlatformConfig();
     QString mcpExecutablePath() const;
-    QString mcpAgentConfigText() const;
+    QString mcpSetupPromptText() const;
     bool writeMcpPlatformClientConfig(const PlatformClient::Config &platformConfig);
-    void copyMcpAgentConfig();
+    void copyMcpSetupPrompt();
     void initializePlatformClient();
     void updatePlatformState(const QString &state);
     void lookupDeviceBeforeConnecting(const QString &deviceId);

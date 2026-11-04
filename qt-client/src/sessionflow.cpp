@@ -122,7 +122,7 @@ void MainWindow::applySessionDecision(const QString &sessionId, bool approved) {
     }
     appendActivity(sessionId, approved ? "本机用户已批准 Agent 会话" : "本机用户已拒绝 Agent 会话",
                    ActivityKind::Session);
-    if (approved && platformSession) refreshOpenActivityPanel();
+    if (approved && platformSession) openOrActivateActivityPanel(sessionId);
     showStatusMessage(approved ? "会话已批准" : "连接申请已拒绝", 4000);
 }
 

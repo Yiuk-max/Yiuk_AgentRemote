@@ -110,6 +110,18 @@ QPixmap glyphPixmap(Glyph glyph, const QColor &color, int size) {
 }
 
 QIcon glyphIcon(Glyph glyph) {
+    QString resource;
+    switch (glyph) {
+    case Glyph::Home: resource = QStringLiteral(":/icons/home.svg"); break;
+    case Glyph::Devices: resource = QStringLiteral(":/icons/devices.svg"); break;
+    case Glyph::History: resource = QStringLiteral(":/icons/history.svg"); break;
+    case Glyph::Settings: resource = QStringLiteral(":/icons/settings.svg"); break;
+    case Glyph::Copy: resource = QStringLiteral(":/icons/copy.svg"); break;
+    case Glyph::Refresh: resource = QStringLiteral(":/icons/refresh.svg"); break;
+    default: break;
+    }
+    if (!resource.isEmpty()) return QIcon(resource);
+
     QIcon icon;
     icon.addPixmap(glyphPixmap(glyph, QColor("#66758a")), QIcon::Normal, QIcon::Off);
     icon.addPixmap(glyphPixmap(glyph, QColor("#1479ed")), QIcon::Active, QIcon::Off);

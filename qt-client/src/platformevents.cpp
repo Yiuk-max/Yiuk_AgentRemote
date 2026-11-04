@@ -36,6 +36,7 @@ void MainWindow::storeIncomingDeviceSession(const QJsonObject &session, bool app
     refreshActiveSessions();
     refreshSessionsPage();
     showStatusMessage(approved ? "已建立直接连接会话" : "有待批准的协助请求", 4000);
+    if (approved) openOrActivateActivityPanel(sessionId);
     if (isNewSession && trayIcon && QSystemTrayIcon::supportsMessages()) {
         trayIcon->showMessage(approved ? "远程协助已连接" : "需要批准远程协助",
                               sessionRecord.value("purpose").toString(),

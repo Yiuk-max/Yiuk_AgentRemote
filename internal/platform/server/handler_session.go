@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"agentremote/internal/platform/audit"
+	"agentremote/internal/platform/device"
 	"agentremote/internal/platform/protocol"
 	"agentremote/internal/platform/session"
 	"agentremote/internal/platform/task"
@@ -24,14 +25,19 @@ func (s *Server) handleRequestSession(clientConn *clientConnection, message prot
 	if len(message.Permissions) == 0 {
 		return newProtocolError("INVALID_ARGUMENT", "at least one permission is required")
 	}
-	if message.TemporaryPassword == "" {
-		return newProtocolError("TEMPORARY_PASSWORD_REQUIRED", "a device temporary password is required")
+	var err error
+	info, ok := s.devices.Get(message.DeviceID)
+	if !ok {
+		return s.deviceProtocolError(device.ErrDeviceNotFound)
 	}
-
-	info, err := s.devices.VerifyPassword(message.DeviceID, message.TemporaryPassword)
-	if err != nil {
-		s.audit.Warn("temporary_password_rejected", "device", audit.RedactID(message.DeviceID), "code", auditErrorCode(err))
-		return s.deviceProtocolError(err)
+	mode := device.ModeApproval
+	if message.TemporaryPassword != "" {
+		info, err = s.devices.VerifyPassword(message.DeviceID, message.TemporaryPassword)
+		if err != nil {
+			s.audit.Warn("temporary_password_rejected", "device", audit.RedactID(message.DeviceID), "code", auditErrorCode(err))
+			return s.deviceProtocolError(err)
+		}
+		mode = device.ModeDirect
 	}
 	deviceConnectionID, ok := s.devices.OnlineConnection(info.ID)
 	if !ok || s.connectionByID(deviceConnectionID) == nil {
@@ -46,7 +52,9 @@ func (s *Server) handleRequestSession(clientConn *clientConnection, message prot
 		OperatorSource:       clientConn.remoteAddress(),
 		Purpose:              message.Purpose,
 		Permissions:          message.Permissions,
-		Mode:                 info.Mode,
+		// Possessing the current temporary password explicitly authorizes direct mode;
+		// without it, create an approval request regardless of the target's configured mode.
+		Mode: mode,
 	})
 	if err != nil {
 		return s.sessionProtocolError(err)
