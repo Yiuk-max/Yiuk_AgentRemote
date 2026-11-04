@@ -148,6 +148,23 @@ Compress-Archive -Path $OUT -DestinationPath "release/YiukDeviceAssist-$VERSION-
 
 发布说明写在 `docs/release-notes-<version>.txt`，随包说明启动步骤、服务端地址与密码填写位置、自签名证书与 Agent 配置的入口。
 
+可选：生成安装包。绿色 zip 之外还可以出一个 Windows 安装包，脚本在
+`qt-client/installer/YiukDeviceAssist.iss`：
+
+```powershell
+# 源目录会自动拼成 Release\YiukDeviceAssist-<MyAppVersion>-win64，
+# 产物落在 Release\setup\YiukDeviceAssist-<version>-setup.exe
+ISCC.exe qt-client\installer\YiukDeviceAssist.iss
+# 换个输出位置：
+ISCC.exe /O"E:\缓存\setup" qt-client\installer\YiukDeviceAssist.iss
+```
+
+- 改版本时同时改 `qt-client/CMakeLists.txt` 的 `project(... VERSION ...)` 和脚本里的
+  `MyAppVersion`，两者不一致会让安装包和窗口标题的版本对不上。
+- 安装包只在绿色目录已经生成后才能编译；卸载**不删** `%LOCALAPPDATA%\Yiuk\DeviceAssist`，
+  重装可沿用同一台设备身份。
+- 未做代码签名，下载后 SmartScreen 可能提示。
+
 ## 6. 服务器部署
 
 ```sh
