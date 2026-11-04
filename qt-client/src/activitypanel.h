@@ -41,7 +41,7 @@ public:
               const QVector<ActivityEntry> &history);
 
     // 替换面板内容（新的当前会话）和状态
-    void reset(const QString &label, const QString &state, const QString &status,
+    void replaceHistoryAndStatus(const QString &label, const QString &state, const QString &status,
                const QVector<ActivityEntry> &history);
 
     void append(const ActivityEntry &entry);
@@ -52,15 +52,15 @@ public:
 
     void close();
 
-    void setSessionId(const QString &id) { currentSession = id; }
-    QString sessionId() const { return currentSession; }
+    void setSessionId(const QString &id) { currentSessionId = id; }
+    QString sessionId() const { return currentSessionId; }
 
 private:
-    void send(const QString &line);
-    void cleanup();
+    void writeProtocolLine(const QString &line);
+    void releaseFinishedProcess();
 
     QProcess *process = nullptr;
-    QString currentSession;
-    QString lastState;
-    QString lastStatus;
+    QString currentSessionId;
+    QString lastSessionState;
+    QString lastStatusText;
 };

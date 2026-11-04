@@ -11,233 +11,233 @@ import (
 )
 
 // 处理命令执行请求
-func (s *Server) handleExecuteCommand(c *conn, m protocol.Message) error {
-	if err := s.validID("session_id", m.SessionID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+func (s *Server) handleExecuteCommand(clientConn *clientConnection, message protocol.Message) error {
+	if err := s.validateID("session_id", message.SessionID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	if err := s.validID("request_id", m.RequestID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+	if err := s.validateID("request_id", message.RequestID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	if strings.TrimSpace(m.Command) == "" || len(m.Command) > s.cfg.CommandMaxLen {
-		return perr("INVALID_ARGUMENT", "command is required and bounded")
+	if strings.TrimSpace(message.Command) == "" || len(message.Command) > s.config.CommandMaxLen {
+		return newProtocolError("INVALID_ARGUMENT", "command is required and bounded")
 	}
-	if len(m.WorkingDirectory) > s.cfg.WorkingDirMaxLen {
-		return perr("INVALID_ARGUMENT", "working_directory is too long")
+	if len(message.WorkingDirectory) > s.config.WorkingDirMaxLen {
+		return newProtocolError("INVALID_ARGUMENT", "working_directory is too long")
 	}
-	timeout := m.TimeoutSeconds
-	if timeout <= 0 {
-		timeout = 60
+	timeoutSeconds := message.TimeoutSeconds
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 60
 	}
-	if timeout < 1 || timeout > 3600 {
-		return perr("INVALID_ARGUMENT", "timeout_seconds must be between 1 and 3600")
-	}
-
-	ses, err := s.sessions.Authorize(m.SessionID, c.id, session.PermissionExecuteCommand)
-	if err != nil {
-		return s.sessionError(err)
-	}
-	onlineID, ok := s.devices.OnlineConnection(ses.DeviceID)
-	if !ok || onlineID != ses.DeviceConnectionID || s.lookupConn(onlineID) == nil {
-		return perr("DEVICE_OFFLINE", "device is no longer online")
+	if timeoutSeconds < 1 || timeoutSeconds > 3600 {
+		return newProtocolError("INVALID_ARGUMENT", "timeout_seconds must be between 1 and 3600")
 	}
 
-	t, created, err := s.tasks.Start(ses.ID, m.RequestID, time.Duration(timeout)*time.Second)
+	sessionRecord, err := s.sessions.Authorize(message.SessionID, clientConn.id, session.PermissionExecuteCommand)
 	if err != nil {
-		return s.taskError(err)
+		return s.sessionProtocolError(err)
+	}
+	deviceConnectionID, ok := s.devices.OnlineConnection(sessionRecord.DeviceID)
+	if !ok || deviceConnectionID != sessionRecord.DeviceConnectionID || s.connectionByID(deviceConnectionID) == nil {
+		return newProtocolError("DEVICE_OFFLINE", "device is no longer online")
+	}
+
+	commandTask, created, err := s.tasks.Start(sessionRecord.ID, message.RequestID, time.Duration(timeoutSeconds)*time.Second)
+	if err != nil {
+		return s.taskProtocolError(err)
 	}
 	if !created {
-		return s.sendOK(c, m, protocol.Message{
+		return s.sendResponse(clientConn, message, protocol.Message{
 			Type:      protocol.TypeCommandAccepted,
-			SessionID: ses.ID,
-			RequestID: t.RequestID,
-			Status:    string(t.Status),
+			SessionID: sessionRecord.ID,
+			RequestID: commandTask.RequestID,
+			Status:    string(commandTask.Status),
 		})
 	}
-	if _, err := s.sessions.Activate(ses.ID, c.id); err != nil {
-		s.tasks.Finish(ses.ID, m.RequestID, task.StatusResultUnknown, nil, false)
-		return s.sessionError(err)
+	if _, err := s.sessions.Activate(sessionRecord.ID, clientConn.id); err != nil {
+		s.tasks.Finish(sessionRecord.ID, message.RequestID, task.StatusResultUnknown, nil, false)
+		return s.sessionProtocolError(err)
 	}
 
 	forward := protocol.Message{
 		Type:             protocol.TypeExecuteCommand,
-		SessionID:        ses.ID,
-		RequestID:        t.RequestID,
-		Command:          m.Command,
-		WorkingDirectory: m.WorkingDirectory,
-		TimeoutSeconds:   timeout,
+		SessionID:        sessionRecord.ID,
+		RequestID:        commandTask.RequestID,
+		Command:          message.Command,
+		WorkingDirectory: message.WorkingDirectory,
+		TimeoutSeconds:   timeoutSeconds,
 	}
-	if !s.sendToConnection(ses.DeviceConnectionID, forward) {
-		s.tasks.Finish(ses.ID, m.RequestID, task.StatusResultUnknown, nil, false)
-		return perr("DEVICE_UNAVAILABLE", "could not deliver command to device")
+	if !s.sendToConnection(sessionRecord.DeviceConnectionID, forward) {
+		s.tasks.Finish(sessionRecord.ID, message.RequestID, task.StatusResultUnknown, nil, false)
+		return newProtocolError("DEVICE_UNAVAILABLE", "could not deliver command to device")
 	}
-	s.audit.Event("command_submitted", "session", audit.RedactID(ses.ID), "request", audit.RedactID(t.RequestID), "device", audit.RedactID(ses.DeviceID))
-	return s.sendOK(c, m, protocol.Message{
+	s.audit.Event("command_submitted", "session", audit.RedactID(sessionRecord.ID), "request", audit.RedactID(commandTask.RequestID), "device", audit.RedactID(sessionRecord.DeviceID))
+	return s.sendResponse(clientConn, message, protocol.Message{
 		Type:      protocol.TypeCommandAccepted,
-		SessionID: ses.ID,
-		RequestID: t.RequestID,
-		Status:    string(t.Status),
+		SessionID: sessionRecord.ID,
+		RequestID: commandTask.RequestID,
+		Status:    string(commandTask.Status),
 	})
 }
 
 // 处理命令执行输出
-func (s *Server) handleCommandOutput(c *conn, m protocol.Message) error {
-	if c.role != roleDevice {
-		return perr("NOT_DEVICE", "only the target device can send command output")
+func (s *Server) handleCommandOutput(clientConn *clientConnection, message protocol.Message) error {
+	if clientConn.role != roleDevice {
+		return newProtocolError("NOT_DEVICE", "only the target device can send command output")
 	}
-	if err := s.validID("session_id", m.SessionID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+	if err := s.validateID("session_id", message.SessionID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	if err := s.validID("request_id", m.RequestID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+	if err := s.validateID("request_id", message.RequestID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	ses, ok := s.sessions.Get(m.SessionID)
-	if !ok || ses.DeviceID != c.deviceID || ses.DeviceConnectionID != c.id {
-		return perr("SESSION_NOT_FOUND", "session not found")
+	sessionRecord, ok := s.sessions.Get(message.SessionID)
+	if !ok || sessionRecord.DeviceID != clientConn.deviceID || sessionRecord.DeviceConnectionID != clientConn.id {
+		return newProtocolError("SESSION_NOT_FOUND", "session not found")
 	}
-	t, err := s.tasks.AppendOutput(ses.ID, m.RequestID, m.Stream, m.Data)
+	commandTask, err := s.tasks.AppendOutput(sessionRecord.ID, message.RequestID, message.Stream, message.Data)
 	if err != nil {
-		return s.taskError(err)
+		return s.taskProtocolError(err)
 	}
 	sequence := uint64(0)
 	data := ""
-	if n := len(t.Chunks); n > 0 {
-		sequence = t.Chunks[n-1].Sequence
-		data = t.Chunks[n-1].Data
+	if chunkCount := len(commandTask.Chunks); chunkCount > 0 {
+		sequence = commandTask.Chunks[chunkCount-1].Sequence
+		data = commandTask.Chunks[chunkCount-1].Data
 	}
-	if data == "" && !t.Truncated {
+	if data == "" && !commandTask.Truncated {
 		return nil
 	}
-	s.sendToConnection(ses.OperatorConnectionID, protocol.Message{
+	s.sendToConnection(sessionRecord.OperatorConnectionID, protocol.Message{
 		Type:        protocol.TypeCommandOutput,
-		SessionID:   ses.ID,
-		RequestID:   m.RequestID,
-		Stream:      m.Stream,
+		SessionID:   sessionRecord.ID,
+		RequestID:   message.RequestID,
+		Stream:      message.Stream,
 		Data:        data,
 		Sequence:    sequence,
-		Truncated:   t.Truncated,
-		OutputBytes: t.OutputBytes,
+		Truncated:   commandTask.Truncated,
+		OutputBytes: commandTask.OutputBytes,
 	})
 	return nil
 }
 
 // 处理命令执行结果
-func (s *Server) handleCommandResult(c *conn, m protocol.Message) error {
-	if c.role != roleDevice {
-		return perr("NOT_DEVICE", "only the target device can report a command result")
+func (s *Server) handleCommandResult(clientConn *clientConnection, message protocol.Message) error {
+	if clientConn.role != roleDevice {
+		return newProtocolError("NOT_DEVICE", "only the target device can report a command result")
 	}
-	if err := s.validID("session_id", m.SessionID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+	if err := s.validateID("session_id", message.SessionID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	if err := s.validID("request_id", m.RequestID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+	if err := s.validateID("request_id", message.RequestID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	ses, ok := s.sessions.Get(m.SessionID)
-	if !ok || ses.DeviceID != c.deviceID || ses.DeviceConnectionID != c.id {
-		return perr("SESSION_NOT_FOUND", "session not found")
+	sessionRecord, ok := s.sessions.Get(message.SessionID)
+	if !ok || sessionRecord.DeviceID != clientConn.deviceID || sessionRecord.DeviceConnectionID != clientConn.id {
+		return newProtocolError("SESSION_NOT_FOUND", "session not found")
 	}
-	status, err := terminalTaskStatus(m.Status)
+	status, err := parseTerminalTaskStatus(message.Status)
 	if err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	resultKnown := m.ResultKnown || status != task.StatusResultUnknown
-	t, err := s.tasks.Finish(ses.ID, m.RequestID, status, m.ExitCode, resultKnown)
+	resultKnown := message.ResultKnown || status != task.StatusResultUnknown
+	commandTask, err := s.tasks.Finish(sessionRecord.ID, message.RequestID, status, message.ExitCode, resultKnown)
 	if err != nil {
-		return s.taskError(err)
+		return s.taskProtocolError(err)
 	}
-	s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
-	s.audit.Event("command_finished", "session", audit.RedactID(ses.ID), "request", audit.RedactID(t.RequestID), "status", string(t.Status), "truncated", t.Truncated)
+	s.sendToConnection(sessionRecord.OperatorConnectionID, commandResultMessage(commandTask))
+	s.audit.Event("command_finished", "session", audit.RedactID(sessionRecord.ID), "request", audit.RedactID(commandTask.RequestID), "status", string(commandTask.Status), "truncated", commandTask.Truncated)
 	return nil
 }
 
 // 处理获取命令执行结果
-func (s *Server) handleGetCommandResult(c *conn, m protocol.Message) error {
-	if err := s.validID("session_id", m.SessionID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+func (s *Server) handleGetCommandResult(clientConn *clientConnection, message protocol.Message) error {
+	if err := s.validateID("session_id", message.SessionID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	if err := s.validID("request_id", m.RequestID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+	if err := s.validateID("request_id", message.RequestID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	ses, ok := s.sessions.Get(m.SessionID)
-	if !ok || !s.canAccessSession(c, ses) {
-		return perr("SESSION_NOT_FOUND", "session not found")
+	sessionRecord, ok := s.sessions.Get(message.SessionID)
+	if !ok || !s.canAccessSession(clientConn, sessionRecord) {
+		return newProtocolError("SESSION_NOT_FOUND", "session not found")
 	}
-	view, err := s.tasks.Result(ses.ID, m.RequestID, m.Cursor)
+	view, err := s.tasks.ResultFromCursor(sessionRecord.ID, message.RequestID, message.Cursor)
 	if err != nil {
-		return s.taskError(err)
+		return s.taskProtocolError(err)
 	}
 	chunks := make([]protocol.OutputChunk, 0, len(view.Chunks))
-	for _, ch := range view.Chunks {
-		chunks = append(chunks, protocol.OutputChunk{Stream: ch.Stream, Sequence: ch.Sequence, Data: ch.Data})
+	for _, chunk := range view.Chunks {
+		chunks = append(chunks, protocol.OutputChunk{Stream: chunk.Stream, Sequence: chunk.Sequence, Data: chunk.Data})
 	}
-	t := view.Task
-	return s.sendOK(c, m, protocol.Message{
+	commandTask := view.Task
+	return s.sendResponse(clientConn, message, protocol.Message{
 		Type:        protocol.TypeCommandResult,
-		SessionID:   t.SessionID,
-		RequestID:   t.RequestID,
-		Status:      string(t.Status),
-		ExitCode:    t.ExitCode,
-		ResultKnown: t.ResultKnown,
-		Truncated:   t.Truncated,
-		OutputBytes: t.OutputBytes,
+		SessionID:   commandTask.SessionID,
+		RequestID:   commandTask.RequestID,
+		Status:      string(commandTask.Status),
+		ExitCode:    commandTask.ExitCode,
+		ResultKnown: commandTask.ResultKnown,
+		Truncated:   commandTask.Truncated,
+		OutputBytes: commandTask.OutputBytes,
 		Chunks:      chunks,
 		NextCursor:  view.NextCursor,
 	})
 }
 
 // 处理取消命令执行请求
-func (s *Server) handleCancelCommand(c *conn, m protocol.Message) error {
-	if err := s.validID("session_id", m.SessionID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+func (s *Server) handleCancelCommand(clientConn *clientConnection, message protocol.Message) error {
+	if err := s.validateID("session_id", message.SessionID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	if err := s.validID("request_id", m.RequestID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+	if err := s.validateID("request_id", message.RequestID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	ses, ok := s.sessions.Get(m.SessionID)
-	if !ok || !s.canAccessSession(c, ses) {
-		return perr("SESSION_NOT_FOUND", "session not found")
+	sessionRecord, ok := s.sessions.Get(message.SessionID)
+	if !ok || !s.canAccessSession(clientConn, sessionRecord) {
+		return newProtocolError("SESSION_NOT_FOUND", "session not found")
 	}
-	t, err := s.tasks.CancelRequested(ses.ID, m.RequestID)
+	commandTask, err := s.tasks.RequestCancel(sessionRecord.ID, message.RequestID)
 	if err != nil {
-		return s.taskError(err)
+		return s.taskProtocolError(err)
 	}
 	// Device-initiated cancel means the local process is already stopping.
-	if c.role == roleDevice && ses.DeviceID == c.deviceID {
-		t, err = s.tasks.Finish(ses.ID, m.RequestID, task.StatusCancelled, nil, true)
+	if clientConn.role == roleDevice && sessionRecord.DeviceID == clientConn.deviceID {
+		commandTask, err = s.tasks.Finish(sessionRecord.ID, message.RequestID, task.StatusCancelled, nil, true)
 		if err != nil {
-			return s.taskError(err)
+			return s.taskProtocolError(err)
 		}
-		s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
+		s.sendToConnection(sessionRecord.OperatorConnectionID, commandResultMessage(commandTask))
 	} else {
-		if !s.sendToConnection(ses.DeviceConnectionID, protocol.Message{
+		if !s.sendToConnection(sessionRecord.DeviceConnectionID, protocol.Message{
 			Type:      protocol.TypeCancelCommand,
-			SessionID: ses.ID,
-			RequestID: m.RequestID,
+			SessionID: sessionRecord.ID,
+			RequestID: message.RequestID,
 		}) {
-			t, _ = s.tasks.Finish(ses.ID, m.RequestID, task.StatusResultUnknown, nil, false)
+			commandTask, _ = s.tasks.Finish(sessionRecord.ID, message.RequestID, task.StatusResultUnknown, nil, false)
 		}
 	}
-	s.audit.Event("command_cancel_requested", "session", audit.RedactID(ses.ID), "request", audit.RedactID(m.RequestID), "status", string(t.Status))
-	return s.sendOK(c, m, protocol.Message{
+	s.audit.Event("command_cancel_requested", "session", audit.RedactID(sessionRecord.ID), "request", audit.RedactID(message.RequestID), "status", string(commandTask.Status))
+	return s.sendResponse(clientConn, message, protocol.Message{
 		Type:      protocol.TypeCommandCanceled,
-		SessionID: ses.ID,
-		RequestID: m.RequestID,
-		Status:    string(t.Status),
+		SessionID: sessionRecord.ID,
+		RequestID: message.RequestID,
+		Status:    string(commandTask.Status),
 	})
 }
 
 // 任务结果消息
-func taskResultMessage(t *task.Task) protocol.Message {
-	if t == nil {
+func commandResultMessage(commandTask *task.Task) protocol.Message {
+	if commandTask == nil {
 		return protocol.Message{Type: protocol.TypeCommandResult}
 	}
 	return protocol.Message{
 		Type:        protocol.TypeCommandResult,
-		SessionID:   t.SessionID,
-		RequestID:   t.RequestID,
-		Status:      string(t.Status),
-		ExitCode:    t.ExitCode,
-		Truncated:   t.Truncated,
-		ResultKnown: t.ResultKnown,
-		OutputBytes: t.OutputBytes,
+		SessionID:   commandTask.SessionID,
+		RequestID:   commandTask.RequestID,
+		Status:      string(commandTask.Status),
+		ExitCode:    commandTask.ExitCode,
+		Truncated:   commandTask.Truncated,
+		ResultKnown: commandTask.ResultKnown,
+		OutputBytes: commandTask.OutputBytes,
 	}
 }

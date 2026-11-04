@@ -39,7 +39,7 @@ platformclient / yiuk-mcp                        Qt 客户端
    │ conn#A (operator)                              │ conn#B (device)
    │ TLS 1.2+                                       │ TLS 1.2+
    └──────────────►  平台 :29564  ◄─────────────────┘
-                     Server.conns map
+                     Server.connections map
                      ├─ A: role=rolePlayer
                      └─ B: role=roleDevice, deviceID=111222333
 ```
@@ -54,7 +54,7 @@ platformclient / yiuk-mcp                        Qt 客户端
 
 | 映射 | 位置 | 用途 |
 | --- | --- | --- |
-| `connID → *conn` | `Server.conns` + `sync.Mutex` | 找到连接对象、写入它的发送队列 |
+| `connectionID → *clientConnection` | `Server.connections` + `sync.Mutex` | 找到连接对象、写入它的发送队列 |
 | `deviceID → connID` | `device.Manager` | 把“发给某台设备”翻译成“发给哪条连接” |
 | `sessionID → *Session` | `session.Manager` | 授权校验与状态机 |
 
@@ -68,21 +68,21 @@ platformclient / yiuk-mcp                        Qt 客户端
 
 ```go
 for {
-    nc, err := s.listener.Accept()
-    if err != nil { s.Close(); s.wg.Wait(); ... }
-    s.wg.Add(1)
+    transportConn, err := s.listener.Accept()
+    if err != nil { s.Close(); s.connectionWG.Wait(); ... }
+    s.connectionWG.Add(1)
     go func() {
-        defer s.wg.Done()
-        s.serveConn(nc)
+        defer s.connectionWG.Done()
+        s.serveConnection(transportConn)
     }()
 }
 ```
 
-`serveConn` 建连接对象、注册进 `conns`，然后：
+`serveConnection` 建连接对象、注册进 `connections`，然后：
 
 ```go
-go c.writeLoop()   // 唯一的写者
-s.readLoop(c)      // 当前 goroutine：读 + 处理
+go clientConn.writeQueuedMessages()          // 发送排队消息
+s.readAndDispatchMessages(clientConn)        // 当前 goroutine：读 + 分发
 ```
 
 所以**一条连接固定两个 goroutine**，没有线程池、没有 worker 池、没有任务队列。
@@ -92,20 +92,20 @@ s.readLoop(c)      // 当前 goroutine：读 + 处理
 `internal/platform/server/conn.go`：
 
 ```go
-func (s *Server) readLoop(c *conn) {
-    deadline := s.cfg.HandshakeTimeout()   // 默认 10s
-    handshake := true
+func (s *Server) readAndDispatchMessages(clientConn *clientConnection) {
+    readTimeout := s.config.HandshakeTimeout()   // 默认 10s
+    awaitingAuthentication := true
     for {
-        _ = c.nc.SetReadDeadline(time.Now().Add(deadline))
-        data, err := c.nc.ReadMessage()
+        _ = clientConn.transportConn.SetReadDeadline(time.Now().Add(readTimeout))
+        data, err := clientConn.transportConn.ReadMessage()
         if err != nil { ... return }
-        m, err := s.codec.Decode(data)
+        message, err := s.codec.Decode(data)
         if err != nil { ... return }
-        c.lastSeen = time.Now()
-        if err := s.handle(c, m); err != nil { ... }   // 同步，不是 go s.handle
-        if handshake && c.role != roleAnonymous {
-            handshake = false
-            deadline = s.cfg.HeartbeatTimeout()        // 默认 45s
+        clientConn.lastSeen = time.Now()
+        if err := s.dispatchMessage(clientConn, message); err != nil { ... }   // 同步调用
+        if awaitingAuthentication && clientConn.role != roleAnonymous {
+            awaitingAuthentication = false
+            readTimeout = s.config.HeartbeatTimeout()        // 默认 45s
         }
     }
 }
@@ -113,26 +113,26 @@ func (s *Server) readLoop(c *conn) {
 
 两个要点：
 
-1. **`s.handle` 是普通函数调用**，同一连接的消息严格按到达顺序处理。这是文件分块 `sequence` 校验、任务状态单向推进能成立的前提。
+1. **`s.dispatchMessage` 是普通函数调用**，同一连接的消息严格按到达顺序处理。这是文件分块 `sequence` 校验、任务状态单向推进能成立的前提。
 2. **读超时会变**：认证前是 `handshake_timeout_sec`（10s），认证后放宽到 `heartbeat_timeout_sec`（45s），因为长连接靠心跳而不是业务流量保活。
 
 ### 2.3 写循环：有界队列 + 单一写者
 
 ```go
-func (c *conn) writeLoop() {
-    defer c.close("write_loop")
+func (clientConn *clientConnection) writeQueuedMessages() {
+    defer clientConn.close("write_loop")
     for {
         select {
-        case m := <-c.send:
-            if err := c.writeRaw(m); err != nil { return }
-        case <-c.done:
+        case message := <-clientConn.outgoingMessages:
+            if err := clientConn.writeProtocolMessage(message); err != nil { return }
+        case <-clientConn.closed:
             return
         }
     }
 }
 ```
 
-`c.send` 是容量为 `observer_slow_client_buf`（默认 64）的 channel。**为什么要单独的写 goroutine**：
+`clientConn.outgoingMessages` 是容量为 `observer_slow_client_buf`（默认 64）的 channel。**为什么要单独的写 goroutine**：
 
 - 读取侧不能因为对端 socket 缓冲满而卡住，否则一个慢设备会阻塞所有想给它发消息的处理 goroutine；
 - 所有业务帧有唯一写者，天然不会出现多线程写 socket 的**字节交错**。
@@ -140,17 +140,17 @@ func (c *conn) writeLoop() {
 ### 2.4 `writeMu` 为什么仍然存在
 
 ```go
-func (c *conn) writeRaw(m protocol.Message) error {
-    c.writeMu.Lock()
-    defer c.writeMu.Unlock()
-    _ = c.nc.SetWriteDeadline(time.Now().Add(10 * time.Second))
-    data, err := c.srv.codec.Encode(m)
+func (clientConn *clientConnection) writeProtocolMessage(message protocol.Message) error {
+    clientConn.writeMu.Lock()
+    defer clientConn.writeMu.Unlock()
+    _ = clientConn.transportConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+    data, err := clientConn.server.codec.Encode(message)
     if err != nil { return err }
-    return c.nc.WriteMessage(data)
+    return clientConn.transportConn.WriteMessage(data)
 }
 ```
 
-因为**致命错误路径会绕过队列同步写**：`readLoop` 遇到 `fatal` 协议错误时直接 `c.writeRaw(errMsg)`，保证对端先看到错误码再被断开。这时是两个 goroutine 并发写同一 socket，必须串行化。`SetWriteDeadline(10s)` 防止对端不读导致永久阻塞。
+因为**致命错误路径会绕过队列同步写**：`readAndDispatchMessages` 遇到 `fatal` 协议错误时直接 `clientConn.writeProtocolMessage(errorMessage)`，保证对端先看到错误码再被断开。这时是两个 goroutine 并发写同一 socket，必须串行化。`SetWriteDeadline(10s)` 防止对端不读导致永久阻塞。
 
 ### 2.5 背压策略：慢客户端直接断开
 
@@ -158,13 +158,13 @@ func (c *conn) writeRaw(m protocol.Message) error {
 
 ```go
 select {
-case c.send <- m:
+case clientConn.outgoingMessages <- message:
     return true
-case <-c.done:
+case <-clientConn.closed:
     return false
 default:                                  // 队列满
-    s.audit.Warn("slow_client_disconnected", "connection", audit.RedactID(c.id))
-    c.close("slow_client")
+    s.audit.Warn("slow_client_disconnected", "connection", audit.RedactID(clientConn.id))
+    clientConn.close("slow_client")
     return false
 }
 ```
@@ -187,7 +187,7 @@ const (
 
 ### 3.2 平台认证（两条连接都要做）
 
-`authenticate_player` → `handleAuthenticate`：
+`authenticate_player` → `handleAuthenticatePlayer`：
 
 - 业务类型必须是 `agent_assist`，其他业务一律拒绝；
 - `identity_type` 必须是 `player`；
@@ -221,7 +221,7 @@ c.deviceID = info.ID
 - 已撤销的临时密码拒绝注册（`ErrPasswordRevoke`）；
 - 临时密码为空或已过期时，服务端生成新的 32 位密码并在 `device_registered` 里返回。
 
-另有一条自愈逻辑：如果设备码标记在线但对应连接已不在 `conns` 里（进程崩过），先 `ForceOffline` 再允许注册。
+另有一条自愈逻辑：如果设备码标记在线但对应连接已不在 `connections` 里（进程崩过），先 `ForceOffline` 再允许注册。
 
 ---
 
@@ -231,7 +231,7 @@ c.deviceID = info.ID
 
 ```go
 onlineID, ok := s.devices.OnlineConnection(m.DeviceID)   // deviceID -> 当前在线 connID
-if !ok { return perr("DEVICE_OFFLINE", ...) }
+if !ok { return newProtocolError("DEVICE_OFFLINE", ...) }
 
 s.sessions.Create(id, session.CreateRequest{
     DeviceID:             m.DeviceID,
@@ -274,26 +274,26 @@ if s.DeviceConnectionID != deviceConnectionID {
 ```text
 operator goroutine                 平台                            device goroutine
 ─────────────────                  ────                            ────────────────
-callStream()
-  writeMessage(message)
+sendStreamingRequest()
+  writeProtocolMessage(message)
         │ TLS
         ▼
-                    readLoop(connA)        ← 每连接一个读 goroutine
-                      codec.Decode()       ← 完整 WebSocket binary message 中的 JSON
-                      s.handle(c, m)
+                    readAndDispatchMessages(connA) ← 每连接一个读 goroutine
+                      codec.Decode()               ← 完整 WebSocket binary message 中的 JSON
+                      s.dispatchMessage(clientConn, message)
                         handleExecuteCommand()
                           Authorization              ← 会话绑定 + 权限
                           devices.OnlineConnection() ← 设备还在线吗
                           tasks.Start(request_id)    ← 幂等去重
                           sendToConnection(B, forward)
                                    │
-                                   ▼ c.send <- msg   （有界队列，容量 64）
-                             writeLoop(connB)
-                               writeRaw()             ← writeMu + 写 deadline
+                                   ▼ outgoingMessages <- message（有界队列，容量 64）
+                             writeQueuedMessages(connB)
+                               writeProtocolMessage() ← writeMu + 写 deadline
                                    │ TLS
                                    ▼
-                                                       readLoop(connB)
-                                                         s.handle()
+                                                       接收 WebSocket 消息
+                                                         按消息类型分发
                                                            → PowerShellRunner
 ```
 
@@ -302,7 +302,7 @@ callStream()
 `internal/platform/server/handler_command.go`：
 
 ```go
-1. validID("session_id"), validID("request_id")
+1. validateID("session_id"), validateID("request_id")
 2. command 非空且 <= command_max_len（默认 32 KiB）
 3. working_directory <= 4096
 4. timeout 缺省 60s，范围 1..3600
@@ -319,10 +319,10 @@ callStream()
 ### 5.2 幂等入口
 
 ```go
-t, created, err := s.tasks.Start(ses.ID, m.RequestID, timeout)
+commandTask, created, err := s.tasks.Start(sessionRecord.ID, message.RequestID, timeout)
 if !created {
     // 同一 request_id 重复到达：返回已有任务状态，绝不向设备再发一条
-    return s.sendOK(c, m, protocol.Message{Type: TypeCommandAccepted, RequestID: t.RequestID, Status: string(t.Status)})
+    return s.sendResponse(clientConn, message, protocol.Message{Type: TypeCommandAccepted, RequestID: commandTask.RequestID, Status: string(commandTask.Status)})
 }
 ```
 
@@ -339,12 +339,12 @@ if !created {
 
 ```go
 forward := protocol.Message{
-    Type: TypeExecuteCommand, SessionID: ses.ID, RequestID: t.RequestID,
-    Command: m.Command, WorkingDirectory: m.WorkingDirectory, TimeoutSeconds: timeout,
+    Type: TypeExecuteCommand, SessionID: sessionRecord.ID, RequestID: commandTask.RequestID,
+    Command: message.Command, WorkingDirectory: message.WorkingDirectory, TimeoutSeconds: timeoutSeconds,
 }
-if !s.sendToConnection(ses.DeviceConnectionID, forward) {
-    s.tasks.Finish(ses.ID, m.RequestID, task.StatusResultUnknown, nil, false)
-    return perr("DEVICE_UNAVAILABLE", "could not deliver command to device")
+if !s.sendToConnection(sessionRecord.DeviceConnectionID, forward) {
+    s.tasks.Finish(sessionRecord.ID, message.RequestID, task.StatusResultUnknown, nil, false)
+    return newProtocolError("DEVICE_UNAVAILABLE", "could not deliver command to device")
 }
 ```
 
@@ -357,12 +357,12 @@ if !s.sendToConnection(ses.DeviceConnectionID, forward) {
 | `correlation_id` | 调用方，**每次请求新生成** | 这条直接响应回应的是哪次请求 | 直接响应回显；**异步事件为空** |
 | `request_id` | 调用方，**代表一次业务操作** | 这是哪个任务/传输，用于幂等与查询 | 命令与文件传输的所有帧 |
 
-`sendOK` 统一负责回显：
+`sendResponse` 统一回显请求的关联 ID，响应可以表示成功或失败：
 
 ```go
-func (s *Server) sendOK(c *conn, req, resp protocol.Message) error {
-    resp.CorrelationID = req.CorrelationID
-    s.send(c, resp)
+func (s *Server) sendResponse(clientConn *clientConnection, request, response protocol.Message) error {
+    response.CorrelationID = request.CorrelationID
+    s.enqueueMessage(clientConn, response)
     return nil
 }
 ```
@@ -378,21 +378,21 @@ func (s *Server) sendOK(c *conn, req, resp protocol.Message) error {
 ### 6.1 输出
 
 ```go
-func (s *Server) handleCommandOutput(c *conn, m protocol.Message) error {
-    if c.role != roleDevice {
-        return perr("NOT_DEVICE", "only the target device can send command output")
+func (s *Server) handleCommandOutput(clientConn *clientConnection, message protocol.Message) error {
+    if clientConn.role != roleDevice {
+        return newProtocolError("NOT_DEVICE", "only the target device can send command output")
     }
-    ses, ok := s.sessions.Get(m.SessionID)
+    sessionRecord, ok := s.sessions.Get(message.SessionID)
     // 三重绑定：设备码对 + 连接对 + 会话对
-    if !ok || ses.DeviceID != c.deviceID || ses.DeviceConnectionID != c.id {
-        return perr("SESSION_NOT_FOUND", "session not found")
+    if !ok || sessionRecord.DeviceID != clientConn.deviceID || sessionRecord.DeviceConnectionID != clientConn.id {
+        return newProtocolError("SESSION_NOT_FOUND", "session not found")
     }
-    t, err := s.tasks.AppendOutput(ses.ID, m.RequestID, m.Stream, m.Data)  // 有总字节预算
+    commandTask, err := s.tasks.AppendOutput(sessionRecord.ID, message.RequestID, message.Stream, message.Data)  // 有总字节预算
     ...
-    s.sendToConnection(ses.OperatorConnectionID, protocol.Message{
-        Type: TypeCommandOutput, SessionID: ses.ID, RequestID: m.RequestID,
-        Stream: m.Stream, Data: data, Sequence: sequence,
-        Truncated: t.Truncated, OutputBytes: t.OutputBytes,
+    s.sendToConnection(sessionRecord.OperatorConnectionID, protocol.Message{
+        Type: TypeCommandOutput, SessionID: sessionRecord.ID, RequestID: message.RequestID,
+        Stream: message.Stream, Data: data, Sequence: sequence,
+        Truncated: commandTask.Truncated, OutputBytes: commandTask.OutputBytes,
     })
 }
 ```
@@ -406,10 +406,10 @@ func (s *Server) handleCommandOutput(c *conn, m protocol.Message) error {
 ### 6.2 终态
 
 ```go
-status, err := terminalTaskStatus(m.Status)                         // 只接受终态
-resultKnown := m.ResultKnown || status != task.StatusResultUnknown
-t, err := s.tasks.Finish(ses.ID, m.RequestID, status, m.ExitCode, resultKnown)
-s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
+status, err := parseTerminalTaskStatus(message.Status)              // 只接受终态
+resultKnown := message.ResultKnown || status != task.StatusResultUnknown
+commandTask, err := s.tasks.Finish(sessionRecord.ID, message.RequestID, status, message.ExitCode, resultKnown)
+s.sendToConnection(sessionRecord.OperatorConnectionID, commandResultMessage(commandTask))
 ```
 
 `Finish` 的幂等保护：任务已终态时直接返回原记录，**后到的结果不会覆盖先到的终态**。
@@ -420,18 +420,18 @@ s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
 
 ```go
 // platformclient/client.go
-case m := <-inbox:
-    c.observe(m)                       // ★ 先把异步事件写进本地缓存
-    if m.CorrelationID != correlationID {
+case message := <-incomingMessages:
+    c.cacheMessage(message)            // ★ 先把收到的消息写进本地缓存
+    if message.CorrelationID != correlationID {
         continue                       // 不是本次调用的响应，继续等
     }
-    if match(m) { return m, nil }
+    if matchesResponse(message) { return message, nil }
 ```
 
 因此：
 
 - `execute_command` 的直接响应 `command_accepted` 立刻返回，工具调用**不阻塞到命令跑完**；
-- 后续 `command_output` / `command_result` 因为没有 `correlation_id` 会被 `continue` 跳过，但 `observe` 已经把内容写进 `taskCache` / `downloadCache`；
+- 后续 `command_output` / `command_result` 因为没有 `correlation_id` 会被 `continue` 跳过，但 `cacheMessage` 已经把内容写进命令结果缓存 `commandResultCache`；
 - `get_command_result` 再按 `cursor` 取值（`cursor` 是**块索引**，不是字节偏移），服务端还支持 `next_cursor`。
 
 ---
@@ -466,7 +466,7 @@ Agent           platformclient        Go 平台                 Qt 设备端
   │                  │◄──command_result──┤ Finish（幂等）        │
   │                  │                   │                       │
   │                  │ get_command_result│                       │
-  │                  ├──────────────────►│ tasks.Result(cursor)  │
+  │                  ├──────────────────►│ tasks.ResultFromCursor(cursor)  │
   │                  │◄──chunks+next─────┤                       │
   │◄──stdout/stderr──┤                   │                       │
   │                  │ close_session     │                       │
@@ -494,19 +494,19 @@ Agent           platformclient        Go 平台                 Qt 设备端
 
 ### 8.3 对端断线
 
-设备断线（`server.go cleanupDevice`）：
+设备断线（`server.go interruptDeviceSessionsOnDisconnect`）：
 
 ```go
-_, owned := s.devices.SetOffline(c.deviceID, c.id)
-interrupted := s.sessions.InterruptByDevice(c.deviceID, "device_disconnected")
-for _, ses := range interrupted {
-    finished := s.tasks.FinishSession(ses.ID, task.StatusResultUnknown)   // 结果不可知
-    for _, t := range finished { s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t)) }
-    // 传输同样标记 result_unknown 并通知操作者
+_, wasOnlineConnectionOwner := s.devices.SetOffline(clientConn.deviceID, clientConn.id)
+interruptedSessions := s.sessions.InterruptByDevice(clientConn.deviceID, "device_disconnected")
+for _, sessionRecord := range interruptedSessions {
+    finishedTasks := s.tasks.FinishSession(sessionRecord.ID, task.StatusResultUnknown)   // 结果不可知
+    for _, commandTask := range finishedTasks { s.sendToConnection(sessionRecord.OperatorConnectionID, commandResultMessage(commandTask)) }
+    // finishSessionTransfers 同样终止传输，标记 result_unknown 并返回通知消息
 }
 ```
 
-操作者断线（`cleanupOperator`）：
+操作者断线（`interruptOperatorSessionsOnDisconnect`）：
 
 ```go
 interrupted := s.sessions.InterruptByOperator(c.id, "operator_disconnected")
@@ -518,7 +518,7 @@ s.sendToConnection(ses.DeviceConnectionID, {Type: close_session, Code: "OPERATOR
 
 ### 8.4 超时与 janitor
 
-`janitor` 每 **1 秒** sweep 一次（`internal/platform/server/janitor.go`）：
+`runExpirationCleanup` 每 **1 秒**调用一次 `expireOperationsAndPruneDevices`（`internal/platform/server/janitor.go`）：
 
 | 对象 | 触发条件 | 动作 |
 | --- | --- | --- |
@@ -791,26 +791,27 @@ if platformErr == nil {
 
 ```go
 type Client struct {
-    callMu sync.Mutex   // 串行化工具调用与连接建立
-    writeMu sync.Mutex  // 防止心跳与工具调用写出交错字节
-    conn      net.Conn
-    inbox     chan protocol.Message   // 容量 256
-    connDone  chan struct{}
-    pongs     atomic.Uint64
-    sessions  map[string]protocol.SessionInfo
-    tasks     map[string]*taskCache
-    downloads map[string]*downloadCache
+    requestMu    sync.Mutex  // 串行化请求交互与连接建立
+    writeMu      sync.Mutex  // 串行化心跳与请求的帧写入
+    connectionMu sync.Mutex  // 保护连接状态
+    conn             transport.Conn
+    incomingMessages chan protocol.Message   // 容量 256
+    connectionClosed chan struct{}
+    pongCount        atomic.Uint64
+    cachedSessions   map[string]protocol.SessionInfo
+    cachedCommands   map[string]*commandResultCache
+    cachedDownloads  map[string]*downloadCache
 }
 ```
 
-**一个 Client 同时只允许一笔工具调用在飞**（`callMu`）。文件传输的“边发请求边推分块”也必须在这个互斥里完成，否则分块会和别的调用的帧交错。
+**一个 Client 同时只允许一笔请求交互在飞**（`requestMu`）。文件传输的“边发请求边推分块”也必须在这个互斥里完成，否则分块会和别的调用的帧交错。
 
-`ensureConnectedLocked` 在第一次调用时才真正建连（懒连接），断线后下一次调用自动重连。
+`connectIfNeeded` 复用现有连接，或在首次调用、断线后的下一次调用时建立连接、完成认证并启动消息接收和心跳协程。调用方持有 `requestMu`，函数内部用 `connectionMu` 保护连接状态。
 
 ### 15.2 握手与 TLS
 
 ```go
-conn = dial()                      // tls.DialWithDialer 或明文
+conn = dialPlatform()              // 按 TLS 或明文配置建立 WebSocket 连接
 写 authenticate_player
 读 authenticated → 保存 connection_id
 ```
@@ -826,27 +827,27 @@ conn = dial()                      // tls.DialWithDialer 或明文
 ### 15.3 心跳与断线
 
 ```go
-func (c *Client) heartbeatLoop(conn net.Conn, done chan struct{}) {
-    // 每 heartbeatInterval 发一个 ping；连续 maxMissedHeartbeats(3) 个周期没 pong 就 markDisconnected
+func (c *Client) maintainHeartbeat(conn transport.Conn, connectionClosed chan struct{}) {
+    // 每 heartbeatInterval 发一个 ping；连续 maxMissedHeartbeats(3) 个周期没 pong 就 closeConnection
 }
 ```
 
-`pong` 帧在 `readLoop` 里被单独消费（只 `pongs.Add(1)`），不会进入 `inbox` 干扰工具调用。断线后**没有任何自动重放**：下次工具调用会重连，但上一次的命令/传输已经由平台记为 `result_unknown`。
+`pong` 帧在 `receiveMessages` 里被单独消费（只 `pongCount.Add(1)`），不会进入 `incomingMessages` 干扰工具调用。断线后**没有任何自动重放**：下次工具调用会重连，但上一次的命令/传输已经由平台记为 `result_unknown`。
 
 ### 15.4 输出缓存
 
-`observe(m)` 把异步事件写进本地缓存：
+`cacheMessage(message)` 把收到的消息写进本地缓存：
 
 | 消息 | 缓存 |
 | --- | --- |
-| `session_created` / `session_status` / `session_request` | `sessions[sessionID]` |
-| `command_output` | `tasks[requestID].chunks`（按 `sequence` 去重） |
-| `command_result` | `tasks[requestID]` 终态 |
-| `file_chunk` | `downloads[requestID].chunks`（Base64 解码后） |
-| `file_download_result` | `downloads[requestID]` 终态 |
-| `device_list` | `devices` |
+| `session_created` / `session_status` / `session_request` | `cachedSessions[sessionID]` |
+| `command_output` | `cachedCommands[requestID].chunks`（按 `sequence` 去重） |
+| `command_result` | `cachedCommands[requestID]` 的输出和状态 |
+| `file_chunk` | `cachedDownloads[requestID].chunks`（Base64 解码后） |
+| `file_download_result` | `cachedDownloads[requestID]` 终态 |
+| `device_list` | `cachedDevices` |
 
-`get_command_result` 优先用缓存（`cachedResult`），必要时再向平台拉取。
+`get_command_result` 优先用缓存（`cachedFinalCommandResult`），必要时再向平台拉取。
 
 ### 15.5 文件上传（操作者 → 设备）
 
@@ -865,13 +866,13 @@ func (c *Client) heartbeatLoop(conn net.Conn, done chan struct{}) {
 第 5 步的写法值得注意：
 
 ```go
-pending, _ := readUploadChunk(file)
+currentChunk, _ := readUploadChunk(file)
 for {
-    next, nextErr := readUploadChunk(file)
-    eof := nextErr != nil
-    write(frame{pending, sequence, eof})
-    if eof { break }
-    pending = next
+    nextChunk, nextChunkErr := readUploadChunk(file)
+    isLastChunk := nextChunkErr != nil
+    sendFrame(frame{currentChunk, sequence, isLastChunk})
+    if isLastChunk { break }
+    currentChunk = nextChunk
 }
 ```
 
@@ -884,11 +885,11 @@ for {
 2. 未给定时写到默认下载目录，文件名 = 纳秒时间戳 + 清洗后的远端文件名
 3. 发 download_file，等 file_download_result
 4. 逐块写入同目录临时文件 .yiuk-download-*
-5. tmp.Sync() → Close → os.Rename(临时文件, 目标)
+5. temporaryFile.Sync() → Close → os.Rename(临时文件, 目标)
 6. 用写入过程算的 SHA-256 与设备回的摘要比对，不一致就删除并报 FILE_INTEGRITY_FAILED
 ```
 
-文件名的清洗在 `safeRemoteBase`：去掉路径分隔符、`<>:"/\|?*`、控制字符、首尾点，长度截断到 160，空则 `download.bin`。
+文件名的清洗在 `sanitizeRemoteFileName`：去掉路径分隔符、`<>:"/\|?*`、控制字符、首尾点，长度截断到 160，空则 `download.bin`。
 
 传输超时下限 5 分钟（`fileTransferTimeout`）。
 
@@ -916,7 +917,7 @@ disconnected → connecting → authenticating → registering → connected
 - **TLS**：`forceTls12` 可把连接钉在 TLS 1.2（个别 Windows Schannel 组合对 TLS 1.3 不友好）；`pinnedFingerprint` 设置后按证书 SHA-256 校验，失败发 `certificateUntrusted` 信号要求人工信任；
 - **凭据轮换**：首次注册成功后自动轮换临时密码并通过 `update_temporary_password` 上报新版本；轮换会让该设备的活动会话失效，这是有意的安全行为。
 
-`handleMessage` 只是把帧翻译成信号，业务判断在 `platformevents.cpp`：
+`sendPlatformAuthentication` 发送平台认证请求；`dispatchPlatformMessage` 处理认证、注册和凭据轮换，并将会话、命令和传输消息分发为信号，业务处理在 `platformevents.cpp`：
 
 ```text
 authenticated        → 发 register_device
@@ -943,9 +944,9 @@ close_session        → closeRequested（终止任务、清理传输）
 3. 参数：-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <script>
 4. QProcess::SeparateChannels，stdout/stderr 分别异步读
 5. 每流上限 1 MiB，超出截断并置 truncated，继续报终态
-6. 超时定时器 → finish("timed_out")；cancel() → finish("cancelled")
-7. finish 只执行一次：先 disconnect 进程再 kill，避免回调重入
-8. 清理：kill + waitForFinished(1000) + 删除临时脚本
+6. 超时定时器 → finishAndReport("timed_out")；cancel() → finishAndReport("cancelled")
+7. finishAndReport 只执行一次：先 disconnect 进程再 kill，避免回调重入
+8. stopProcessAndRemoveScript：kill + waitForFinished(1000) + 删除临时脚本
 ```
 
 为什么带 BOM：Windows PowerShell 5.1 不带 BOM 时按 ANSI 解码 `.ps1`，非 ASCII 命令会被破坏。为什么不用 `cmd.exe /c`：避免二次解析带来的引号和转义问题。为什么不提权：命令以当前登录用户权限运行，**普通权限不是沙箱**。
@@ -964,7 +965,7 @@ close_session        → closeRequested（终止任务、清理传输）
 4. 目标已存在且 overwrite=false → 回 failed（默认拒绝覆盖）
 5. 在同目录创建临时文件 <target>.yiuk-upload-<requestId8>.part
 6. 每块：序号必须连续 → Base64 解码 → 累计大小不得超过声明值 → 写入 → 更新 hash
-7. eof：flush/close → 比较 received == expected → 比较 SHA-256
+7. eof：flush/close → 比较 receivedBytes == expectedBytes → 比较 SHA-256
 8. overwrite=true 时先删除目标，再 QFile::rename(temp, target)
 9. 回 file_upload_result：status / remote_path / file_size / file_sha256
 10. 任何失败路径都删除临时文件；会话结束也会 abort 并清理
@@ -974,14 +975,14 @@ close_session        → closeRequested（终止任务、清理传输）
 
 ### 16.4 发送下载：分块推送
 
-`pumpFileDownload`：
+`sendNextDownloadChunk`：
 
 ```text
-1. 每次泵动前重新校验 read_file 权限，会话失效立即 cancelled
+1. 每次发送分块前重新校验 read_file 权限，会话失效立即 cancelled
 2. 64 KiB 一块，边读边更新 SHA-256
 3. 累计超过 32 MiB 立即 failed
 4. eof 时校验已发送字节数 == 文件大小，再发 file_download_result
-5. 用 QTimer::singleShot(0, ...) 异步续泵，避免长时间占用事件循环
+5. 用 QTimer::singleShot(0, ...) 调度下一块，避免长时间占用事件循环
 ```
 
 ### 16.5 凭据存储：DPAPI
@@ -1035,7 +1036,7 @@ bridge **只支持本机设备**，不会伪造远端结果；远端能力必须
 | `cancel_command` / `command_cancelled` | 操作者→S / S→操作者 | 是（同时下发设备） |
 | `download_file` | 操作者→S→设备 | 否（立即回报只表示已下发；终态走 `file_download_result`） |
 | `file_chunk` | 设备→S→操作者 | 否 |
-| `file_download_result` | 设备→S→操作者 | 否（但作为 `download_file` 的**延迟响应**携带原 correlation_id，`callStream` 以此匹配） |
+| `file_download_result` | 设备→S→操作者 | 否（但作为 `download_file` 的**延迟响应**携带原 correlation_id，`sendStreamingRequest` 以此匹配） |
 | `upload_file` | 操作者→S→设备 | 否 |
 | `file_upload_chunk` | 操作者→S→设备 | 否 |
 | `file_upload_result` | 设备→S→操作者 | 否（同上，作为 `upload_file` 的延迟响应携带原 correlation_id） |
@@ -1087,7 +1088,7 @@ Go 单测重点覆盖：帧边界、鉴权限流、临时密码版本/过期/撤
 | --- | --- |
 | accept / 连接注册 / 断线清理 | `internal/platform/server/server.go` |
 | 读写循环 / deadline / writeMu | `internal/platform/server/conn.go` |
-| 发送队列 / 慢客户端 / sendOK | `internal/platform/server/routing.go` |
+| 发送队列 / 慢客户端 / sendResponse | `internal/platform/server/routing.go` |
 | 消息分发 | `internal/platform/server/handler.go` |
 | 会话请求 / 批准 / 关闭 | `internal/platform/server/handler_session.go` |
 | 命令执行与结果 | `internal/platform/server/handler_command.go` |

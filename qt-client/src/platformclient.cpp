@@ -39,9 +39,9 @@ QString makeTemporaryPassword() {
 PlatformClient::PlatformClient(QObject *parent) : QObject(parent) {
     QNetworkProxyFactory::setUseSystemConfiguration(true);
     heartbeatTimer_.setInterval(kHeartbeatIntervalMs);
-    connect(&heartbeatTimer_, &QTimer::timeout, this, &PlatformClient::onHeartbeat);
+    connect(&heartbeatTimer_, &QTimer::timeout, this, &PlatformClient::sendDeviceHeartbeat);
     reconnectTimer_.setSingleShot(true);
-    connect(&reconnectTimer_, &QTimer::timeout, this, &PlatformClient::onReconnect);
+    connect(&reconnectTimer_, &QTimer::timeout, this, &PlatformClient::reconnectIfNeeded);
 }
 
 void PlatformClient::setConfig(const Config &config) {
@@ -51,7 +51,7 @@ void PlatformClient::setConfig(const Config &config) {
 }
 
 void PlatformClient::connectToPlatform() {
-    manualDisconnect_ = false;
+    reconnectSuppressed_ = false;
     reconnectTimer_.stop();
     if (socket_ && socket_->state() != QAbstractSocket::UnconnectedState)
         return;
@@ -59,13 +59,13 @@ void PlatformClient::connectToPlatform() {
         socket_->deleteLater();
         socket_ = nullptr;
     }
-    buffer_.clear();
-    websocketKey_.clear();
-    websocketReady_ = false;
+    receiveBuffer_.clear();
+    websocketHandshakeKey_.clear();
+    websocketHandshakeComplete_ = false;
     connectionId_.clear();
     authenticated_ = false;
     registered_ = false;
-    sslErrorsSeen_ = false;
+    certificateErrorsSeen_ = false;
     tlsErrorReported_ = false;
     usingProxy_ = false;
 
@@ -75,16 +75,16 @@ void PlatformClient::connectToPlatform() {
         return;
     }
     const QString address = config_.address.trimmed();
-    const int colon = address.lastIndexOf(QLatin1Char(':'));
-    if (colon <= 0) {
+    const int portSeparator = address.lastIndexOf(QLatin1Char(':'));
+    if (portSeparator <= 0) {
         emit connectionError(QStringLiteral("平台地址必须为 host:port"));
         setState(QStringLiteral("disconnected"));
         return;
     }
-    const QString host = address.left(colon);
-    bool portOk = false;
-    const int port = address.mid(colon + 1).toInt(&portOk);
-    if (!portOk || port < 1 || port > 65535) {
+    const QString host = address.left(portSeparator);
+    bool isPortValid = false;
+    const int port = address.mid(portSeparator + 1).toInt(&isPortValid);
+    if (!isPortValid || port < 1 || port > 65535) {
         emit connectionError(QStringLiteral("平台端口无效"));
         setState(QStringLiteral("disconnected"));
         return;
@@ -99,10 +99,10 @@ void PlatformClient::connectToPlatform() {
                   proxies.first().type() != QNetworkProxy::NoProxy;
     socket->setProxy(forceDirectConnection_ ? QNetworkProxy(QNetworkProxy::NoProxy)
                                             : QNetworkProxy(QNetworkProxy::DefaultProxy));
-    connect(socket, &QTcpSocket::connected, this, &PlatformClient::onConnected);
-    connect(socket, &QSslSocket::encrypted, this, &PlatformClient::onEncrypted);
-    connect(socket, &QTcpSocket::readyRead, this, &PlatformClient::onReadyRead);
-    connect(socket, &QTcpSocket::disconnected, this, &PlatformClient::onDisconnected);
+    connect(socket, &QTcpSocket::connected, this, &PlatformClient::onSocketConnected);
+    connect(socket, &QSslSocket::encrypted, this, &PlatformClient::onTlsEncrypted);
+    connect(socket, &QTcpSocket::readyRead, this, &PlatformClient::onSocketReadyRead);
+    connect(socket, &QTcpSocket::disconnected, this, &PlatformClient::onSocketDisconnected);
     connect(socket, &QAbstractSocket::errorOccurred, this, &PlatformClient::onSocketError);
     connect(socket, &QSslSocket::sslErrors, this, [this, socket](const QList<QSslError> &errors) {
         if (config_.allowInsecure) {
@@ -117,9 +117,9 @@ void PlatformClient::connectToPlatform() {
             socket->ignoreSslErrors();
             return;
         }
-        // 完成传输层握手，以便 onEncrypted() 在 Schannel 和 OpenSSL 上都能一致地判断证书
+        // 完成传输层握手，以便 onTlsEncrypted() 在 Schannel 和 OpenSSL 上都能一致地判断证书
         // 证书验证通过前不会发送任何应用层数据帧
-        sslErrorsSeen_ = true;
+        certificateErrorsSeen_ = true;
         socket->ignoreSslErrors(errors);
     });
 
@@ -161,7 +161,7 @@ void PlatformClient::connectToPlatform() {
 }
 
 void PlatformClient::disconnectFromPlatform() {
-    manualDisconnect_ = true;
+    reconnectSuppressed_ = true;
     reconnectTimer_.stop();
     heartbeatTimer_.stop();
     QTcpSocket *socket = socket_;
@@ -179,15 +179,15 @@ bool PlatformClient::isConnected() const {
     return socket_ && socket_->state() == QAbstractSocket::ConnectedState && authenticated_;
 }
 
-void PlatformClient::onConnected() {
+void PlatformClient::onSocketConnected() {
     auto *socket = qobject_cast<QTcpSocket *>(sender());
     if (!socket || socket != socket_) return;
-    // 仅当 onEncrypted() 接受证书后才开始 WebSocket 握手
+    // 仅当 onTlsEncrypted() 接受证书后才开始 WebSocket 握手
     if (config_.tls) return;
     beginWebSocketHandshake();
 }
 
-void PlatformClient::onEncrypted() {
+void PlatformClient::onTlsEncrypted() {
     auto *socket = qobject_cast<QSslSocket *>(sender());
     if (!socket || socket != socket_) return;
     const QSslCertificate certificate = socket->peerCertificate();
@@ -201,7 +201,7 @@ void PlatformClient::onEncrypted() {
         beginWebSocketHandshake();
         return;
     }
-    if (!sslErrorsSeen_ && config_.pinnedFingerprint.isEmpty()) {
+    if (!certificateErrorsSeen_ && config_.pinnedFingerprint.isEmpty()) {
         // 已通过平台 CA 存储验证证书
         beginWebSocketHandshake();
         return;
@@ -213,7 +213,7 @@ void PlatformClient::onEncrypted() {
 
 void PlatformClient::rejectCertificate(const QString &fingerprint, const QString &subject,
                                        const QString &details, bool changed) {
-    manualDisconnect_ = true;
+    reconnectSuppressed_ = true;
     tlsErrorReported_ = true;
     reconnectTimer_.stop();
     heartbeatTimer_.stop();
@@ -225,103 +225,103 @@ void PlatformClient::rejectCertificate(const QString &fingerprint, const QString
 }
 
 void PlatformClient::beginWebSocketHandshake() {
-    if (!socket_ || websocketReady_ || !websocketKey_.isEmpty()) return;
+    if (!socket_ || websocketHandshakeComplete_ || !websocketHandshakeKey_.isEmpty()) return;
     QByteArray nonce(16, Qt::Uninitialized);
     for (int i = 0; i < nonce.size(); ++i)
         nonce[i] = static_cast<char>(QRandomGenerator::system()->generate() & 0xff);
-    websocketKey_ = nonce.toBase64();
+    websocketHandshakeKey_ = nonce.toBase64();
     QString host = config_.address.trimmed();
-    const int scheme = host.indexOf(QStringLiteral("://"));
-    if (scheme >= 0) host.remove(0, scheme + 3);
-    const int colon = host.lastIndexOf(QLatin1Char(':'));
-    if (colon > 0) host.truncate(colon);
+    const int schemeSeparator = host.indexOf(QStringLiteral("://"));
+    if (schemeSeparator >= 0) host.remove(0, schemeSeparator + 3);
+    const int portSeparator = host.lastIndexOf(QLatin1Char(':'));
+    if (portSeparator > 0) host.truncate(portSeparator);
     const QByteArray request = "GET / HTTP/1.1\r\nHost: " + host.toUtf8() + "\r\n"
                                "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-                               "Sec-WebSocket-Key: " + websocketKey_ + "\r\n"
+                               "Sec-WebSocket-Key: " + websocketHandshakeKey_ + "\r\n"
                                "Sec-WebSocket-Version: 13\r\n\r\n";
     socket_->write(request);
 }
 
-void PlatformClient::sendWebSocketControl(quint8 opcode, const QByteArray &payload) {
-    if (!socket_ || !websocketReady_ || payload.size() > 125) return;
+void PlatformClient::sendWebSocketControlFrame(quint8 opcode, const QByteArray &payload) {
+    if (!socket_ || !websocketHandshakeComplete_ || payload.size() > 125) return;
     QByteArray frame;
     frame.append(static_cast<char>(0x80 | opcode));
     frame.append(static_cast<char>(0x80 | payload.size()));
-    QByteArray mask(4, Qt::Uninitialized);
-    for (int i = 0; i < mask.size(); ++i)
-        mask[i] = static_cast<char>(QRandomGenerator::system()->generate() & 0xff);
-    frame += mask;
+    QByteArray maskingKey(4, Qt::Uninitialized);
+    for (int i = 0; i < maskingKey.size(); ++i)
+        maskingKey[i] = static_cast<char>(QRandomGenerator::system()->generate() & 0xff);
+    frame += maskingKey;
     for (int i = 0; i < payload.size(); ++i)
-        frame.append(static_cast<char>(payload.at(i) ^ mask.at(i % 4)));
+        frame.append(static_cast<char>(payload.at(i) ^ maskingKey.at(i % 4)));
     socket_->write(frame);
 }
 
-void PlatformClient::beginSession() {
-    QJsonObject auth{
+void PlatformClient::sendPlatformAuthentication() {
+    QJsonObject authenticationRequest{
         {QStringLiteral("version"), kProtocolVersion},
         {QStringLiteral("business_type"), QStringLiteral("agent_assist")},
         {QStringLiteral("type"), QStringLiteral("authenticate_player")},
         {QStringLiteral("identity_type"), QStringLiteral("player")},
         {QStringLiteral("player_password"), config_.playerPassword},
     };
-    send(auth);
+    sendProtocolMessage(authenticationRequest);
 }
 
-void PlatformClient::onReadyRead() {
+void PlatformClient::onSocketReadyRead() {
     auto *socket = qobject_cast<QTcpSocket *>(sender());
     if (!socket || socket != socket_) return;
-    buffer_ += socket->readAll();
-    if (!websocketReady_) {
-        const int end = buffer_.indexOf("\r\n\r\n");
-        if (end < 0) return;
-        const QByteArray headers = buffer_.left(end);
-        buffer_.remove(0, end + 4);
-        const QByteArray accept = QCryptographicHash::hash(
-            websocketKey_ + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11", QCryptographicHash::Sha1).toBase64();
+    receiveBuffer_ += socket->readAll();
+    if (!websocketHandshakeComplete_) {
+        const int headersEnd = receiveBuffer_.indexOf("\r\n\r\n");
+        if (headersEnd < 0) return;
+        const QByteArray headers = receiveBuffer_.left(headersEnd);
+        receiveBuffer_.remove(0, headersEnd + 4);
+        const QByteArray expectedAcceptValue = QCryptographicHash::hash(
+            websocketHandshakeKey_ + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11", QCryptographicHash::Sha1).toBase64();
         const QByteArray lowerHeaders = headers.toLower();
-        const QByteArray expectedAccept = ("sec-websocket-accept: " + accept).toLower();
+        const QByteArray expectedAccept = ("sec-websocket-accept: " + expectedAcceptValue).toLower();
         if (!headers.startsWith("HTTP/1.1 101 ") || !lowerHeaders.contains(expectedAccept)) {
             emit connectionError(QStringLiteral("WebSocket 握手失败"));
             socket_->abort();
             return;
         }
-        websocketReady_ = true;
-        websocketKey_.clear();
-        beginSession();
+        websocketHandshakeComplete_ = true;
+        websocketHandshakeKey_.clear();
+        sendPlatformAuthentication();
     }
-    while (buffer_.size() >= 2) {
-        const auto *data = reinterpret_cast<const uchar *>(buffer_.constData());
-        const quint8 first = data[0];
-        const quint8 second = data[1];
-        quint64 length = second & 0x7f;
-        int headerLength = 2;
-        if (length == 126) {
-            if (buffer_.size() < 4) return;
-            length = qFromBigEndian<quint16>(data + 2);
-            headerLength = 4;
-        } else if (length == 127) {
-            if (buffer_.size() < 10) return;
-            length = qFromBigEndian<quint64>(data + 2);
-            headerLength = 10;
+    while (receiveBuffer_.size() >= 2) {
+        const auto *data = reinterpret_cast<const uchar *>(receiveBuffer_.constData());
+        const quint8 opcodeAndFlags = data[0];
+        const quint8 maskAndLength = data[1];
+        quint64 payloadLength = maskAndLength & 0x7f;
+        int frameHeaderBytes = 2;
+        if (payloadLength == 126) {
+            if (receiveBuffer_.size() < 4) return;
+            payloadLength = qFromBigEndian<quint16>(data + 2);
+            frameHeaderBytes = 4;
+        } else if (payloadLength == 127) {
+            if (receiveBuffer_.size() < 10) return;
+            payloadLength = qFromBigEndian<quint64>(data + 2);
+            frameHeaderBytes = 10;
         }
-        if (length > kMaxMessageBytes) {
+        if (payloadLength > kMaxMessageBytes) {
             emit connectionError(QStringLiteral("平台 WebSocket 消息超过上限"));
             socket_->abort();
             return;
         }
-        if (buffer_.size() < headerLength + static_cast<qsizetype>(length)) return;
-        const QByteArray payload = buffer_.mid(headerLength, static_cast<qsizetype>(length));
-        buffer_.remove(0, headerLength + static_cast<qsizetype>(length));
-        if ((first & 0x0f) == 0x8) {
+        if (receiveBuffer_.size() < frameHeaderBytes + static_cast<qsizetype>(payloadLength)) return;
+        const QByteArray payload = receiveBuffer_.mid(frameHeaderBytes, static_cast<qsizetype>(payloadLength));
+        receiveBuffer_.remove(0, frameHeaderBytes + static_cast<qsizetype>(payloadLength));
+        if ((opcodeAndFlags & 0x0f) == 0x8) {
             socket_->abort();
             return;
         }
-        if ((first & 0x0f) == 0x9) {
-            sendWebSocketControl(0xA, payload);
+        if ((opcodeAndFlags & 0x0f) == 0x9) {
+            sendWebSocketControlFrame(0xA, payload);
             continue;
         }
-        if ((first & 0x0f) == 0xA) continue;
-        if ((first & 0x0f) != 0x2 || (first & 0x80) == 0 || (second & 0x80) != 0) {
+        if ((opcodeAndFlags & 0x0f) == 0xA) continue;
+        if ((opcodeAndFlags & 0x0f) != 0x2 || (opcodeAndFlags & 0x80) == 0 || (maskAndLength & 0x80) != 0) {
             emit connectionError(QStringLiteral("平台 WebSocket 帧无效"));
             socket_->abort();
             return;
@@ -332,11 +332,11 @@ void PlatformClient::onReadyRead() {
             emit connectionError(QStringLiteral("平台消息不是有效 JSON"));
             continue;
         }
-        handleMessage(document.object());
+        dispatchPlatformMessage(document.object());
     }
 }
 
-void PlatformClient::onDisconnected() {
+void PlatformClient::onSocketDisconnected() {
     auto *socket = qobject_cast<QSslSocket *>(sender());
     if (!socket || socket != socket_) return;
     if (usingProxy_ && !proxyFallbackAttempted_ && config_.tls && !socket->isEncrypted()) {
@@ -349,7 +349,7 @@ void PlatformClient::onDisconnected() {
     authenticated_ = false;
     registered_ = false;
     setState(QStringLiteral("disconnected"));
-    if (!manualDisconnect_) scheduleReconnect();
+    if (!reconnectSuppressed_) scheduleReconnect();
 }
 
 void PlatformClient::onSocketError(QAbstractSocket::SocketError error) {
@@ -368,52 +368,52 @@ void PlatformClient::onSocketError(QAbstractSocket::SocketError error) {
         // TLS 对话框和提示信息已经说明失败原因；握手中止通常会在此处显示为 RemoteHostClosedError
         return;
     }
-    QString hint;
-    const bool tlsHandshakeClosed = config_.tls && !socket->isEncrypted() &&
+    QString connectionErrorText;
+    const bool closedDuringTlsHandshake = config_.tls && !socket->isEncrypted() &&
                                     (error == QAbstractSocket::RemoteHostClosedError ||
                                      error == QAbstractSocket::SslHandshakeFailedError);
-    if (tlsHandshakeClosed) {
-        hint = QStringLiteral("TLS 握手失败：服务器在加密连接建立前关闭了连接，请检查服务端 TLS 配置或中间防火墙");
+    if (closedDuringTlsHandshake) {
+        connectionErrorText = QStringLiteral("TLS 握手失败：服务器在加密连接建立前关闭了连接，请检查服务端 TLS 配置或中间防火墙");
     } else {
         switch (error) {
         case QAbstractSocket::ConnectionRefusedError:
-            hint = QStringLiteral("服务器拒绝连接：端口未开放，或平台服务未启动");
+            connectionErrorText = QStringLiteral("服务器拒绝连接：端口未开放，或平台服务未启动");
             break;
         case QAbstractSocket::HostNotFoundError:
-            hint = QStringLiteral("找不到服务器地址，请检查域名或 IP");
+            connectionErrorText = QStringLiteral("找不到服务器地址，请检查域名或 IP");
             break;
         case QAbstractSocket::SocketTimeoutError:
-            hint = QStringLiteral("连接超时，请检查网络或防火墙");
+            connectionErrorText = QStringLiteral("连接超时，请检查网络或防火墙");
             break;
         case QAbstractSocket::RemoteHostClosedError:
-            hint = QStringLiteral("服务器断开了连接（证书或协议可能不匹配）");
+            connectionErrorText = QStringLiteral("服务器断开了连接（证书或协议可能不匹配）");
             break;
         case QAbstractSocket::SslHandshakeFailedError:
-            hint = QStringLiteral("TLS 握手失败，请检查端口是否为平台服务端口");
+            connectionErrorText = QStringLiteral("TLS 握手失败，请检查端口是否为平台服务端口");
             break;
         default:
-            hint = socket->errorString();
+            connectionErrorText = socket->errorString();
             break;
         }
     }
-    if (!hint.isEmpty()) emit connectionError(hint);
+    if (!connectionErrorText.isEmpty()) emit connectionError(connectionErrorText);
 }
 
-void PlatformClient::onHeartbeat() {
+void PlatformClient::sendDeviceHeartbeat() {
     if (!registered_) return;
-    send(QJsonObject{
+    sendProtocolMessage(QJsonObject{
         {QStringLiteral("type"), QStringLiteral("device_heartbeat")},
         {QStringLiteral("device_id"), config_.deviceId},
     });
 }
 
-void PlatformClient::onReconnect() {
-    if (manualDisconnect_ || socket_) return;
+void PlatformClient::reconnectIfNeeded() {
+    if (reconnectSuppressed_ || socket_) return;
     connectToPlatform();
 }
 
 void PlatformClient::retryWithoutProxy() {
-    if (proxyFallbackAttempted_ || manualDisconnect_) return;
+    if (proxyFallbackAttempted_ || reconnectSuppressed_) return;
     proxyFallbackAttempted_ = true;
     forceDirectConnection_ = true;
     QSslSocket *socket = qobject_cast<QSslSocket *>(socket_);
@@ -426,10 +426,10 @@ void PlatformClient::retryWithoutProxy() {
 }
 
 void PlatformClient::scheduleReconnect() {
-    if (manualDisconnect_) return;
+    if (reconnectSuppressed_) return;
     ++reconnectAttempts_;
-    const int delay = qMin(kMaxReconnectDelayMs, 1000 * (1 << qMin(reconnectAttempts_ - 1, 5)));
-    reconnectTimer_.start(delay);
+    const int reconnectDelayMs = qMin(kMaxReconnectDelayMs, 1000 * (1 << qMin(reconnectAttempts_ - 1, 5)));
+    reconnectTimer_.start(reconnectDelayMs);
 }
 
 void PlatformClient::setState(const QString &state) {
@@ -438,48 +438,48 @@ void PlatformClient::setState(const QString &state) {
     emit stateChanged(state_);
 }
 
-void PlatformClient::send(const QJsonObject &message) {
-    if (!socket_ || socket_->state() != QAbstractSocket::ConnectedState || !websocketReady_) return;
-    QJsonObject payload = message;
-    payload.insert(QStringLiteral("version"), kProtocolVersion);
-    if (!payload.contains(QStringLiteral("business_type")))
-        payload.insert(QStringLiteral("business_type"), QStringLiteral("agent_assist"));
-    const QByteArray json = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-    if (json.size() > kMaxMessageBytes) {
+void PlatformClient::sendProtocolMessage(const QJsonObject &message) {
+    if (!socket_ || socket_->state() != QAbstractSocket::ConnectedState || !websocketHandshakeComplete_) return;
+    QJsonObject protocolMessage = message;
+    protocolMessage.insert(QStringLiteral("version"), kProtocolVersion);
+    if (!protocolMessage.contains(QStringLiteral("business_type")))
+        protocolMessage.insert(QStringLiteral("business_type"), QStringLiteral("agent_assist"));
+    const QByteArray encodedMessage = QJsonDocument(protocolMessage).toJson(QJsonDocument::Compact);
+    if (encodedMessage.size() > kMaxMessageBytes) {
         emit connectionError(QStringLiteral("平台消息超过大小上限"));
         return;
     }
-    const QByteArray &frame = json;
-    QByteArray ws;
-    ws.append(static_cast<char>(0x82));
-    const quint64 length = static_cast<quint64>(frame.size());
-    if (length < 126) {
-        ws.append(static_cast<char>(0x80 | length));
-    } else if (length <= 0xffff) {
-        ws.append(static_cast<char>(0x80 | 126));
-        const auto n = static_cast<quint16>(length);
-        ws.append(static_cast<char>(n >> 8));
-        ws.append(static_cast<char>(n));
+    const QByteArray &messageBytes = encodedMessage;
+    QByteArray websocketFrame;
+    websocketFrame.append(static_cast<char>(0x82));
+    const quint64 payloadLength = static_cast<quint64>(messageBytes.size());
+    if (payloadLength < 126) {
+        websocketFrame.append(static_cast<char>(0x80 | payloadLength));
+    } else if (payloadLength <= 0xffff) {
+        websocketFrame.append(static_cast<char>(0x80 | 126));
+        const auto shortPayloadLength = static_cast<quint16>(payloadLength);
+        websocketFrame.append(static_cast<char>(shortPayloadLength >> 8));
+        websocketFrame.append(static_cast<char>(shortPayloadLength));
     } else {
-        ws.append(static_cast<char>(0x80 | 127));
-        for (int i = 7; i >= 0; --i) ws.append(static_cast<char>(length >> (i * 8)));
+        websocketFrame.append(static_cast<char>(0x80 | 127));
+        for (int i = 7; i >= 0; --i) websocketFrame.append(static_cast<char>(payloadLength >> (i * 8)));
     }
-    QByteArray mask(4, Qt::Uninitialized);
+    QByteArray maskingKey(4, Qt::Uninitialized);
     for (int i = 0; i < 4; ++i)
-        mask[i] = static_cast<char>(QRandomGenerator::system()->generate() & 0xff);
-    ws += mask;
-    for (qsizetype i = 0; i < frame.size(); ++i)
-        ws.append(static_cast<char>(frame.at(i) ^ mask.at(i % 4)));
-    socket_->write(ws);
+        maskingKey[i] = static_cast<char>(QRandomGenerator::system()->generate() & 0xff);
+    websocketFrame += maskingKey;
+    for (qsizetype i = 0; i < messageBytes.size(); ++i)
+        websocketFrame.append(static_cast<char>(messageBytes.at(i) ^ maskingKey.at(i % 4)));
+    socket_->write(websocketFrame);
 }
 
-void PlatformClient::handleMessage(const QJsonObject &message) {
+void PlatformClient::dispatchPlatformMessage(const QJsonObject &message) {
     const QString type = message.value(QStringLiteral("type")).toString();
     if (type == QLatin1String("authenticated")) {
         connectionId_ = message.value(QStringLiteral("connection_id")).toString();
         authenticated_ = true;
         setState(QStringLiteral("authenticating"));
-        send(QJsonObject{
+        sendProtocolMessage(QJsonObject{
             {QStringLiteral("type"), QStringLiteral("register_device")},
             {QStringLiteral("device_id"), config_.deviceId},
             {QStringLiteral("device_name"), config_.deviceName},
@@ -545,7 +545,7 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
         return;
     }
     if (type == QLatin1String("command_output")) {
-        emit commandOutput(message.value(QStringLiteral("session_id")).toString(),
+        emit commandOutputReceived(message.value(QStringLiteral("session_id")).toString(),
                            message.value(QStringLiteral("request_id")).toString(),
                            message.value(QStringLiteral("stream")).toString(),
                            message.value(QStringLiteral("data")).toString(),
@@ -554,7 +554,7 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
         return;
     }
     if (type == QLatin1String("command_result")) {
-        emit commandResult(message.value(QStringLiteral("session_id")).toString(),
+        emit commandResultReceived(message.value(QStringLiteral("session_id")).toString(),
                            message.value(QStringLiteral("request_id")).toString(),
                            message.value(QStringLiteral("status")).toString(),
                            message.value(QStringLiteral("exit_code")),
@@ -621,16 +621,16 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
     if (type == QLatin1String("error")) {
         const QString code = message.value(QStringLiteral("code")).toString();
         const QString text = message.value(QStringLiteral("message")).toString();
-        const QString requestId = message.value(QStringLiteral("correlation_id")).toString();
-        if (!requestId.isEmpty()) emit requestFailed(requestId, code, text);
+        const QString correlationId = message.value(QStringLiteral("correlation_id")).toString();
+        if (!correlationId.isEmpty()) emit requestFailed(correlationId, code, text);
         emit platformError(code, text);
         if (code == QLatin1String("DEVICE_ALREADY_ONLINE")) {
             // 这不是永久性故障：平台仍保留此设备 ID 的旧连接，通常是尚未达到心跳超时期限的半开 TCP 套接字
             // 延迟后重试，而不是一直保持离线状态直到用户手动重连
             heartbeatTimer_.stop();
             if (socket_)
-                socket_->abort(); // onDisconnected() 会安排延迟重试
-            else if (!manualDisconnect_)
+                socket_->abort(); // onSocketDisconnected() 会安排延迟重试
+            else if (!reconnectSuppressed_)
                 scheduleReconnect();
             return;
         }
@@ -642,7 +642,7 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
             code == QLatin1String("DEVICE_NOT_FOUND") || code == QLatin1String("DEVICE_LIMIT")) {
             // 重新连接无法修复这些错误
             // 停止重试，等待用户修正设置或手动重新连接
-            manualDisconnect_ = true;
+            reconnectSuppressed_ = true;
             heartbeatTimer_.stop();
             if (socket_) socket_->abort();
         }
@@ -652,19 +652,19 @@ void PlatformClient::handleMessage(const QJsonObject &message) {
 }
 
 void PlatformClient::approveSession(const QString &sessionId) {
-    send(QJsonObject{{QStringLiteral("type"), QStringLiteral("approve_session")},
+    sendProtocolMessage(QJsonObject{{QStringLiteral("type"), QStringLiteral("approve_session")},
                      {QStringLiteral("session_id"), sessionId}});
 }
 
 void PlatformClient::rejectSession(const QString &sessionId) {
-    send(QJsonObject{{QStringLiteral("type"), QStringLiteral("reject_session")},
+    sendProtocolMessage(QJsonObject{{QStringLiteral("type"), QStringLiteral("reject_session")},
                      {QStringLiteral("session_id"), sessionId},
                      {QStringLiteral("message"), QStringLiteral("rejected_by_owner")}});
 }
 
 void PlatformClient::sendCommandOutput(const QString &sessionId, const QString &requestId, const QString &stream,
                                        const QString &data, quint64 sequence) {
-    send(QJsonObject{{QStringLiteral("type"), QStringLiteral("command_output")},
+    sendProtocolMessage(QJsonObject{{QStringLiteral("type"), QStringLiteral("command_output")},
                      {QStringLiteral("session_id"), sessionId},
                      {QStringLiteral("request_id"), requestId},
                      {QStringLiteral("stream"), stream},
@@ -681,12 +681,12 @@ void PlatformClient::sendCommandResult(const QString &sessionId, const QString &
                         {QStringLiteral("result_known"), resultKnown},
                         {QStringLiteral("truncated"), truncated}};
     if (!exitCode.isNull() && !exitCode.isUndefined()) message.insert(QStringLiteral("exit_code"), exitCode);
-    send(message);
+    sendProtocolMessage(message);
 }
 
-void PlatformClient::sendFileChunk(const QString &sessionId, const QString &requestId, quint64 sequence,
+void PlatformClient::sendFileDownloadChunk(const QString &sessionId, const QString &requestId, quint64 sequence,
                                    const QByteArray &data, bool eof) {
-    send(QJsonObject{{QStringLiteral("type"), QStringLiteral("file_chunk")},
+    sendProtocolMessage(QJsonObject{{QStringLiteral("type"), QStringLiteral("file_chunk")},
                      {QStringLiteral("session_id"), sessionId},
                      {QStringLiteral("request_id"), requestId},
                      {QStringLiteral("sequence"), static_cast<double>(sequence)},
@@ -697,7 +697,7 @@ void PlatformClient::sendFileChunk(const QString &sessionId, const QString &requ
 void PlatformClient::sendFileDownloadResult(const QString &sessionId, const QString &requestId,
                                             const QString &status, const QString &fileName, qint64 fileSize,
                                             const QString &sha256, bool resultKnown) {
-    send(QJsonObject{{QStringLiteral("type"), QStringLiteral("file_download_result")},
+    sendProtocolMessage(QJsonObject{{QStringLiteral("type"), QStringLiteral("file_download_result")},
                      {QStringLiteral("session_id"), sessionId},
                      {QStringLiteral("request_id"), requestId},
                      {QStringLiteral("status"), status},
@@ -711,7 +711,7 @@ void PlatformClient::sendFileUploadResult(const QString &sessionId, const QStrin
                                           const QString &status, const QString &remotePath,
                                           const QString &fileName, qint64 fileSize,
                                           const QString &sha256, bool resultKnown) {
-    send(QJsonObject{{QStringLiteral("type"), QStringLiteral("file_upload_result")},
+    sendProtocolMessage(QJsonObject{{QStringLiteral("type"), QStringLiteral("file_upload_result")},
                      {QStringLiteral("session_id"), sessionId},
                      {QStringLiteral("request_id"), requestId},
                      {QStringLiteral("status"), status},
@@ -729,24 +729,24 @@ void PlatformClient::updateTemporaryPassword(const QString &password, int versio
                         {QStringLiteral("password_version"), version},
                         {QStringLiteral("mode"), mode}};
     if (ttlSeconds > 0) message.insert(QStringLiteral("expires_at"), QDateTime::currentSecsSinceEpoch() + ttlSeconds);
-    send(message);
+    sendProtocolMessage(message);
 }
 
-void PlatformClient::closeSession(const QString &sessionId) {
-    send(QJsonObject{{QStringLiteral("type"), QStringLiteral("close_session")},
+void PlatformClient::requestSessionClose(const QString &sessionId) {
+    sendProtocolMessage(QJsonObject{{QStringLiteral("type"), QStringLiteral("close_session")},
                      {QStringLiteral("session_id"), sessionId}});
 }
 
-void PlatformClient::cancelCommand(const QString &sessionId, const QString &requestId) {
-    send(QJsonObject{{QStringLiteral("type"), QStringLiteral("cancel_command")},
+void PlatformClient::requestCommandCancel(const QString &sessionId, const QString &requestId) {
+    sendProtocolMessage(QJsonObject{{QStringLiteral("type"), QStringLiteral("cancel_command")},
                      {QStringLiteral("session_id"), sessionId},
                      {QStringLiteral("request_id"), requestId}});
 }
 
-void PlatformClient::listDevices(const QString &requestId) {
-    send(QJsonObject{{QStringLiteral("type"), QStringLiteral("list_devices")},
-                     {QStringLiteral("request_id"), requestId},
-                     {QStringLiteral("correlation_id"), requestId}});
+void PlatformClient::listDevices(const QString &correlationId) {
+    sendProtocolMessage(QJsonObject{{QStringLiteral("type"), QStringLiteral("list_devices")},
+                     {QStringLiteral("request_id"), correlationId},
+                     {QStringLiteral("correlation_id"), correlationId}});
 }
 
 
@@ -754,14 +754,14 @@ void PlatformClient::requestSession(const QString &deviceId, const QString &purp
                                     const QStringList &permissions, const QString &temporaryPassword) {
     QJsonArray permissionArray;
     for (const QString &permission : permissions) permissionArray.append(permission);
-    send(QJsonObject{{QStringLiteral("type"), QStringLiteral("request_session")},
+    sendProtocolMessage(QJsonObject{{QStringLiteral("type"), QStringLiteral("request_session")},
                      {QStringLiteral("device_id"), deviceId},
                      {QStringLiteral("purpose"), purpose},
                      {QStringLiteral("permissions"), permissionArray},
                      {QStringLiteral("temporary_password"), temporaryPassword}});
 }
 
-void PlatformClient::executeCommand(const QString &sessionId, const QString &requestId, const QString &command,
+void PlatformClient::submitCommand(const QString &sessionId, const QString &requestId, const QString &command,
                                     const QString &workingDirectory, int timeoutSeconds) {
     QJsonObject message{{QStringLiteral("type"), QStringLiteral("execute_command")},
                         {QStringLiteral("session_id"), sessionId},
@@ -769,5 +769,5 @@ void PlatformClient::executeCommand(const QString &sessionId, const QString &req
                         {QStringLiteral("command"), command}};
     if (!workingDirectory.isEmpty()) message.insert(QStringLiteral("working_directory"), workingDirectory);
     if (timeoutSeconds > 0) message.insert(QStringLiteral("timeout_seconds"), timeoutSeconds);
-    send(message);
+    sendProtocolMessage(message);
 }

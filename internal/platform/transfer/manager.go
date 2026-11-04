@@ -1,10 +1,9 @@
-// Package transfer owns in-memory file-download transfer state. It bounds the
-// number of bytes a device may stream for one request and never stores file
-// contents: the platform only validates chunk sequence and total size before
-// forwarding each chunk to the operator.
+// Package transfer tracks in-memory upload and download state. It validates
+// chunk sequences, chunk counts and total size without retaining file contents.
+// Callers forward each validated chunk to the receiving peer.
 package transfer
 
-//文件下载、块序号连续性、累计字节/块数上限、Base64 校验
+// 文件传输的块序号连续性、累计字节和块数上限、Base64 校验。
 import (
 	"encoding/base64"
 	"errors"
@@ -47,53 +46,53 @@ var (
 	ErrInvalidStatus   = errors.New("invalid transfer terminal status")
 )
 
-// Transfer is one bounded file download.
+// Transfer tracks the metadata and progress of one bounded upload or download.
 type Transfer struct {
-	RequestID   string
-	SessionID   string
-	Correlation string
-	Status      Status
-	NextSeq     uint64
-	Chunks      int
-	Bytes       int64
-	MaxBytes    int64
-	FileName    string
-	ResultKnown bool
-	StartedAt   time.Time
-	Deadline    time.Time
-	FinishedAt  time.Time
+	RequestID        string
+	SessionID        string
+	CorrelationID    string
+	Status           Status
+	NextSequence     uint64
+	ChunkCount       int
+	TransferredBytes int64
+	MaxBytes         int64
+	FileName         string
+	ResultKnown      bool
+	StartedAt        time.Time
+	Deadline         time.Time
+	FinishedAt       time.Time
 }
 
-func (t *Transfer) clone() *Transfer {
-	if t == nil {
+func (fileTransfer *Transfer) clone() *Transfer {
+	if fileTransfer == nil {
 		return nil
 	}
-	out := *t
-	return &out
+	snapshot := *fileTransfer
+	return &snapshot
 }
 
 // Manager owns all transfer state.
 type Manager struct {
-	mu            sync.Mutex
-	transfers     map[string]*Transfer
-	maxPerSession int
-	now           func() time.Time
+	mu                     sync.Mutex
+	transfers              map[string]*Transfer
+	maxTransfersPerSession int
+	now                    func() time.Time
 }
 
-func NewManager(maxPerSession int) *Manager {
-	return newManager(maxPerSession, time.Now)
+func NewManager(maxTransfersPerSession int) *Manager {
+	return newManager(maxTransfersPerSession, time.Now)
 }
 
-func newManager(maxPerSession int, now func() time.Time) *Manager {
-	if maxPerSession < 1 {
-		maxPerSession = 1
+func newManager(maxTransfersPerSession int, now func() time.Time) *Manager {
+	if maxTransfersPerSession < 1 {
+		maxTransfersPerSession = 1
 	}
-	return &Manager{transfers: make(map[string]*Transfer), maxPerSession: maxPerSession, now: now}
+	return &Manager{transfers: make(map[string]*Transfer), maxTransfersPerSession: maxTransfersPerSession, now: now}
 }
 
 // Start creates a running transfer or returns the existing transfer for the
 // same session and request id. maxBytes comes from server configuration.
-func (m *Manager) Start(sessionID, requestID, correlation string, maxBytes int64, timeout time.Duration) (*Transfer, bool, error) {
+func (m *Manager) Start(sessionID, requestID, correlationID string, maxBytes int64, timeout time.Duration) (*Transfer, bool, error) {
 	if requestID == "" || sessionID == "" {
 		return nil, false, errors.New("session and request id are required")
 	}
@@ -108,72 +107,72 @@ func (m *Manager) Start(sessionID, requestID, correlation string, maxBytes int64
 		}
 		return existing.clone(), false, nil
 	}
-	active := 0
-	for _, t := range m.transfers {
-		if t.SessionID == sessionID && !isTerminal(t.Status) {
-			active++
+	unfinishedTransferCount := 0
+	for _, fileTransfer := range m.transfers {
+		if fileTransfer.SessionID == sessionID && !isTerminal(fileTransfer.Status) {
+			unfinishedTransferCount++
 		}
 	}
-	if active >= m.maxPerSession {
+	if unfinishedTransferCount >= m.maxTransfersPerSession {
 		return nil, false, ErrTransferLimit
 	}
 	now := m.now()
-	t := &Transfer{
-		RequestID:   requestID,
-		SessionID:   sessionID,
-		Correlation: correlation,
-		Status:      StatusRunning,
-		NextSeq:     1,
-		MaxBytes:    maxBytes,
-		StartedAt:   now,
+	fileTransfer := &Transfer{
+		RequestID:     requestID,
+		SessionID:     sessionID,
+		CorrelationID: correlationID,
+		Status:        StatusRunning,
+		NextSequence:  1,
+		MaxBytes:      maxBytes,
+		StartedAt:     now,
 	}
 	if timeout > 0 {
-		t.Deadline = now.Add(timeout)
+		fileTransfer.Deadline = now.Add(timeout)
 	}
-	m.transfers[requestID] = t
-	return t.clone(), true, nil
+	m.transfers[requestID] = fileTransfer
+	return fileTransfer.clone(), true, nil
 }
 
-// Append validates one encoded chunk and records its decoded size. File
+// RecordChunk validates one encoded chunk and records its decoded size. File
 // contents are intentionally discarded; the caller forwards the original
 // message.
-func (m *Manager) Append(sessionID, requestID string, sequence uint64, data string) (*Transfer, error) {
-	decoded, err := base64.StdEncoding.DecodeString(data)
+func (m *Manager) RecordChunk(sessionID, requestID string, sequence uint64, encodedChunk string) (*Transfer, error) {
+	decodedChunk, err := base64.StdEncoding.DecodeString(encodedChunk)
 	if err != nil {
 		return nil, ErrInvalidBase64
 	}
-	if len(decoded) == 0 {
+	if len(decodedChunk) == 0 {
 		return nil, ErrEmptyChunk
 	}
-	if len(decoded) > MaxChunkBytes {
+	if len(decodedChunk) > MaxChunkBytes {
 		return nil, ErrChunkTooLarge
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	t, ok := m.transfers[requestID]
-	if !ok || t.SessionID != sessionID {
+	fileTransfer, ok := m.transfers[requestID]
+	if !ok || fileTransfer.SessionID != sessionID {
 		return nil, ErrNotFound
 	}
-	if isTerminal(t.Status) {
-		return t.clone(), ErrTerminal
+	if isTerminal(fileTransfer.Status) {
+		return fileTransfer.clone(), ErrTerminal
 	}
-	if sequence != t.NextSeq {
+	if sequence != fileTransfer.NextSequence {
 		return nil, ErrSequence
 	}
-	if t.Bytes+int64(len(decoded)) > t.MaxBytes {
-		t.Status = StatusFailed
-		t.FinishedAt = m.now()
-		return t.clone(), ErrSizeLimit
+	if fileTransfer.TransferredBytes+int64(len(decodedChunk)) > fileTransfer.MaxBytes {
+		fileTransfer.Status = StatusFailed
+		fileTransfer.FinishedAt = m.now()
+		return fileTransfer.clone(), ErrSizeLimit
 	}
-	if t.Chunks >= MaxChunks {
-		t.Status = StatusFailed
-		t.FinishedAt = m.now()
-		return t.clone(), ErrChunkLimit
+	if fileTransfer.ChunkCount >= MaxChunks {
+		fileTransfer.Status = StatusFailed
+		fileTransfer.FinishedAt = m.now()
+		return fileTransfer.clone(), ErrChunkLimit
 	}
-	t.Bytes += int64(len(decoded))
-	t.Chunks++
-	t.NextSeq++
-	return t.clone(), nil
+	fileTransfer.TransferredBytes += int64(len(decodedChunk))
+	fileTransfer.ChunkCount++
+	fileTransfer.NextSequence++
+	return fileTransfer.clone(), nil
 }
 
 // Finish records the terminal transfer status. Terminal transfers are returned
@@ -184,22 +183,22 @@ func (m *Manager) Finish(sessionID, requestID string, status Status, fileName st
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	t, ok := m.transfers[requestID]
-	if !ok || t.SessionID != sessionID {
+	fileTransfer, ok := m.transfers[requestID]
+	if !ok || fileTransfer.SessionID != sessionID {
 		return nil, ErrNotFound
 	}
-	if isTerminal(t.Status) {
-		return t.clone(), nil
+	if isTerminal(fileTransfer.Status) {
+		return fileTransfer.clone(), nil
 	}
-	if status == StatusSucceeded && fileSize != t.Bytes {
+	if status == StatusSucceeded && fileSize != fileTransfer.TransferredBytes {
 		status = StatusResultUnknown
 		resultKnown = false
 	}
-	t.Status = status
-	t.FileName = fileName
-	t.FinishedAt = m.now()
-	t.ResultKnown = resultKnown && status != StatusResultUnknown
-	return t.clone(), nil
+	fileTransfer.Status = status
+	fileTransfer.FileName = fileName
+	fileTransfer.FinishedAt = m.now()
+	fileTransfer.ResultKnown = resultKnown && status != StatusResultUnknown
+	return fileTransfer.clone(), nil
 }
 
 // FinishSession terminates every live transfer for a session and returns the
@@ -211,36 +210,36 @@ func (m *Manager) FinishSession(sessionID string, status Status) []*Transfer {
 		status = StatusResultUnknown
 	}
 	now := m.now()
-	var out []*Transfer
-	for _, t := range m.transfers {
-		if t.SessionID != sessionID || isTerminal(t.Status) {
+	var finishedTransfers []*Transfer
+	for _, fileTransfer := range m.transfers {
+		if fileTransfer.SessionID != sessionID || isTerminal(fileTransfer.Status) {
 			continue
 		}
-		t.Status = status
-		t.FinishedAt = now
-		t.ResultKnown = status != StatusResultUnknown
-		out = append(out, t.clone())
+		fileTransfer.Status = status
+		fileTransfer.FinishedAt = now
+		fileTransfer.ResultKnown = status != StatusResultUnknown
+		finishedTransfers = append(finishedTransfers, fileTransfer.clone())
 	}
-	return out
+	return finishedTransfers
 }
 
 // Expire terminates transfers whose deadline passed. The device may still be
-// reading, so the result is reported as unknown rather than failed.
+// reading or writing, so the result is reported as unknown rather than failed.
 func (m *Manager) Expire() []*Transfer {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
-	var out []*Transfer
-	for _, t := range m.transfers {
-		if isTerminal(t.Status) || t.Deadline.IsZero() || now.Before(t.Deadline) {
+	var expiredTransfers []*Transfer
+	for _, fileTransfer := range m.transfers {
+		if isTerminal(fileTransfer.Status) || fileTransfer.Deadline.IsZero() || now.Before(fileTransfer.Deadline) {
 			continue
 		}
-		t.Status = StatusResultUnknown
-		t.FinishedAt = now
-		t.ResultKnown = false
-		out = append(out, t.clone())
+		fileTransfer.Status = StatusResultUnknown
+		fileTransfer.FinishedAt = now
+		fileTransfer.ResultKnown = false
+		expiredTransfers = append(expiredTransfers, fileTransfer.clone())
 	}
-	return out
+	return expiredTransfers
 }
 
 func isTerminal(status Status) bool {

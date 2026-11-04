@@ -58,7 +58,7 @@ int main(int argc, char *argv[]) {
     deviceConfig.enabled = true;
     device->setConfig(deviceConfig);
 
-    auto *operation = new PlatformClient(&app);
+    auto *operatorClient = new PlatformClient(&app);
     PlatformClient::Config operatorConfig;
     operatorConfig.address = address;
     operatorConfig.playerPassword = playerPassword;
@@ -74,70 +74,70 @@ int main(int argc, char *argv[]) {
     deviceConfig.forceTls12 = tls12;
     operatorConfig.forceTls12 = tls12;
     operatorConfig.enabled = true;
-    operation->setConfig(operatorConfig);
+    operatorClient->setConfig(operatorConfig);
 
     bool deviceReady = false;
     bool devicePasswordReady = false;
     bool operatorReady = false;
-    bool requested = false;
-    bool approved = false;
+    bool sessionRequested = false;
+    bool sessionApproved = false;
     bool commandSent = false;
     bool commandSeen = false;
-    bool closed = false;
+    bool sessionClosed = false;
     int failures = 0;
 
     // 统计临时重连次数，以便观察重试较多的运行情况
     int alreadyOnlineRetries = 0;
 
-    auto maybeRequest = [&] {
+    auto requestSessionWhenReady = [&] {
         // 设备首次注册时会轮换临时密码
         // 服务端会正确撤销轮换前创建的会话，因此先等待收到密码轮换确认
-        if (!deviceReady || !devicePasswordReady || !operatorReady || requested) return;
-        requested = true;
+        if (!deviceReady || !devicePasswordReady || !operatorReady || sessionRequested) return;
+        sessionRequested = true;
         qInfo() << "both clients registered; requesting session";
-        operation->requestSession(deviceId, QStringLiteral("interop"),
+        operatorClient->requestSession(deviceId, QStringLiteral("interop"),
                                   QStringList{QStringLiteral("execute_command")},
                                   device->config().temporaryPassword);
     };
 
     QObject::connect(device, &PlatformClient::registered, &app, [&](const QJsonObject &) {
         deviceReady = true;
-        maybeRequest();
+        requestSessionWhenReady();
     });
-    QObject::connect(operation, &PlatformClient::registered, &app, [&](const QJsonObject &) {
+    QObject::connect(operatorClient, &PlatformClient::registered, &app, [&](const QJsonObject &) {
         operatorReady = true;
-        maybeRequest();
+        requestSessionWhenReady();
     });
     QObject::connect(device, &PlatformClient::temporaryPasswordUpdated, &app,
                      [&](const QString &, int, qint64) {
         devicePasswordReady = true;
-        maybeRequest();
+        requestSessionWhenReady();
     });
     // 清除过期在线记录后重新注册时，服务端可能返回已经轮换的凭据，而不是再次轮换
     // 无论哪种情况，设备现在都持有可用的临时密码
     QObject::connect(device, &PlatformClient::credentialsRenewed, &app,
                      [&](const QString &, int) {
         devicePasswordReady = true;
-        maybeRequest();
+        requestSessionWhenReady();
     });
     QObject::connect(device, &PlatformClient::sessionRequested, &app, [&](const QJsonObject &session) {
         qInfo() << "device received session request" << session.value(QStringLiteral("status")).toString();
         device->approveSession(session.value(QStringLiteral("session_id")).toString());
     });
-    QObject::connect(operation, &PlatformClient::sessionCreated, &app, [&](const QJsonObject &session) {
+    QObject::connect(operatorClient, &PlatformClient::sessionCreated, &app, [&](const QJsonObject &session) {
         qInfo() << "operator session created" << session.value(QStringLiteral("status")).toString();
     });
-    QObject::connect(operation, &PlatformClient::sessionUpdated, &app, [&](const QJsonObject &session) {
+    QObject::connect(operatorClient, &PlatformClient::sessionUpdated, &app, [&](const QJsonObject &session) {
         const QString status = session.value(QStringLiteral("status")).toString();
-        if (status == QLatin1String("approved") && !approved) {
-            approved = true;
+        if (status == QLatin1String("approved") && !sessionApproved) {
+            sessionApproved = true;
             commandSent = true;
             qInfo() << "session approved; sending command";
-            operation->executeCommand(session.value(QStringLiteral("session_id")).toString(),
+            operatorClient->submitCommand(session.value(QStringLiteral("session_id")).toString(),
                                       QStringLiteral("interop-1"), QStringLiteral("whoami"), QString(), 10);
         }
-        if (status == QLatin1String("closed") && !closed) {
-            closed = true;
+        if (status == QLatin1String("closed") && !sessionClosed) {
+            sessionClosed = true;
             qInfo() << "session closed; success";
             QTimer::singleShot(50, &app, [&] { app.quit(); });
         }
@@ -149,24 +149,24 @@ int main(int argc, char *argv[]) {
         device->sendCommandOutput(sessionId, requestId, QStringLiteral("stdout"), QStringLiteral("qt-harness\n"), 1);
         device->sendCommandResult(sessionId, requestId, QStringLiteral("succeeded"), QJsonValue(0), true, false);
     });
-    QObject::connect(operation, &PlatformClient::commandOutput, &app,
+    QObject::connect(operatorClient, &PlatformClient::commandOutputReceived, &app,
                      [&](const QString &, const QString &, const QString &, const QString &data, quint64, bool) {
         qInfo() << "operator saw output" << data.trimmed();
     });
-    QObject::connect(operation, &PlatformClient::commandResult, &app,
+    QObject::connect(operatorClient, &PlatformClient::commandResultReceived, &app,
                      [&](const QString &sessionId, const QString &, const QString &status, const QJsonValue &, bool, bool) {
         qInfo() << "operator saw result" << status;
         if (status != QLatin1String("succeeded")) {
             ++failures;
             return;
         }
-        operation->closeSession(sessionId);
+        operatorClient->requestSessionClose(sessionId);
     });
-    QObject::connect(operation, &PlatformClient::platformError, &app, [&](const QString &code, const QString &message) {
+    QObject::connect(operatorClient, &PlatformClient::platformError, &app, [&](const QString &code, const QString &message) {
         qWarning() << "platform error" << code << message;
         ++failures;
     });
-    QObject::connect(operation, &PlatformClient::connectionError, &app, [&](const QString &message) {
+    QObject::connect(operatorClient, &PlatformClient::connectionError, &app, [&](const QString &message) {
         qWarning() << "operator connection error" << message;
     });
     QObject::connect(device, &PlatformClient::connectionError, &app, [&](const QString &message) {
@@ -186,12 +186,12 @@ int main(int argc, char *argv[]) {
         qWarning() << "device platform error" << code << message;
         ++failures;
     });
-    QObject::connect(operation, &PlatformClient::stateChanged, &app, [&](const QString &state) {
-        if (state == QLatin1String("disconnected") && closed) app.quit();
+    QObject::connect(operatorClient, &PlatformClient::stateChanged, &app, [&](const QString &state) {
+        if (state == QLatin1String("disconnected") && sessionClosed) app.quit();
     });
     QObject::connect(device, &PlatformClient::sessionUpdated, &app, [&](const QJsonObject &session) {
-        if (session.value(QStringLiteral("status")).toString() == QLatin1String("closed") && !closed) {
-            closed = true;
+        if (session.value(QStringLiteral("status")).toString() == QLatin1String("closed") && !sessionClosed) {
+            sessionClosed = true;
             qInfo() << "session closed on device; success";
             QTimer::singleShot(50, &app, [&] { app.quit(); });
         }
@@ -204,7 +204,7 @@ int main(int argc, char *argv[]) {
     });
 
     device->connectToPlatform();
-    operation->connectToPlatform();
+    operatorClient->connectToPlatform();
     const int result = app.exec();
     if (failures > 0) {
         qWarning() << "interop completed with" << failures << "errors";
@@ -214,5 +214,5 @@ int main(int argc, char *argv[]) {
         qWarning() << "command round trip did not complete";
         return 1;
     }
-    return result == 0 && closed ? 0 : 1;
+    return result == 0 && sessionClosed ? 0 : 1;
 }

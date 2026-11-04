@@ -4,29 +4,29 @@
 
 
 // 活动面板始终显示当前所属的会话：优先显示活动会话，否则显示最近结束的会话
-QString MainWindow::currentActivitySession() const {
-    QString liveId;
-    QString recentId;
-    qint64 liveCreated = -1;
-    qint64 recentCreated = -1;
+QString MainWindow::preferredActivitySessionId() const {
+    QString latestOpenSessionId;
+    QString latestSessionId;
+    qint64 latestOpenCreatedAtMs = -1;
+    qint64 latestCreatedAtMs = -1;
     for (auto it = sessions.cbegin(); it != sessions.cend(); ++it) {
         const QJsonObject session = it.value();
         if (session.value("source").toString() != QLatin1String("platform")) continue;
-        const qint64 created = static_cast<qint64>(session.value("created_at_ms").toDouble());
+        const qint64 createdAtMs = static_cast<qint64>(session.value("created_at_ms").toDouble());
         const QString status = session.value("status").toString();
         if (status == QLatin1String("active") || status == QLatin1String("approved") ||
             status == QLatin1String("pending_approval")) {
-            if (created >= liveCreated) {
-                liveCreated = created;
-                liveId = it.key();
+            if (createdAtMs >= latestOpenCreatedAtMs) {
+                latestOpenCreatedAtMs = createdAtMs;
+                latestOpenSessionId = it.key();
             }
         }
-        if (created >= recentCreated) {
-            recentCreated = created;
-            recentId = it.key();
+        if (createdAtMs >= latestCreatedAtMs) {
+            latestCreatedAtMs = createdAtMs;
+            latestSessionId = it.key();
         }
     }
-    return liveId.isEmpty() ? recentId : liveId;
+    return latestOpenSessionId.isEmpty() ? latestSessionId : latestOpenSessionId;
 }
 
 
@@ -40,7 +40,7 @@ QString MainWindow::activitySessionLabel(const QString &sessionId) const {
     if (device.isEmpty()) return name;
     QString digits;
     for (const QChar ch : device) if (ch.isDigit()) digits += ch;
-    return name + QStringLiteral(" · ") + (digits.size() == 9 ? spacedCode(digits) : device);
+    return name + QStringLiteral(" · ") + (digits.size() == 9 ? formatDeviceCode(digits) : device);
 }
 
 
@@ -56,13 +56,13 @@ QString MainWindow::activitySessionState(const QString &sessionId) const {
 
 void MainWindow::appendActivity(const QString &sessionId, const QString &message, ActivityKind kind) {
     if (sessionId.isEmpty() || message.isEmpty()) return;
-    QVector<ActivityEntry> &log = activityLogs[sessionId];
+    QVector<ActivityEntry> &sessionLog = activityLogs[sessionId];
     ActivityEntry entry;
     entry.kind = kind;
     entry.time = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"));
     entry.text = message;
-    log.append(entry);
-    while (log.size() > 400) log.removeFirst();
+    sessionLog.append(entry);
+    while (sessionLog.size() > 400) sessionLog.removeFirst();
     // 面板关闭后不会因新活动而重新打开或置顶；只有所有者能从活动会话卡片或托盘菜单打开面板
     if (!activityPanel || !activityPanel->isOpen() || activityPanel->sessionId() != sessionId) return;
     activityPanel->append(entry);
@@ -70,9 +70,9 @@ void MainWindow::appendActivity(const QString &sessionId, const QString &message
 }
 
 
-void MainWindow::syncActivityPanel() {
+void MainWindow::refreshOpenActivityPanel() {
     if (!activityPanel || !activityPanel->isOpen()) return;
-    const QString id = currentActivitySession();
+    const QString id = preferredActivitySessionId();
     if (id.isEmpty()) {
         activityPanel->setStatus(QStringLiteral("none"), QStringLiteral("当前没有远程协助会话"));
         return;
@@ -80,7 +80,7 @@ void MainWindow::syncActivityPanel() {
     // 切换内容只是更新数据；窗口保持原有层级和焦点，不会因新活动而遮挡所有者正在进行的工作
     if (activityPanel->sessionId() != id) {
         activityPanel->setSessionId(id);
-        activityPanel->reset(activitySessionLabel(id), activitySessionState(id), sessionStatusText(id),
+        activityPanel->replaceHistoryAndStatus(activitySessionLabel(id), activitySessionState(id), sessionStatusText(id),
                              activityLogs.value(id));
         return;
     }
@@ -88,11 +88,11 @@ void MainWindow::syncActivityPanel() {
 }
 
 
-void MainWindow::showActivityWindow(const QString &sessionId) {
-    const QString id = sessionId.isEmpty() ? currentActivitySession() : sessionId;
+void MainWindow::openOrActivateActivityPanel(const QString &sessionId) {
+    const QString id = sessionId.isEmpty() ? preferredActivitySessionId() : sessionId;
     if (!activityPanel) activityPanel = new ActivityPanel(this);
     if (activityPanel->isOpen()) {
-        syncActivityPanel();
+        refreshOpenActivityPanel();
         activityPanel->activate();
         return;
     }

@@ -8,13 +8,13 @@
 
 namespace {
 
-constexpr qint64 kOutputLimitPerStream = 1 << 20;
+constexpr qint64 kOutputLimitBytesPerStream = 1 << 20;
 constexpr int kMinTimeoutSeconds = 1;
 constexpr int kMaxTimeoutSeconds = 3600;
 
 // Windows PowerShell 5.1 会将未以 BOM 开头的 .ps1 文件按 ANSI 解码，因此非 ASCII 命令会乱码
 // 预置脚本会强制使用 UTF-8 输出，确保两种解释器返回相同的字节
-bool writeScriptFile(const QString &path, const QString &command, QString *error) {
+bool writeUtf8PowerShellScript(const QString &path, const QString &command, QString *error) {
     QFile script(path);
     if (!script.open(QIODevice::WriteOnly)) {
         if (error) *error = QStringLiteral("无法创建临时 PowerShell 脚本");
@@ -28,64 +28,64 @@ bool writeScriptFile(const QString &path, const QString &command, QString *error
     return true;
 }
 
-QString locatePowerShell() {
-    QString program = QStandardPaths::findExecutable(QStringLiteral("pwsh.exe"));
-    if (program.isEmpty()) program = QStandardPaths::findExecutable(QStringLiteral("powershell.exe"));
-    return program;
+QString findPowerShellExecutable() {
+    QString executablePath = QStandardPaths::findExecutable(QStringLiteral("pwsh.exe"));
+    if (executablePath.isEmpty()) executablePath = QStandardPaths::findExecutable(QStringLiteral("powershell.exe"));
+    return executablePath;
 }
 
 }  // namespace
 
 
 PowerShellRunner::PowerShellRunner(QObject *parent, const QString &requestId, const QString &command,
-                                   const QString &workingDirectory, int timeoutSeconds, Hooks hooks)
+                                   const QString &workingDirectory, int timeoutSeconds, Callbacks callbacks)
     : QObject(parent),
       requestId_(requestId),
       command_(command),
       workingDirectory_(workingDirectory),
       timeoutSeconds_(qBound(kMinTimeoutSeconds, timeoutSeconds, kMaxTimeoutSeconds)),
-      hooks_(std::move(hooks)) {}
+      callbacks_(std::move(callbacks)) {}
 
 PowerShellRunner::~PowerShellRunner() {
-    cleanup();
+    stopProcessAndRemoveScript();
 }
 
 bool PowerShellRunner::start(QString *error) {
     scriptPath_ = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
                       .filePath(QStringLiteral("yiuk-") + requestId_ + QStringLiteral(".ps1"));
-    if (!writeScriptFile(scriptPath_, command_, error)) return false;
+    if (!writeUtf8PowerShellScript(scriptPath_, command_, error)) return false;
 
-    const QString program = locatePowerShell();
-    if (program.isEmpty()) {
+    const QString executablePath = findPowerShellExecutable();
+    if (executablePath.isEmpty()) {
         if (error) *error = QStringLiteral("未找到 PowerShell 可执行程序");
-        cleanup();
+        stopProcessAndRemoveScript();
         return false;
     }
 
     process_ = new QProcess(this);
     process_->setProcessChannelMode(QProcess::SeparateChannels);
-    process_->setProgram(program);
+    process_->setProgram(executablePath);
     process_->setArguments({"-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                             "-File", scriptPath_});
     if (QDir(workingDirectory_).exists()) process_->setWorkingDirectory(workingDirectory_);
 
-    connect(process_, &QProcess::readyReadStandardOutput, this, [this] { readOutput(false); });
-    connect(process_, &QProcess::readyReadStandardError, this, [this] { readOutput(true); });
+    connect(process_, &QProcess::readyReadStandardOutput, this, [this] { readAndLimitOutput(false); });
+    connect(process_, &QProcess::readyReadStandardError, this, [this] { readAndLimitOutput(true); });
     connect(process_, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
             [this](int exitCode, QProcess::ExitStatus exitStatus) {
-                readOutput(false);
-                readOutput(true);
+                readAndLimitOutput(false);
+                readAndLimitOutput(true);
                 if (finished_) return;
                 const bool success = exitStatus == QProcess::NormalExit && exitCode == 0;
-                finish(success ? QStringLiteral("succeeded") : QStringLiteral("failed"), exitCode, QString());
+                finishAndReport(success ? QStringLiteral("succeeded") : QStringLiteral("failed"), exitCode, QString());
             });
     connect(process_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
         if (finished_ || !process_ || process_->state() != QProcess::NotRunning) return;
-        finish(QStringLiteral("failed"), -1, process_->errorString());
+        finishAndReport(QStringLiteral("failed"), -1, process_->errorString());
     });
     QTimer::singleShot(timeoutSeconds_ * 1000, this, [this] {
         if (finished_) return;
-        finish(QStringLiteral("timed_out"), -1, QString());
+        finishAndReport(QStringLiteral("timed_out"), -1, QString());
     });
 
     process_->start();
@@ -94,34 +94,34 @@ bool PowerShellRunner::start(QString *error) {
 
 void PowerShellRunner::cancel() {
     if (finished_) return;
-    finish(QStringLiteral("cancelled"), -1, QString());
+    finishAndReport(QStringLiteral("cancelled"), -1, QString());
 }
 
-void PowerShellRunner::readOutput(bool standardError) {
+void PowerShellRunner::readAndLimitOutput(bool isStandardError) {
     if (!process_) return;
-    QByteArray bytes = standardError ? process_->readAllStandardError() : process_->readAllStandardOutput();
-    if (bytes.isEmpty()) return;
+    QByteArray outputBytes = isStandardError ? process_->readAllStandardError() : process_->readAllStandardOutput();
+    if (outputBytes.isEmpty()) return;
 
-    qint64 &budget = standardError ? stderrBytes_ : stdoutBytes_;
-    bool &truncated = standardError ? stderrTruncated_ : stdoutTruncated_;
-    const qint64 available = qMax<qint64>(0, kOutputLimitPerStream - budget);
-    if (bytes.size() > available) {
-        bytes.truncate(static_cast<int>(available));
+    qint64 &retainedBytes = isStandardError ? stderrRetainedBytes_ : stdoutRetainedBytes_;
+    bool &truncated = isStandardError ? stderrTruncated_ : stdoutTruncated_;
+    const qint64 remainingOutputBytes = qMax<qint64>(0, kOutputLimitBytesPerStream - retainedBytes);
+    if (outputBytes.size() > remainingOutputBytes) {
+        outputBytes.truncate(static_cast<int>(remainingOutputBytes));
         truncated = true;
     }
-    budget += bytes.size();
-    if (hooks_.onOutput) hooks_.onOutput(bytes, standardError, truncated);
+    retainedBytes += outputBytes.size();
+    if (callbacks_.onOutput) callbacks_.onOutput(outputBytes, isStandardError, truncated);
 }
 
-void PowerShellRunner::finish(const QString &status, int exitCode, const QString &error) {
+void PowerShellRunner::finishAndReport(const QString &status, int exitCode, const QString &error) {
     if (finished_) return;
     finished_ = true;
-    // cleanup() 会先断开进程信号，因此在此终止进程不会回调 finish() 并重复报告最终状态
-    cleanup();
-    if (hooks_.onFinished) hooks_.onFinished(status, exitCode, error);
+    // stopProcessAndRemoveScript() 先断开进程信号，避免终止进程时重入 finishAndReport()。
+    stopProcessAndRemoveScript();
+    if (callbacks_.onFinished) callbacks_.onFinished(status, exitCode, error);
 }
 
-void PowerShellRunner::cleanup() {
+void PowerShellRunner::stopProcessAndRemoveScript() {
     if (process_) {
         QProcess *process = process_;
         process_ = nullptr;

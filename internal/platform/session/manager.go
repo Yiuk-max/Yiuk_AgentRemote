@@ -69,35 +69,35 @@ type Session struct {
 }
 
 // Clone 返回一个副本，调用者可以在不持有管理器锁的情况下读取
-func (s *Session) Clone() *Session {
-	if s == nil {
+func (sessionRecord *Session) Clone() *Session {
+	if sessionRecord == nil {
 		return nil
 	}
-	out := *s
-	out.Permissions = make(map[string]struct{}, len(s.Permissions))
-	for k := range s.Permissions {
-		out.Permissions[k] = struct{}{}
+	snapshot := *sessionRecord
+	snapshot.Permissions = make(map[string]struct{}, len(sessionRecord.Permissions))
+	for permission := range sessionRecord.Permissions {
+		snapshot.Permissions[permission] = struct{}{}
 	}
-	return &out
+	return &snapshot
 }
 
 // 报告会话是否授予某个权限
-func (s *Session) HasPermission(permission string) bool {
-	if s == nil {
+func (sessionRecord *Session) HasPermission(permission string) bool {
+	if sessionRecord == nil {
 		return false
 	}
-	_, ok := s.Permissions[permission]
+	_, ok := sessionRecord.Permissions[permission]
 	return ok
 }
 
 // 以一种顺序返回权限列表
-func (s *Session) PermissionList() []string {
-	out := make([]string, 0, len(s.Permissions))
-	for p := range s.Permissions {
-		out = append(out, p)
+func (sessionRecord *Session) PermissionList() []string {
+	permissions := make([]string, 0, len(sessionRecord.Permissions))
+	for permission := range sessionRecord.Permissions {
+		permissions = append(permissions, permission)
 	}
-	sort.Strings(out)
-	return out
+	sort.Strings(permissions)
+	return permissions
 }
 
 // 会话创建远程协助请求
@@ -114,25 +114,25 @@ type CreateRequest struct {
 
 // Manager 拥有所有会话的状态
 type Manager struct {
-	mu           sync.Mutex
-	sessions     map[string]*Session
-	max          int
-	maxPerDevice int
-	sessionTTL   time.Duration //TTL->存活时间
-	approvalTTL  time.Duration
-	now          func() time.Time
+	mu                   sync.Mutex
+	sessions             map[string]*Session
+	maxSessions          int
+	maxSessionsPerDevice int
+	sessionTTL           time.Duration //TTL->存活时间
+	approvalTTL          time.Duration
+	now                  func() time.Time
 }
 
-func NewManager(max, maxPerDevice int, sessionTTL, approvalTTL time.Duration) *Manager {
-	return newManager(max, maxPerDevice, sessionTTL, approvalTTL, time.Now)
+func NewManager(maxSessions, maxSessionsPerDevice int, sessionTTL, approvalTTL time.Duration) *Manager {
+	return newManager(maxSessions, maxSessionsPerDevice, sessionTTL, approvalTTL, time.Now)
 }
 
-func newManager(max, maxPerDevice int, sessionTTL, approvalTTL time.Duration, now func() time.Time) *Manager {
-	if max < 1 {
-		max = 1
+func newManager(maxSessions, maxSessionsPerDevice int, sessionTTL, approvalTTL time.Duration, now func() time.Time) *Manager {
+	if maxSessions < 1 {
+		maxSessions = 1
 	}
-	if maxPerDevice < 1 {
-		maxPerDevice = 1
+	if maxSessionsPerDevice < 1 {
+		maxSessionsPerDevice = 1
 	}
 	if sessionTTL <= 0 {
 		sessionTTL = 10 * time.Minute
@@ -141,25 +141,25 @@ func newManager(max, maxPerDevice int, sessionTTL, approvalTTL time.Duration, no
 		approvalTTL = 2 * time.Minute
 	}
 	return &Manager{
-		sessions:     make(map[string]*Session),
-		max:          max,
-		maxPerDevice: maxPerDevice,
-		sessionTTL:   sessionTTL,
-		approvalTTL:  approvalTTL,
-		now:          now,
+		sessions:             make(map[string]*Session),
+		maxSessions:          maxSessions,
+		maxSessionsPerDevice: maxSessionsPerDevice,
+		sessionTTL:           sessionTTL,
+		approvalTTL:          approvalTTL,
+		now:                  now,
 	}
 }
 
-// 创建一个直接或被批准的session
-func (m *Manager) Create(id string, req CreateRequest) (*Session, error) {
-	if req.Purpose == "" {
+// Create 创建会话；直连模式立即批准，审批模式进入等待审批状态。
+func (m *Manager) Create(sessionID string, request CreateRequest) (*Session, error) {
+	if request.Purpose == "" {
 		return nil, ErrInvalidPurpose
 	}
-	perms, err := normalizePermissions(req.Permissions) //检查权限格式和内容
+	permissions, err := validateAndCollectPermissions(request.Permissions) //检查权限格式和内容
 	if err != nil {
 		return nil, err
 	}
-	mode := req.Mode
+	mode := request.Mode
 	if mode != device.ModeDirect && mode != device.ModeApproval {
 		mode = device.ModeApproval
 	}
@@ -167,102 +167,102 @@ func (m *Manager) Create(id string, req CreateRequest) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// 检查
-	if len(m.sessions) >= m.max {
+	if len(m.sessions) >= m.maxSessions {
 		return nil, ErrSessionLimit
 	}
-	activeForDevice := 0 //设备已经有的会话数量
-	for _, s := range m.sessions {
-		if s.DeviceID == req.DeviceID && !isTerminal(s.Status) {
-			activeForDevice++
+	openSessionsForDevice := 0 //设备已经有的会话数量
+	for _, sessionRecord := range m.sessions {
+		if sessionRecord.DeviceID == request.DeviceID && !isTerminal(sessionRecord.Status) {
+			openSessionsForDevice++
 		}
 	}
-	if activeForDevice >= m.maxPerDevice {
+	if openSessionsForDevice >= m.maxSessionsPerDevice {
 		return nil, ErrSessionLimit
 	}
 
 	now := m.now()
-	s := &Session{
-		ID:                   id,
-		DeviceID:             req.DeviceID,
-		OperatorConnectionID: req.OperatorConnectionID,
-		DeviceConnectionID:   req.DeviceConnectionID,
-		OperatorLabel:        req.OperatorLabel,
-		OperatorSource:       req.OperatorSource,
-		Purpose:              req.Purpose,
-		Permissions:          perms,
+	sessionRecord := &Session{
+		ID:                   sessionID,
+		DeviceID:             request.DeviceID,
+		OperatorConnectionID: request.OperatorConnectionID,
+		DeviceConnectionID:   request.DeviceConnectionID,
+		OperatorLabel:        request.OperatorLabel,
+		OperatorSource:       request.OperatorSource,
+		Purpose:              request.Purpose,
+		Permissions:          permissions,
 		Mode:                 mode,
 		Status:               StatusRequested,
 		CreatedAt:            now,
 		LastActivity:         now,
 	}
 	if mode == device.ModeDirect {
-		s.Status = StatusApproved
-		s.ApprovedAt = now
-		s.ExpiresAt = now.Add(m.sessionTTL)
+		sessionRecord.Status = StatusApproved
+		sessionRecord.ApprovedAt = now
+		sessionRecord.ExpiresAt = now.Add(m.sessionTTL)
 	} else {
-		s.Status = StatusPendingApproval
-		s.ExpiresAt = now.Add(m.approvalTTL)
+		sessionRecord.Status = StatusPendingApproval
+		sessionRecord.ExpiresAt = now.Add(m.approvalTTL)
 	}
-	m.sessions[id] = s //加入manager管理
-	return s.Clone(), nil
+	m.sessions[sessionID] = sessionRecord //加入manager管理
+	return sessionRecord.Clone(), nil
 }
 
 // 批准会将待处理的会话转为已批准
-func (m *Manager) Approve(id, deviceConnectionID string) (*Session, error) {
+func (m *Manager) Approve(sessionID, deviceConnectionID string) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, err := m.locked(id)
+	sessionRecord, err := m.sessionByID(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	if s.DeviceConnectionID != deviceConnectionID {
+	if sessionRecord.DeviceConnectionID != deviceConnectionID {
 		return nil, ErrNotOwner
 	}
-	switch s.Status {
+	switch sessionRecord.Status {
 	case StatusApproved, StatusActive:
-		return s.Clone(), nil
+		return sessionRecord.Clone(), nil
 	case StatusPendingApproval:
 		now := m.now()
-		if !now.Before(s.ExpiresAt) { //同意时间过期了
-			s.Status = StatusExpired
-			s.ClosedAt = now
-			s.CloseReason = "expired"
+		if !now.Before(sessionRecord.ExpiresAt) { //同意时间过期了
+			sessionRecord.Status = StatusExpired
+			sessionRecord.ClosedAt = now
+			sessionRecord.CloseReason = "expired"
 			return nil, ErrExpired
 		}
-		s.Status = StatusApproved
-		s.ApprovedAt = now
-		s.ExpiresAt = now.Add(m.sessionTTL)
-		return s.Clone(), nil
+		sessionRecord.Status = StatusApproved
+		sessionRecord.ApprovedAt = now
+		sessionRecord.ExpiresAt = now.Add(m.sessionTTL)
+		return sessionRecord.Clone(), nil
 	default:
 		return nil, ErrInvalidState
 	}
 }
 
-func (m *Manager) Reject(id, deviceConnectionID, reason string) (*Session, error) {
+func (m *Manager) Reject(sessionID, deviceConnectionID, reason string) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, err := m.locked(id)
+	sessionRecord, err := m.sessionByID(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	if s.DeviceConnectionID != deviceConnectionID {
+	if sessionRecord.DeviceConnectionID != deviceConnectionID {
 		return nil, ErrNotOwner
 	}
-	switch s.Status {
+	switch sessionRecord.Status {
 	case StatusRejected:
-		return s.Clone(), nil
+		return sessionRecord.Clone(), nil
 	case StatusPendingApproval:
 		now := m.now()
-		if !now.Before(s.ExpiresAt) {
-			s.Status = StatusExpired
-			s.ClosedAt = now
-			s.CloseReason = "expired"
+		if !now.Before(sessionRecord.ExpiresAt) {
+			sessionRecord.Status = StatusExpired
+			sessionRecord.ClosedAt = now
+			sessionRecord.CloseReason = "expired"
 			return nil, ErrExpired
 		}
-		s.Status = StatusRejected
-		s.ClosedAt = now
-		s.CloseReason = reason
-		return s.Clone(), nil
+		sessionRecord.Status = StatusRejected
+		sessionRecord.ClosedAt = now
+		sessionRecord.CloseReason = reason
+		return sessionRecord.Clone(), nil
 	default:
 		return nil, ErrInvalidState
 	}
@@ -271,51 +271,51 @@ func (m *Manager) Reject(id, deviceConnectionID, reason string) (*Session, error
 // Authorize verifies that the operator connection owns an approved/active,
 // unexpired session with the requested permission.
 // 授权会验证操作员连接是否拥有一个已批准/有效且未过期的请求权限会话。
-func (m *Manager) Authorize(id, operatorConnectionID, permission string) (*Session, error) {
+func (m *Manager) Authorize(sessionID, operatorConnectionID, permission string) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, err := m.locked(id)
+	sessionRecord, err := m.sessionByID(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	if s.OperatorConnectionID != operatorConnectionID {
+	if sessionRecord.OperatorConnectionID != operatorConnectionID {
 		return nil, ErrNotOwner
 	}
-	if s.Status != StatusApproved && s.Status != StatusActive {
+	if sessionRecord.Status != StatusApproved && sessionRecord.Status != StatusActive {
 		return nil, ErrInvalidState
 	}
-	if !m.now().Before(s.ExpiresAt) {
+	if !m.now().Before(sessionRecord.ExpiresAt) {
 		return nil, ErrExpired
 	}
-	if !s.HasPermission(permission) {
+	if !sessionRecord.HasPermission(permission) {
 		return nil, ErrNoPermission
 	}
-	return s.Clone(), nil
+	return sessionRecord.Clone(), nil
 }
 
 // Activate marks an approved session active. It is idempotent.
 // Activate 标记已批准的会话为活跃状态
-func (m *Manager) Activate(id, operatorConnectionID string) (*Session, error) {
+func (m *Manager) Activate(sessionID, operatorConnectionID string) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, err := m.locked(id)
+	sessionRecord, err := m.sessionByID(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	if s.OperatorConnectionID != operatorConnectionID {
+	if sessionRecord.OperatorConnectionID != operatorConnectionID {
 		return nil, ErrNotOwner
 	}
-	switch s.Status {
+	switch sessionRecord.Status {
 	case StatusActive:
-		s.LastActivity = m.now()
-		return s.Clone(), nil
+		sessionRecord.LastActivity = m.now()
+		return sessionRecord.Clone(), nil
 	case StatusApproved:
-		if !m.now().Before(s.ExpiresAt) {
+		if !m.now().Before(sessionRecord.ExpiresAt) {
 			return nil, ErrExpired
 		}
-		s.Status = StatusActive
-		s.LastActivity = m.now()
-		return s.Clone(), nil
+		sessionRecord.Status = StatusActive
+		sessionRecord.LastActivity = m.now()
+		return sessionRecord.Clone(), nil
 	default:
 		return nil, ErrInvalidState
 	}
@@ -324,32 +324,32 @@ func (m *Manager) Activate(id, operatorConnectionID string) (*Session, error) {
 // Close terminates a session. Already terminal sessions are returned
 // unchanged so callers can safely retry a close.
 // Close 会终止一个会话。已经是终止状态的会话会原样返回，所以可以安全地重试关闭操作
-func (m *Manager) Close(id, reason string) (*Session, error) {
+func (m *Manager) Close(sessionID, reason string) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, err := m.locked(id)
+	sessionRecord, err := m.sessionByID(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	if isTerminal(s.Status) {
-		return s.Clone(), nil
+	if isTerminal(sessionRecord.Status) {
+		return sessionRecord.Clone(), nil
 	}
-	s.Status = StatusClosed
-	s.ClosedAt = m.now()
-	s.CloseReason = reason
-	return s.Clone(), nil
+	sessionRecord.Status = StatusClosed
+	sessionRecord.ClosedAt = m.now()
+	sessionRecord.CloseReason = reason
+	return sessionRecord.Clone(), nil
 }
 
 // Get returns a session clone.
 // 获取会话信息的副本
-func (m *Manager) Get(id string) (*Session, bool) {
+func (m *Manager) Get(sessionID string) (*Session, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, ok := m.sessions[id]
+	sessionRecord, ok := m.sessions[sessionID]
 	if !ok {
 		return nil, false
 	}
-	return s.Clone(), true
+	return sessionRecord.Clone(), true
 }
 
 // List returns clones of all sessions.
@@ -357,21 +357,20 @@ func (m *Manager) Get(id string) (*Session, bool) {
 func (m *Manager) List() []*Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]*Session, 0, len(m.sessions))
-	for _, s := range m.sessions {
-		out = append(out, s.Clone())
+	sessionSnapshots := make([]*Session, 0, len(m.sessions))
+	for _, sessionRecord := range m.sessions {
+		sessionSnapshots = append(sessionSnapshots, sessionRecord.Clone())
 	}
-	return out
+	return sessionSnapshots
 }
 
-// CountActiveByDevice counts non-terminal sessions for a device.
-// 某个设备的已激活会话数
-func (m *Manager) CountActiveByDevice(deviceID string) int {
+// CountOpenByDevice 统计设备尚未结束的会话，包括待审批、已批准和活跃状态。
+func (m *Manager) CountOpenByDevice(deviceID string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	count := 0
-	for _, s := range m.sessions {
-		if s.DeviceID == deviceID && !isTerminal(s.Status) {
+	for _, sessionRecord := range m.sessions {
+		if sessionRecord.DeviceID == deviceID && !isTerminal(sessionRecord.Status) {
 			count++
 		}
 	}
@@ -384,8 +383,8 @@ func (m *Manager) CountActiveByDevice(deviceID string) int {
 func (m *Manager) InterruptByOperator(connectionID, reason string) []*Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.interruptLocked(func(s *Session) bool {
-		return s.OperatorConnectionID == connectionID && !isTerminal(s.Status)
+	return m.interruptMatchingSessions(func(sessionRecord *Session) bool {
+		return sessionRecord.OperatorConnectionID == connectionID && !isTerminal(sessionRecord.Status)
 	}, reason)
 }
 
@@ -394,8 +393,8 @@ func (m *Manager) InterruptByOperator(connectionID, reason string) []*Session {
 func (m *Manager) InterruptByDevice(deviceID, reason string) []*Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.interruptLocked(func(s *Session) bool {
-		return s.DeviceID == deviceID && !isTerminal(s.Status)
+	return m.interruptMatchingSessions(func(sessionRecord *Session) bool {
+		return sessionRecord.DeviceID == deviceID && !isTerminal(sessionRecord.Status)
 	}, reason)
 }
 
@@ -405,24 +404,25 @@ func (m *Manager) InterruptByDevice(deviceID, reason string) []*Session {
 func (m *Manager) RevokeByDevice(deviceID, reason string) []*Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.interruptLocked(func(s *Session) bool {
-		return s.DeviceID == deviceID && !isTerminal(s.Status)
+	return m.interruptMatchingSessions(func(sessionRecord *Session) bool {
+		return sessionRecord.DeviceID == deviceID && !isTerminal(sessionRecord.Status)
 	}, reason)
 }
 
-func (m *Manager) interruptLocked(match func(*Session) bool, reason string) []*Session {
+// interruptMatchingSessions 中断匹配的会话并返回副本；调用方须持有 m.mu。
+func (m *Manager) interruptMatchingSessions(matchesSession func(*Session) bool, reason string) []*Session {
 	now := m.now()
-	var out []*Session
-	for _, s := range m.sessions {
-		if !match(s) {
+	var interruptedSessions []*Session
+	for _, sessionRecord := range m.sessions {
+		if !matchesSession(sessionRecord) {
 			continue
 		}
-		s.Status = StatusInterrupted
-		s.ClosedAt = now
-		s.CloseReason = reason
-		out = append(out, s.Clone())
+		sessionRecord.Status = StatusInterrupted
+		sessionRecord.ClosedAt = now
+		sessionRecord.CloseReason = reason
+		interruptedSessions = append(interruptedSessions, sessionRecord.Clone())
 	}
-	return out
+	return interruptedSessions
 }
 
 // Expire transitions timed-out sessions to a terminal state and returns them.
@@ -430,25 +430,26 @@ func (m *Manager) Expire() []*Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
-	var out []*Session
-	for _, s := range m.sessions {
-		if isTerminal(s.Status) || s.ExpiresAt.IsZero() || now.Before(s.ExpiresAt) {
+	var expiredSessions []*Session
+	for _, sessionRecord := range m.sessions {
+		if isTerminal(sessionRecord.Status) || sessionRecord.ExpiresAt.IsZero() || now.Before(sessionRecord.ExpiresAt) {
 			continue
 		}
-		s.Status = StatusExpired
-		s.ClosedAt = now
-		s.CloseReason = "expired"
-		out = append(out, s.Clone())
+		sessionRecord.Status = StatusExpired
+		sessionRecord.ClosedAt = now
+		sessionRecord.CloseReason = "expired"
+		expiredSessions = append(expiredSessions, sessionRecord.Clone())
 	}
-	return out
+	return expiredSessions
 }
 
-func (m *Manager) locked(id string) (*Session, error) {
-	s, ok := m.sessions[id]
+// sessionByID 返回可修改的会话记录；调用方须持有 m.mu。
+func (m *Manager) sessionByID(sessionID string) (*Session, error) {
+	sessionRecord, ok := m.sessions[sessionID]
 	if !ok {
 		return nil, ErrNotFound
 	}
-	return s, nil
+	return sessionRecord, nil
 }
 
 func isTerminal(status Status) bool {
@@ -460,16 +461,17 @@ func isTerminal(status Status) bool {
 	}
 }
 
-func normalizePermissions(in []string) (map[string]struct{}, error) {
-	if len(in) == 0 {
+// validateAndCollectPermissions 校验权限名称并构建去重后的权限集合。
+func validateAndCollectPermissions(requestedPermissions []string) (map[string]struct{}, error) {
+	if len(requestedPermissions) == 0 {
 		return nil, fmt.Errorf("%w: at least one permission is required", ErrNoPermission)
 	}
-	out := make(map[string]struct{}, len(in))
-	for _, p := range in {
-		if p != PermissionExecuteCommand && p != PermissionReadFile && p != PermissionWriteFile {
-			return nil, fmt.Errorf("%w: %q", ErrNoPermission, p)
+	permissionSet := make(map[string]struct{}, len(requestedPermissions))
+	for _, permission := range requestedPermissions {
+		if permission != PermissionExecuteCommand && permission != PermissionReadFile && permission != PermissionWriteFile {
+			return nil, fmt.Errorf("%w: %q", ErrNoPermission, permission)
 		}
-		out[p] = struct{}{}
+		permissionSet[permission] = struct{}{}
 	}
-	return out, nil
+	return permissionSet, nil
 }

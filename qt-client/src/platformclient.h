@@ -60,7 +60,7 @@ public:
                            const QString &data, quint64 sequence);
     void sendCommandResult(const QString &sessionId, const QString &requestId, const QString &status,
                            const QJsonValue &exitCode, bool resultKnown, bool truncated);
-    void sendFileChunk(const QString &sessionId, const QString &requestId, quint64 sequence,
+    void sendFileDownloadChunk(const QString &sessionId, const QString &requestId, quint64 sequence,
                        const QByteArray &data, bool eof);
     void sendFileDownloadResult(const QString &sessionId, const QString &requestId, const QString &status,
                                 const QString &fileName, qint64 fileSize, const QString &sha256,
@@ -69,29 +69,29 @@ public:
                               const QString &remotePath, const QString &fileName, qint64 fileSize,
                               const QString &sha256, bool resultKnown);
     void updateTemporaryPassword(const QString &password, int version, const QString &mode, int ttlSeconds);
-    void closeSession(const QString &sessionId);
-    void cancelCommand(const QString &sessionId, const QString &requestId);
+    void requestSessionClose(const QString &sessionId);
+    void requestCommandCancel(const QString &sessionId, const QString &requestId);
 
     // 操作端操作
-    void listDevices(const QString &requestId);
+    void listDevices(const QString &correlationId);
     void requestSession(const QString &deviceId, const QString &purpose,
                         const QStringList &permissions, const QString &temporaryPassword);
-    void executeCommand(const QString &sessionId, const QString &requestId, const QString &command,
+    void submitCommand(const QString &sessionId, const QString &requestId, const QString &command,
                         const QString &workingDirectory, int timeoutSeconds);
 
 signals:
     void stateChanged(const QString &state);
     void registered(const QJsonObject &device);
-    void deviceListReceived(const QJsonArray &devices, const QString &requestId);
-    void requestFailed(const QString &requestId, const QString &code, const QString &message);
+    void deviceListReceived(const QJsonArray &devices, const QString &correlationId);
+    void requestFailed(const QString &correlationId, const QString &code, const QString &message);
     void sessionRequested(const QJsonObject &session);
     void sessionUpdated(const QJsonObject &session);
     void sessionCreated(const QJsonObject &session);
     void commandRequested(const QString &sessionId, const QString &requestId, const QString &command,
                           const QString &workingDirectory, int timeoutSeconds);
-    void commandOutput(const QString &sessionId, const QString &requestId, const QString &stream,
+    void commandOutputReceived(const QString &sessionId, const QString &requestId, const QString &stream,
                        const QString &data, quint64 sequence, bool truncated);
-    void commandResult(const QString &sessionId, const QString &requestId, const QString &status,
+    void commandResultReceived(const QString &sessionId, const QString &requestId, const QString &status,
                        const QJsonValue &exitCode, bool resultKnown, bool truncated);
     void fileDownloadRequested(const QString &sessionId, const QString &requestId, const QString &remotePath);
     void fileDownloadCanceled(const QString &sessionId, const QString &requestId);
@@ -112,35 +112,37 @@ signals:
                               const QString &details, bool changed);
 
 private slots:
-    void onConnected();
-    void onEncrypted();
-    void onReadyRead();
-    void onDisconnected();
+    void onSocketConnected();
+    void onTlsEncrypted();
+    void onSocketReadyRead();
+    void onSocketDisconnected();
     void onSocketError(QAbstractSocket::SocketError error);
-    void onHeartbeat();
-    void onReconnect();
+    void sendDeviceHeartbeat();
+    void reconnectIfNeeded();
 
 private:
-    void send(const QJsonObject &message);
-    void handleMessage(const QJsonObject &message);
+    void sendProtocolMessage(const QJsonObject &message);
+    void dispatchPlatformMessage(const QJsonObject &message);
     void setState(const QString &state);
     void scheduleReconnect();
     void retryWithoutProxy();
     void beginWebSocketHandshake();
-    void beginSession();
-    void sendWebSocketControl(quint8 opcode, const QByteArray &payload);
+    // 仅发送平台认证请求；设备注册和远程会话申请由后续消息驱动。
+    void sendPlatformAuthentication();
+    void sendWebSocketControlFrame(quint8 opcode, const QByteArray &payload);
     void rejectCertificate(const QString &fingerprint, const QString &subject, const QString &details, bool changed);
 
     QTcpSocket *socket_ = nullptr;
     QTimer heartbeatTimer_;
     QTimer reconnectTimer_;
     Config config_;
-    QByteArray buffer_;
-    QByteArray websocketKey_;
-    bool websocketReady_ = false;
+    QByteArray receiveBuffer_;
+    QByteArray websocketHandshakeKey_;
+    bool websocketHandshakeComplete_ = false;
     QString connectionId_;
     QString state_ = QStringLiteral("disconnected");
-    bool manualDisconnect_ = false;
+    // 主动断开、证书拒绝或不可重试的认证错误会禁止自动重连。
+    bool reconnectSuppressed_ = false;
     bool authenticated_ = false;
     bool registered_ = false;
     bool rotatePasswordOnFirstRegistration_ = true;
@@ -151,7 +153,7 @@ private:
     // 当前连接已报告 TLS 验证失败时设置，避免对端中止连接后用笼统的“远程主机已关闭”替代真实原因
     // 对端证书无法通过平台 CA 存储验证时设置
     // 在握手完成后作出判断，确保 Schannel 和 OpenSSL 后端的结果一致
-    bool sslErrorsSeen_ = false;
+    bool certificateErrorsSeen_ = false;
     bool tlsErrorReported_ = false;
     int reconnectAttempts_ = 0;
 };

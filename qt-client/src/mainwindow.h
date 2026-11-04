@@ -67,7 +67,7 @@ protected:
     void closeEvent(QCloseEvent *event) override;
 private:
     QString deviceCode = loadOrCreateDeviceCode();
-    QString temporaryPassword = randomPassword(32);
+    QString temporaryPassword = generateTemporaryPassword(32);
     int passwordVersion = 1;
     QLabel *passwordValue = nullptr;
     QPushButton *togglePassword = nullptr;
@@ -105,26 +105,26 @@ private:
     QComboBox *platformMode = nullptr;
     QLabel *platformStatusValue = nullptr;
     QPushButton *platformConnectButton = nullptr;
-    QString pendingDeviceLookupId;
-    QString pendingDeviceLookupCode;
-    QHash<QString, quint64> platformOutputSequence;
-    QHash<QString, QString> platformTaskSession;
+    QString pendingDeviceLookupCorrelationId;
+    QString pendingDeviceLookupDeviceId;
+    QHash<QString, quint64> nextPlatformOutputSequenceByRequest;
+    QHash<QString, QString> platformSessionByRequest;
     QHash<QString, QJsonObject> sessions;
     QHash<QString, QJsonObject> tasks;
     // 每条执行中的命令对应一个运行器；运行器负责管理 QProcess 和临时脚本文件
-    QHash<QString, PowerShellRunner *> runs;
+    QHash<QString, PowerShellRunner *> commandRunners;
     QHash<QString, bool> activeFileDownloads;
     struct FileUploadState {
         QString sessionId;
         QString requestId;
         QString targetPath;
-        QString tempPath;
+        QString temporaryPath;
         QString fileName;
         QFile *file = nullptr;
-        QCryptographicHash *hash = nullptr;
+        QCryptographicHash *checksum = nullptr;
         quint64 expectedSequence = 1;
-        qint64 received = 0;
-        qint64 expected = 0;
+        qint64 receivedBytes = 0;
+        qint64 expectedBytes = 0;
         QString expectedSha256;
         bool overwrite = false;
     };
@@ -134,7 +134,7 @@ private:
     QStatusBar *statusFooter = nullptr;
     QHash<QString, QString> notificationSessions;
     // 平台连接曾经可用时为 true，用于区分连接断开与尚未连接的初始状态
-    bool platformLinkWasUp = false;
+    bool platformWasConnected = false;
     // 远程会话日志保存在面板进程中，所有者可随时关闭或重新打开面板
     // 面板是独立窗口，此类中的任何操作都不能主动将它置于前台
     ActivityPanel *activityPanel = nullptr;
@@ -142,7 +142,8 @@ private:
     void setupSystemTray();
     void showMainWindow();
     bool hasOtherLiveSession(const QString &exceptId = QString()) const;
-    bool acceptPlatformSession(const QJsonObject &session) const;
+    // 只判断会话是否满足本机并发限制，不保存或批准会话。
+    bool canAdmitPlatformSession(const QJsonObject &session) const;
     static QString loadOrCreateDeviceCode();
     QWidget *createSidebar();
     QPushButton *navButton(const QString &text, Glyph glyph, bool active = false);
@@ -163,25 +164,25 @@ private:
     void refreshSessionsPage();
     QString sessionConnectorCode(const QJsonObject &session) const;
     QString sessionTargetCode(const QJsonObject &session) const;
-    static QJsonObject ok(const QJsonValue &data = {});
-    static QJsonObject fail(const QString &code, const QString &message);
+    static QJsonObject localToolSuccessResult(const QJsonValue &data = {});
+    static QJsonObject localToolErrorResult(const QString &code, const QString &message);
     QString deviceId() const;
     QJsonObject deviceRecord() const;
     void startLocalBridge();
     QString platformConfigPath() const;
     void loadPlatformConfig();
     void savePlatformConfig();
-    QString mcpToolSourcePath() const;
+    QString mcpExecutablePath() const;
     QString mcpAgentConfigText() const;
-    bool syncMcpClientConfig(const PlatformClient::Config &cfg);
+    bool writeMcpPlatformClientConfig(const PlatformClient::Config &platformConfig);
     void copyMcpAgentConfig();
-    void startPlatform();
+    void initializePlatformClient();
     void updatePlatformState(const QString &state);
     void lookupDeviceBeforeConnecting(const QString &deviceId);
     void promptAndRequestConnection(const QString &deviceId);
-    void onDeviceListReceived(const QJsonArray &devices, const QString &requestId);
-    void onPlatformRequestFailed(const QString &requestId, const QString &code, const QString &message);
-    void adoptDeviceSession(const QJsonObject &session, bool approved);
+    void onDeviceListReceived(const QJsonArray &devices, const QString &correlationId);
+    void onPlatformRequestFailed(const QString &correlationId, const QString &code, const QString &message);
+    void storeIncomingDeviceSession(const QJsonObject &session, bool approved);
     void onPlatformSessionRequested(const QJsonObject &session);
     void onPlatformSessionUpdated(const QJsonObject &session);
     void onPlatformSessionCreated(const QJsonObject &session);
@@ -192,37 +193,38 @@ private:
         QString requestId;
         QString fileName;
         QFile *file = nullptr;
-        QCryptographicHash *hash = nullptr;
-        quint64 sequence = 1;
-        qint64 sent = 0;
-        qint64 expected = 0;
+        QCryptographicHash *checksum = nullptr;
+        quint64 nextSequence = 1;
+        qint64 sentBytes = 0;
+        qint64 expectedBytes = 0;
     };
     bool sessionAllowsFileRead(const QString &sessionId);
     bool sessionAllowsFileWrite(const QString &sessionId);
-    void finishFileDownload(const QSharedPointer<FileDownloadState> &state, const QString &status,
-                            bool resultKnown);
-    void pumpFileDownload(const QSharedPointer<FileDownloadState> &state);
+    void reportDownloadResultAndCleanup(const QSharedPointer<FileDownloadState> &transferState,
+                                        const QString &status, bool resultKnown);
+    void sendNextDownloadChunk(const QSharedPointer<FileDownloadState> &transferState);
     void onPlatformFileDownloadRequested(const QString &sessionId, const QString &requestId,
                                          const QString &remotePath);
     void onPlatformFileUploadRequested(const QString &sessionId, const QString &requestId,
                                        const QString &remotePath, const QString &fileName,
                                        qint64 fileSize, const QString &sha256, bool overwrite);
     void onPlatformFileUploadChunk(const QString &sessionId, const QString &requestId,
-                                   quint64 sequence, const QString &data, bool eof);
-    void finishFileUpload(const QSharedPointer<FileUploadState> &state, const QString &status);
-    void abortFileUploadsForSession(const QString &sessionId);
+                                   quint64 sequence, const QString &base64Data, bool eof);
+    void reportUploadResultAndCleanup(const QSharedPointer<FileUploadState> &transferState,
+                                      const QString &status);
+    void discardSessionUploads(const QString &sessionId);
     void onPlatformCommandRequested(const QString &sessionId, const QString &requestId, const QString &command,
                                     const QString &workingDirectory, int timeoutSeconds);
-    void executePlatformCommand(const QString &sessionId, const QString &requestId, const QString &command,
+    void startPlatformCommand(const QString &sessionId, const QString &requestId, const QString &command,
                                 const QString &workingDirectory, int timeoutSeconds);
     QJsonObject invokeLocalTool(const QString &tool, const QJsonObject &input);
-    QJsonObject requestLocalSession(const QJsonObject &input);
-    QJsonObject sessionStatus(const QString &id);
-    void expireSessionIfNeeded(const QString &id);
-    void stopTasksForSession(const QString &id, const QString &status);
+    QJsonObject createLocalSessionRequest(const QJsonObject &input);
+    QJsonObject localSessionStatusResult(const QString &sessionId);
+    void expireSessionIfNeeded(const QString &sessionId);
+    void cancelSessionCommands(const QString &sessionId, const QString &status);
     void refreshPendingRequests();
-    void showApprovalDialog(const QString &id);
-    void decideSession(const QString &id, bool approved);
+    void showApprovalDialog(const QString &sessionId);
+    void applySessionDecision(const QString &sessionId, bool approved);
     void refreshActiveSessions();
     // 将所有平台会话标记为中断
     // 平台连接断开时调用，避免界面继续显示会话正在运行
@@ -230,18 +232,18 @@ private:
     QString activeTaskSummary(const QString &sessionId) const;
     QJsonObject downloadLocalFile(const QJsonObject &input);
     QJsonObject uploadLocalFile(const QJsonObject &input);
-    QJsonObject executeLocalCommand(const QJsonObject &input);
-    QJsonObject commandResult(const QJsonObject &input) const;
-    QJsonObject cancelCommand(const QJsonObject &input);
-    QJsonObject closeSession(const QString &id);
+    QJsonObject startLocalCommand(const QJsonObject &input);
+    QJsonObject localCommandResultFromCursor(const QJsonObject &input) const;
+    QJsonObject cancelLocalCommand(const QJsonObject &input);
+    QJsonObject closeSessionAndStopTasks(const QString &sessionId);
     void appendActivity(const QString &sessionId, const QString &message,
                         ActivityKind kind = ActivityKind::Info);
     QString sessionStatusText(const QString &sessionId) const;
-    QString currentActivitySession() const;
+    QString preferredActivitySessionId() const;
     QString activitySessionLabel(const QString &sessionId) const;
     QString activitySessionState(const QString &sessionId) const;
-    void syncActivityPanel();
-    void showActivityWindow(const QString &sessionId = QString());
+    void refreshOpenActivityPanel();
+    void openOrActivateActivityPanel(const QString &sessionId = QString());
     void copyToClipboard(const QString &text, const QString &message);
     void showStatusMessage(const QString &message, int timeout = 0);
 };

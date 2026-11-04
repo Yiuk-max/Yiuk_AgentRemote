@@ -10,8 +10,8 @@ import (
 	"encoding/json"
 )
 
-// connectionRequest 聚合创建远程会话所需的参数，供独立请求和一次性命令流程共用。
-type connectionRequest struct {
+// sessionRequestOptions 聚合请求远程会话所需的参数，供独立请求和一次性命令流程共用。
+type sessionRequestOptions struct {
 	DeviceID          string
 	Purpose           string
 	Permissions       []string
@@ -19,8 +19,8 @@ type connectionRequest struct {
 	WaitForApproval   time.Duration
 }
 
-// requestConnection 解析工具参数，并按指定等待时长请求远程会话。
-func (c *Client) requestConnection(ctx context.Context, raw json.RawMessage) (any, error) {
+// handleRequestConnection 解析工具参数，并按指定等待时长请求远程会话。
+func (c *Client) handleRequestConnection(ctx context.Context, arguments json.RawMessage) (any, error) {
 	var input struct {
 		DeviceID               string   `json:"device_id"`
 		Purpose                string   `json:"purpose"`
@@ -28,10 +28,10 @@ func (c *Client) requestConnection(ctx context.Context, raw json.RawMessage) (an
 		TemporaryPassword      string   `json:"temporary_password"`
 		WaitForApprovalSeconds int      `json:"wait_for_approval_seconds"`
 	}
-	if err := json.Unmarshal(raw, &input); err != nil {
+	if err := json.Unmarshal(arguments, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
-	return c.createSession(ctx, connectionRequest{
+	return c.requestSession(ctx, sessionRequestOptions{
 		DeviceID:          input.DeviceID,
 		Purpose:           input.Purpose,
 		Permissions:       input.Permissions,
@@ -40,28 +40,28 @@ func (c *Client) requestConnection(ctx context.Context, raw json.RawMessage) (an
 	})
 }
 
-// createSession 请求会话，并在需要时等待设备所有者批准
-// 直连模式下的设备会立即批准会话
-func (c *Client) createSession(ctx context.Context, input connectionRequest) (map[string]any, error) {
+// requestSession 向平台请求创建会话，并在需要时等待设备所有者审批。
+// 直连模式下的设备会立即批准会话。
+func (c *Client) requestSession(ctx context.Context, input sessionRequestOptions) (map[string]any, error) {
 	if input.TemporaryPassword == "" {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "temporary_password is required; ask the device owner for the 32-character temporary password"}
 	}
-	resp, err := c.call(ctx, protocol.Message{
+	response, err := c.sendRequest(ctx, protocol.Message{
 		Type: protocol.TypeRequestSession, DeviceID: input.DeviceID, Purpose: input.Purpose,
 		Permissions: input.Permissions, TemporaryPassword: input.TemporaryPassword,
-	}, func(m protocol.Message) bool {
-		return m.Type == protocol.TypeSessionCreated
+	}, func(message protocol.Message) bool {
+		return message.Type == protocol.TypeSessionCreated
 	})
 	if err != nil {
 		return nil, err
 	}
-	result := sessionResult(resp)
-	id := sessionIDFromResult(result)
+	result := sessionToolResult(response)
+	sessionID := sessionIDFromResult(result)
 	status, _ := result["status"].(string)
 	if (status == protocol.StatusPendingApproval || status == protocol.StatusRequested) && input.WaitForApproval > 0 {
-		if c.waitForApproval(ctx, id, input.WaitForApproval) {
+		if c.waitForSessionDecision(ctx, sessionID, input.WaitForApproval) {
 			result["wait_timed_out"] = true
-		} else if latest, err := c.getSessionStatusInternal(ctx, id); err == nil {
+		} else if latest, err := c.fetchSessionStatus(ctx, sessionID); err == nil {
 			for key, value := range latest {
 				result[key] = value
 			}
@@ -70,23 +70,24 @@ func (c *Client) createSession(ctx context.Context, input connectionRequest) (ma
 	return result, nil
 }
 
-// waitForApproval 轮询会话状态直到审批完成、上下文取消或等待时限到达。
-func (c *Client) waitForApproval(ctx context.Context, sessionID string, timeout time.Duration) (timedOut bool) {
+// waitForSessionDecision 轮询会话状态，直到审批结束、上下文取消或等待时限到达。
+// 返回 true 表示等待超时或取消，false 仅表示会话不再等待审批，未必已获批准。
+func (c *Client) waitForSessionDecision(ctx context.Context, sessionID string, timeout time.Duration) (timedOutOrCancelled bool) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if result, err := c.getSessionStatusInternal(ctx, sessionID); err == nil {
+		if result, err := c.fetchSessionStatus(ctx, sessionID); err == nil {
 			if status, _ := result["status"].(string); status != protocol.StatusPendingApproval && status != protocol.StatusRequested {
 				return false
 			}
 		}
-		sleep := 1500 * time.Millisecond
-		if remaining := time.Until(deadline); remaining < sleep {
-			sleep = remaining
+		pollDelay := 1500 * time.Millisecond
+		if remaining := time.Until(deadline); remaining < pollDelay {
+			pollDelay = remaining
 		}
-		if sleep <= 0 {
+		if pollDelay <= 0 {
 			break
 		}
-		timer := time.NewTimer(sleep)
+		timer := time.NewTimer(pollDelay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -97,43 +98,43 @@ func (c *Client) waitForApproval(ctx context.Context, sessionID string, timeout 
 	return true
 }
 
-// getSessionStatus 解析参数并查询远程会话状态。
-func (c *Client) getSessionStatus(ctx context.Context, raw json.RawMessage) (any, error) {
+// handleGetSessionStatus 解析工具参数并查询远程会话状态。
+func (c *Client) handleGetSessionStatus(ctx context.Context, arguments json.RawMessage) (any, error) {
 	var input struct {
 		SessionID string `json:"session_id"`
 	}
-	if err := json.Unmarshal(raw, &input); err != nil {
+	if err := json.Unmarshal(arguments, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
-	return c.getSessionStatusInternal(ctx, input.SessionID)
+	return c.fetchSessionStatus(ctx, input.SessionID)
 }
 
-// getSessionStatusInternal 查询指定会话，并转换为工具结果结构。
-func (c *Client) getSessionStatusInternal(ctx context.Context, sessionID string) (map[string]any, error) {
-	resp, err := c.call(ctx, protocol.Message{Type: protocol.TypeSessionStatus, SessionID: sessionID}, func(m protocol.Message) bool {
-		return m.Type == protocol.TypeSessionStatus
+// fetchSessionStatus 查询指定会话，并转换为工具结果结构。
+func (c *Client) fetchSessionStatus(ctx context.Context, sessionID string) (map[string]any, error) {
+	response, err := c.sendRequest(ctx, protocol.Message{Type: protocol.TypeSessionStatus, SessionID: sessionID}, func(message protocol.Message) bool {
+		return message.Type == protocol.TypeSessionStatus
 	})
 	if err != nil {
 		return nil, err
 	}
-	return sessionResult(resp), nil
+	return sessionToolResult(response), nil
 }
 
-// closeSession 解析参数并执行关闭会话操作。
-func (c *Client) closeSession(ctx context.Context, raw json.RawMessage) (any, error) {
+// handleCloseSession 解析工具参数并请求关闭会话。
+func (c *Client) handleCloseSession(ctx context.Context, arguments json.RawMessage) (any, error) {
 	var input struct {
 		SessionID string `json:"session_id"`
 	}
-	if err := json.Unmarshal(raw, &input); err != nil {
+	if err := json.Unmarshal(arguments, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
-	return c.closeSessionInternal(ctx, input.SessionID)
+	return c.requestSessionClose(ctx, input.SessionID)
 }
 
-// closeSessionInternal 关闭会话；对已不存在的会话按幂等成功处理。
-func (c *Client) closeSessionInternal(ctx context.Context, sessionID string) (map[string]any, error) {
-	resp, err := c.call(ctx, protocol.Message{Type: protocol.TypeCloseSession, SessionID: sessionID}, func(m protocol.Message) bool {
-		return m.Type == protocol.TypeSessionStatus && isTerminalSession(m.Status)
+// requestSessionClose 请求平台关闭会话；对已不存在的会话按幂等成功处理。
+func (c *Client) requestSessionClose(ctx context.Context, sessionID string) (map[string]any, error) {
+	response, err := c.sendRequest(ctx, protocol.Message{Type: protocol.TypeCloseSession, SessionID: sessionID}, func(message protocol.Message) bool {
+		return message.Type == protocol.TypeSessionStatus && isTerminalSessionStatus(message.Status)
 	})
 	if err != nil {
 		// 关闭操作是幂等的
@@ -149,5 +150,5 @@ func (c *Client) closeSessionInternal(ctx context.Context, sessionID string) (ma
 		}
 		return nil, err
 	}
-	return sessionResult(resp), nil
+	return sessionToolResult(response), nil
 }

@@ -11,265 +11,265 @@ import (
 )
 
 // 申请会话
-func (s *Server) handleRequestSession(c *conn, m protocol.Message) error {
-	if err := s.validID("device_id", m.DeviceID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+func (s *Server) handleRequestSession(clientConn *clientConnection, message protocol.Message) error {
+	if err := s.validateID("device_id", message.DeviceID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	if c.role == roleDevice && c.deviceID == m.DeviceID {
-		return perr("SELF_SESSION", "a device cannot request a session to itself")
+	if clientConn.role == roleDevice && clientConn.deviceID == message.DeviceID {
+		return newProtocolError("SELF_SESSION", "a device cannot request a session to itself")
 	}
-	if strings.TrimSpace(m.Purpose) == "" || len(m.Purpose) > s.cfg.PurposeMaxLen {
-		return perr("INVALID_ARGUMENT", "purpose is required and bounded")
+	if strings.TrimSpace(message.Purpose) == "" || len(message.Purpose) > s.config.PurposeMaxLen {
+		return newProtocolError("INVALID_ARGUMENT", "purpose is required and bounded")
 	}
-	if len(m.Permissions) == 0 {
-		return perr("INVALID_ARGUMENT", "at least one permission is required")
+	if len(message.Permissions) == 0 {
+		return newProtocolError("INVALID_ARGUMENT", "at least one permission is required")
 	}
-	if m.TemporaryPassword == "" {
-		return perr("TEMPORARY_PASSWORD_REQUIRED", "a device temporary password is required")
+	if message.TemporaryPassword == "" {
+		return newProtocolError("TEMPORARY_PASSWORD_REQUIRED", "a device temporary password is required")
 	}
 
-	info, err := s.devices.VerifyPassword(m.DeviceID, m.TemporaryPassword)
+	info, err := s.devices.VerifyPassword(message.DeviceID, message.TemporaryPassword)
 	if err != nil {
-		s.audit.Warn("temporary_password_rejected", "device", audit.RedactID(m.DeviceID), "code", errorCode(err))
-		return s.deviceError(err)
+		s.audit.Warn("temporary_password_rejected", "device", audit.RedactID(message.DeviceID), "code", auditErrorCode(err))
+		return s.deviceProtocolError(err)
 	}
-	onlineID, ok := s.devices.OnlineConnection(info.ID)
-	if !ok || s.lookupConn(onlineID) == nil {
-		return perr("DEVICE_OFFLINE", "device is not online")
+	deviceConnectionID, ok := s.devices.OnlineConnection(info.ID)
+	if !ok || s.connectionByID(deviceConnectionID) == nil {
+		return newProtocolError("DEVICE_OFFLINE", "device is not online")
 	}
 
-	ses, err := s.sessions.Create(newID(), session.CreateRequest{
+	sessionRecord, err := s.sessions.Create(newID(), session.CreateRequest{
 		DeviceID:             info.ID,
-		OperatorConnectionID: c.id,
-		DeviceConnectionID:   onlineID,
-		OperatorLabel:        s.actorLabel(c),
-		OperatorSource:       c.remoteString(),
-		Purpose:              m.Purpose,
-		Permissions:          m.Permissions,
+		OperatorConnectionID: clientConn.id,
+		DeviceConnectionID:   deviceConnectionID,
+		OperatorLabel:        s.operatorDisplayName(clientConn),
+		OperatorSource:       clientConn.remoteAddress(),
+		Purpose:              message.Purpose,
+		Permissions:          message.Permissions,
 		Mode:                 info.Mode,
 	})
 	if err != nil {
-		return s.sessionError(err)
+		return s.sessionProtocolError(err)
 	}
-	s.devices.AddSession(info.ID, ses.ID)
-	si := sessionInfo(ses)
-	s.audit.Event("session_created", "session", audit.RedactID(ses.ID), "device", audit.RedactID(ses.DeviceID), "mode", string(ses.Mode), "status", string(ses.Status))
+	s.devices.AddSession(info.ID, sessionRecord.ID)
+	sessionInfo := protocolSessionInfo(sessionRecord)
+	s.audit.Event("session_created", "session", audit.RedactID(sessionRecord.ID), "device", audit.RedactID(sessionRecord.DeviceID), "mode", string(sessionRecord.Mode), "status", string(sessionRecord.Status))
 
 	// The device must always learn that a session exists, even in direct mode,
 	// so its owner UI can show and stop it.
-	if ses.Status == session.StatusPendingApproval {
-		s.sendToConnection(ses.DeviceConnectionID, protocol.Message{
+	if sessionRecord.Status == session.StatusPendingApproval {
+		s.sendToConnection(sessionRecord.DeviceConnectionID, protocol.Message{
 			Type:      protocol.TypeSessionRequest,
-			SessionID: ses.ID,
-			DeviceID:  ses.DeviceID,
-			Status:    string(ses.Status),
-			Session:   &si,
+			SessionID: sessionRecord.ID,
+			DeviceID:  sessionRecord.DeviceID,
+			Status:    string(sessionRecord.Status),
+			Session:   &sessionInfo,
 		})
 	} else {
-		s.notifySession(ses)
+		s.notifySessionStatus(sessionRecord)
 	}
-	return s.sendOK(c, m, protocol.Message{
+	return s.sendResponse(clientConn, message, protocol.Message{
 		Type:      protocol.TypeSessionCreated,
-		SessionID: ses.ID,
-		DeviceID:  ses.DeviceID,
-		Status:    string(ses.Status),
-		Session:   &si,
+		SessionID: sessionRecord.ID,
+		DeviceID:  sessionRecord.DeviceID,
+		Status:    string(sessionRecord.Status),
+		Session:   &sessionInfo,
 	})
 }
 
 // 批准会话
-func (s *Server) handleApproveSession(c *conn, m protocol.Message) error {
-	if c.role != roleDevice {
-		return perr("NOT_DEVICE", "only the target device can approve a session")
+func (s *Server) handleApproveSession(clientConn *clientConnection, message protocol.Message) error {
+	if clientConn.role != roleDevice {
+		return newProtocolError("NOT_DEVICE", "only the target device can approve a session")
 	}
-	if err := s.validID("session_id", m.SessionID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+	if err := s.validateID("session_id", message.SessionID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	if existing, ok := s.sessions.Get(m.SessionID); ok {
-		if existing.DeviceID != c.deviceID || existing.DeviceConnectionID != c.id {
-			return perr("SESSION_NOT_FOUND", "session not found")
+	if existing, ok := s.sessions.Get(message.SessionID); ok {
+		if existing.DeviceID != clientConn.deviceID || existing.DeviceConnectionID != clientConn.id {
+			return newProtocolError("SESSION_NOT_FOUND", "session not found")
 		}
 	}
-	ses, err := s.sessions.Approve(m.SessionID, c.id)
+	sessionRecord, err := s.sessions.Approve(message.SessionID, clientConn.id)
 	if err != nil {
-		return s.sessionError(err)
+		return s.sessionProtocolError(err)
 	}
-	s.notifySession(ses)
-	s.audit.Event("session_approved", "session", audit.RedactID(ses.ID), "device", audit.RedactID(ses.DeviceID))
-	si := sessionInfo(ses)
-	return s.sendOK(c, m, protocol.Message{
+	s.notifySessionStatus(sessionRecord)
+	s.audit.Event("session_approved", "session", audit.RedactID(sessionRecord.ID), "device", audit.RedactID(sessionRecord.DeviceID))
+	sessionInfo := protocolSessionInfo(sessionRecord)
+	return s.sendResponse(clientConn, message, protocol.Message{
 		Type:      protocol.TypeSessionStatus,
-		SessionID: ses.ID,
-		DeviceID:  ses.DeviceID,
-		Status:    string(ses.Status),
-		Session:   &si,
+		SessionID: sessionRecord.ID,
+		DeviceID:  sessionRecord.DeviceID,
+		Status:    string(sessionRecord.Status),
+		Session:   &sessionInfo,
 	})
 }
 
 // 拒绝会话
-func (s *Server) handleRejectSession(c *conn, m protocol.Message) error {
-	if c.role != roleDevice {
-		return perr("NOT_DEVICE", "only the target device can reject a session")
+func (s *Server) handleRejectSession(clientConn *clientConnection, message protocol.Message) error {
+	if clientConn.role != roleDevice {
+		return newProtocolError("NOT_DEVICE", "only the target device can reject a session")
 	}
-	if err := s.validID("session_id", m.SessionID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+	if err := s.validateID("session_id", message.SessionID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	if existing, ok := s.sessions.Get(m.SessionID); ok {
-		if existing.DeviceID != c.deviceID || existing.DeviceConnectionID != c.id {
-			return perr("SESSION_NOT_FOUND", "session not found")
+	if existing, ok := s.sessions.Get(message.SessionID); ok {
+		if existing.DeviceID != clientConn.deviceID || existing.DeviceConnectionID != clientConn.id {
+			return newProtocolError("SESSION_NOT_FOUND", "session not found")
 		}
 	}
-	reason := m.Message
+	reason := message.Message
 	if reason == "" {
 		reason = "rejected_by_owner"
 	}
-	if len(reason) > s.cfg.CloseReasonMaxLen {
-		reason = reason[:s.cfg.CloseReasonMaxLen]
+	if len(reason) > s.config.CloseReasonMaxLen {
+		reason = reason[:s.config.CloseReasonMaxLen]
 	}
-	ses, err := s.sessions.Reject(m.SessionID, c.id, reason)
+	sessionRecord, err := s.sessions.Reject(message.SessionID, clientConn.id, reason)
 	if err != nil {
-		return s.sessionError(err)
+		return s.sessionProtocolError(err)
 	}
-	s.devices.RemoveSession(ses.DeviceID, ses.ID)
-	s.notifySession(ses)
-	s.audit.Event("session_rejected", "session", audit.RedactID(ses.ID), "device", audit.RedactID(ses.DeviceID))
-	si := sessionInfo(ses)
-	return s.sendOK(c, m, protocol.Message{
+	s.devices.RemoveSession(sessionRecord.DeviceID, sessionRecord.ID)
+	s.notifySessionStatus(sessionRecord)
+	s.audit.Event("session_rejected", "session", audit.RedactID(sessionRecord.ID), "device", audit.RedactID(sessionRecord.DeviceID))
+	sessionInfo := protocolSessionInfo(sessionRecord)
+	return s.sendResponse(clientConn, message, protocol.Message{
 		Type:      protocol.TypeSessionStatus,
-		SessionID: ses.ID,
-		DeviceID:  ses.DeviceID,
-		Status:    string(ses.Status),
-		Session:   &si,
+		SessionID: sessionRecord.ID,
+		DeviceID:  sessionRecord.DeviceID,
+		Status:    string(sessionRecord.Status),
+		Session:   &sessionInfo,
 	})
 }
 
 // 获取会话状态
-func (s *Server) handleGetSessionStatus(c *conn, m protocol.Message) error {
-	if err := s.validID("session_id", m.SessionID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+func (s *Server) handleGetSessionStatus(clientConn *clientConnection, message protocol.Message) error {
+	if err := s.validateID("session_id", message.SessionID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	ses, ok := s.sessions.Get(m.SessionID)
-	if !ok || !s.canAccessSession(c, ses) {
-		return perr("SESSION_NOT_FOUND", "session not found")
+	sessionRecord, ok := s.sessions.Get(message.SessionID)
+	if !ok || !s.canAccessSession(clientConn, sessionRecord) {
+		return newProtocolError("SESSION_NOT_FOUND", "session not found")
 	}
-	si := sessionInfo(ses)
-	return s.sendOK(c, m, protocol.Message{
+	sessionInfo := protocolSessionInfo(sessionRecord)
+	return s.sendResponse(clientConn, message, protocol.Message{
 		Type:           protocol.TypeSessionStatus,
-		SessionID:      ses.ID,
-		DeviceID:       ses.DeviceID,
-		Status:         string(ses.Status),
-		Session:        &si,
-		ActiveSessions: s.sessions.CountActiveByDevice(ses.DeviceID),
+		SessionID:      sessionRecord.ID,
+		DeviceID:       sessionRecord.DeviceID,
+		Status:         string(sessionRecord.Status),
+		Session:        &sessionInfo,
+		ActiveSessions: s.sessions.CountOpenByDevice(sessionRecord.DeviceID),
 	})
 }
 
 // 打开会话通道
-func (s *Server) handleOpenSessionChannel(c *conn, m protocol.Message) error {
-	if err := s.validID("session_id", m.SessionID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+func (s *Server) handleOpenSessionChannel(clientConn *clientConnection, message protocol.Message) error {
+	if err := s.validateID("session_id", message.SessionID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	ses, ok := s.sessions.Get(m.SessionID)
-	if !ok || !s.canAccessSession(c, ses) {
-		return perr("SESSION_NOT_FOUND", "session not found")
+	sessionRecord, ok := s.sessions.Get(message.SessionID)
+	if !ok || !s.canAccessSession(clientConn, sessionRecord) {
+		return newProtocolError("SESSION_NOT_FOUND", "session not found")
 	}
-	if c.id == ses.OperatorConnectionID {
+	if clientConn.id == sessionRecord.OperatorConnectionID {
 		var err error
-		ses, err = s.sessions.Activate(ses.ID, c.id)
+		sessionRecord, err = s.sessions.Activate(sessionRecord.ID, clientConn.id)
 		if err != nil {
-			return s.sessionError(err)
+			return s.sessionProtocolError(err)
 		}
-		s.notifySession(ses)
+		s.notifySessionStatus(sessionRecord)
 	}
-	si := sessionInfo(ses)
-	return s.sendOK(c, m, protocol.Message{
+	sessionInfo := protocolSessionInfo(sessionRecord)
+	return s.sendResponse(clientConn, message, protocol.Message{
 		Type:      protocol.TypeSessionStatus,
-		SessionID: ses.ID,
-		DeviceID:  ses.DeviceID,
-		Status:    string(ses.Status),
-		Session:   &si,
+		SessionID: sessionRecord.ID,
+		DeviceID:  sessionRecord.DeviceID,
+		Status:    string(sessionRecord.Status),
+		Session:   &sessionInfo,
 	})
 }
 
 // 关闭会话
-func (s *Server) handleCloseSession(c *conn, m protocol.Message) error {
-	if err := s.validID("session_id", m.SessionID); err != nil {
-		return perr("INVALID_ARGUMENT", err.Error())
+func (s *Server) handleCloseSession(clientConn *clientConnection, message protocol.Message) error {
+	if err := s.validateID("session_id", message.SessionID); err != nil {
+		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
-	ses, ok := s.sessions.Get(m.SessionID)
-	if !ok || !s.canAccessSession(c, ses) {
-		return perr("SESSION_NOT_FOUND", "session not found")
+	sessionRecord, ok := s.sessions.Get(message.SessionID)
+	if !ok || !s.canAccessSession(clientConn, sessionRecord) {
+		return newProtocolError("SESSION_NOT_FOUND", "session not found")
 	}
 	reason := "closed_by_operator"
-	if c.role == roleDevice {
+	if clientConn.role == roleDevice {
 		reason = "closed_by_device"
 	}
-	closed, err := s.sessions.Close(ses.ID, reason)
+	closedSession, err := s.sessions.Close(sessionRecord.ID, reason)
 	if err != nil {
-		return s.sessionError(err)
+		return s.sessionProtocolError(err)
 	}
-	s.devices.RemoveSession(closed.DeviceID, closed.ID)
-	finished := s.tasks.FinishSession(closed.ID, task.StatusCancelled)
-	cancelledTransfers := s.sessionTransferResults(closed.ID, transfer.StatusCancelled)
+	s.devices.RemoveSession(closedSession.DeviceID, closedSession.ID)
+	finishedTasks := s.tasks.FinishSession(closedSession.ID, task.StatusCancelled)
+	cancelledTransfers := s.finishSessionTransfers(closedSession.ID, transfer.StatusCancelled)
 	// Ask the device to stop local processes when the operator closed the
 	// session, and tell the operator when the device closed it.
-	if c.role != roleDevice {
-		s.sendToConnection(closed.DeviceConnectionID, protocol.Message{
+	if clientConn.role != roleDevice {
+		s.sendToConnection(closedSession.DeviceConnectionID, protocol.Message{
 			Type:      protocol.TypeCloseSession,
-			SessionID: closed.ID,
-			DeviceID:  closed.DeviceID,
+			SessionID: closedSession.ID,
+			DeviceID:  closedSession.DeviceID,
 			Code:      "SESSION_CLOSED",
 			Message:   reason,
 		})
 	}
-	s.notifySession(closed)
-	for _, t := range finished {
-		s.sendToConnection(closed.OperatorConnectionID, taskResultMessage(t))
+	s.notifySessionStatus(closedSession)
+	for _, commandTask := range finishedTasks {
+		s.sendToConnection(closedSession.OperatorConnectionID, commandResultMessage(commandTask))
 	}
-	for _, msg := range cancelledTransfers {
-		s.sendToConnection(closed.OperatorConnectionID, msg)
+	for _, resultMessage := range cancelledTransfers {
+		s.sendToConnection(closedSession.OperatorConnectionID, resultMessage)
 	}
-	s.audit.Event("session_closed", "session", audit.RedactID(closed.ID), "device", audit.RedactID(closed.DeviceID), "reason", reason)
-	si := sessionInfo(closed)
-	return s.sendOK(c, m, protocol.Message{
+	s.audit.Event("session_closed", "session", audit.RedactID(closedSession.ID), "device", audit.RedactID(closedSession.DeviceID), "reason", reason)
+	sessionInfo := protocolSessionInfo(closedSession)
+	return s.sendResponse(clientConn, message, protocol.Message{
 		Type:      protocol.TypeSessionStatus,
-		SessionID: closed.ID,
-		DeviceID:  closed.DeviceID,
-		Status:    string(closed.Status),
-		Session:   &si,
+		SessionID: closedSession.ID,
+		DeviceID:  closedSession.DeviceID,
+		Status:    string(closedSession.Status),
+		Session:   &sessionInfo,
 	})
 }
 
 // 撤销设备的所有会话
 func (s *Server) revokeDeviceSessions(deviceID, reason string) {
-	interrupted := s.sessions.RevokeByDevice(deviceID, reason)
-	for _, ses := range interrupted {
-		s.devices.RemoveSession(ses.DeviceID, ses.ID)
-		finished := s.tasks.FinishSession(ses.ID, task.StatusResultUnknown)
-		s.notifySession(ses)
-		for _, t := range finished {
-			s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
+	interruptedSessions := s.sessions.RevokeByDevice(deviceID, reason)
+	for _, sessionRecord := range interruptedSessions {
+		s.devices.RemoveSession(sessionRecord.DeviceID, sessionRecord.ID)
+		finishedTasks := s.tasks.FinishSession(sessionRecord.ID, task.StatusResultUnknown)
+		s.notifySessionStatus(sessionRecord)
+		for _, commandTask := range finishedTasks {
+			s.sendToConnection(sessionRecord.OperatorConnectionID, commandResultMessage(commandTask))
 		}
-		for _, msg := range s.sessionTransferResults(ses.ID, transfer.StatusResultUnknown) {
-			s.sendToConnection(ses.OperatorConnectionID, msg)
+		for _, resultMessage := range s.finishSessionTransfers(sessionRecord.ID, transfer.StatusResultUnknown) {
+			s.sendToConnection(sessionRecord.OperatorConnectionID, resultMessage)
 		}
 	}
 }
 
 // 判断是否能直接访问会话
-func (s *Server) canAccessSession(c *conn, ses *session.Session) bool {
-	if ses == nil {
+func (s *Server) canAccessSession(clientConn *clientConnection, sessionRecord *session.Session) bool {
+	if sessionRecord == nil {
 		return false
 	}
-	if c.id == ses.OperatorConnectionID {
+	if clientConn.id == sessionRecord.OperatorConnectionID {
 		return true
 	}
-	return c.role == roleDevice && c.deviceID == ses.DeviceID && c.id == ses.DeviceConnectionID
+	return clientConn.role == roleDevice && clientConn.deviceID == sessionRecord.DeviceID && clientConn.id == sessionRecord.DeviceConnectionID
 }
 
 // 获取连接的标签
-func (s *Server) actorLabel(c *conn) string {
-	if c.label != "" {
-		return c.label
+func (s *Server) operatorDisplayName(clientConn *clientConnection) string {
+	if clientConn.displayName != "" {
+		return clientConn.displayName
 	}
-	return audit.RedactID(c.id)
+	return audit.RedactID(clientConn.id)
 }

@@ -56,37 +56,37 @@ func NewFromUserConfig() (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	var config Config
+	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("parse platform client config: %w", err)
 	}
-	return New(cfg)
+	return New(config)
 }
 
 // New 验证配置并返回延迟创建连接的客户端
 // 首次工具调用时才会建立连接
-func New(cfg Config) (*Client, error) {
-	cfg.Address = strings.TrimSpace(cfg.Address)
-	if cfg.Address == "" {
+func New(config Config) (*Client, error) {
+	config.Address = strings.TrimSpace(config.Address)
+	if config.Address == "" {
 		return nil, errors.New("platform client address is required")
 	}
-	if len(cfg.PlayerPassword) < minPlayerPasswordLen {
+	if len(config.PlayerPassword) < minPlayerPasswordLen {
 		return nil, fmt.Errorf("platform client player_password must be at least %d characters", minPlayerPasswordLen)
 	}
-	if cfg.TimeoutSeconds <= 0 {
-		cfg.TimeoutSeconds = 30
+	if config.TimeoutSeconds <= 0 {
+		config.TimeoutSeconds = 30
 	}
-	if cfg.HeartbeatIntervalSeconds <= 0 {
-		cfg.HeartbeatIntervalSeconds = defaultHeartbeatIntervalSeconds
+	if config.HeartbeatIntervalSeconds <= 0 {
+		config.HeartbeatIntervalSeconds = defaultHeartbeatIntervalSeconds
 	}
-	if cfg.HeartbeatIntervalSeconds < minHeartbeatIntervalSeconds {
-		cfg.HeartbeatIntervalSeconds = minHeartbeatIntervalSeconds
+	if config.HeartbeatIntervalSeconds < minHeartbeatIntervalSeconds {
+		config.HeartbeatIntervalSeconds = minHeartbeatIntervalSeconds
 	}
 	return &Client{
-		cfg:       cfg,
-		codec:     protocol.NewCodec(protocol.DefaultMaxMessageBytes),
-		sessions:  make(map[string]protocol.SessionInfo),
-		tasks:     make(map[string]*taskCache),
-		downloads: make(map[string]*downloadCache),
+		config:          config,
+		codec:           protocol.NewCodec(protocol.DefaultMaxMessageBytes),
+		cachedSessions:  make(map[string]protocol.SessionInfo),
+		cachedCommands:  make(map[string]*commandResultCache),
+		cachedDownloads: make(map[string]*downloadCache),
 	}, nil
 }

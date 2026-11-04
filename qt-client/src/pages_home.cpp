@@ -65,7 +65,7 @@ QWidget *MainWindow::createHomePage() {
     connect(copyCode, &QPushButton::clicked, this, [this] { copyToClipboard(deviceCode, "设备码已复制"); });
     connect(togglePassword, &QPushButton::toggled, this, [this](bool visible) {
         passwordVisible = visible;
-        passwordValue->setText(passwordVisible ? groupedPassword(temporaryPassword) : "********");
+        passwordValue->setText(passwordVisible ? formatTemporaryPassword(temporaryPassword) : "********");
         togglePassword->setIcon(glyphIcon(passwordVisible ? Glyph::EyeOff : Glyph::Eye));
         togglePassword->setToolTip(passwordVisible ? "隐藏密码" : "显示密码");
     });
@@ -75,7 +75,7 @@ QWidget *MainWindow::createHomePage() {
             showStatusMessage("请先连接平台，再手动更新连接密码", 2500);
             return;
         }
-        temporaryPassword = randomPassword(32);
+        temporaryPassword = generateTemporaryPassword(32);
         ++passwordVersion;
         const QString mode = platformMode ? platformMode->currentData().toString() : QStringLiteral("approval");
         platform->updateTemporaryPassword(temporaryPassword, passwordVersion, mode, platform->config().ttlSeconds);
@@ -139,7 +139,7 @@ QWidget *MainWindow::createHomePage() {
             showWarningMessage(this, "设备码无效", "请输入完整的 9 位设备码后添加。");
             return;
         }
-        const QString formatted = spacedCode(digits);
+        const QString formatted = formatDeviceCode(digits);
         if (!savedDevices.contains(formatted)) {
             savedDevices.append(formatted);
             QSettings().setValue("savedDevices", savedDevices);
@@ -188,7 +188,7 @@ void MainWindow::refreshFavoriteState() {
     if (remoteCode) {
         for (const QChar ch : remoteCode->text()) if (ch.isDigit()) digits += ch;
     }
-    const bool saved = digits.size() == 9 && savedDevices.contains(spacedCode(digits));
+    const bool saved = digits.size() == 9 && savedDevices.contains(formatDeviceCode(digits));
     favoriteButton->setIcon(starIcon(saved));
     favoriteButton->setToolTip(saved ? "已在收藏列表" : "添加设备");
 }
@@ -196,19 +196,19 @@ void MainWindow::refreshFavoriteState() {
 
 void MainWindow::lookupDeviceBeforeConnecting(const QString &deviceId) {
     if (!platform || !platform->isConnected()) {
-        showInfoMessage(this, "远程平台未连接", "设备码：" + spacedCode(deviceId) + "\n\n请先在设置中连接平台服务器。");
+        showInfoMessage(this, "远程平台未连接", "设备码：" + formatDeviceCode(deviceId) + "\n\n请先在设置中连接平台服务器。");
         return;
     }
-    if (!pendingDeviceLookupId.isEmpty()) return;
-    pendingDeviceLookupId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    pendingDeviceLookupCode = deviceId;
-    platform->listDevices(pendingDeviceLookupId);
+    if (!pendingDeviceLookupCorrelationId.isEmpty()) return;
+    pendingDeviceLookupCorrelationId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    pendingDeviceLookupDeviceId = deviceId;
+    platform->listDevices(pendingDeviceLookupCorrelationId);
     showStatusMessage("正在向后端查询设备…", 2000);
-    const QString requestId = pendingDeviceLookupId;
+    const QString requestId = pendingDeviceLookupCorrelationId;
     QTimer::singleShot(6000, this, [this, requestId] {
-        if (pendingDeviceLookupId != requestId) return;
-        pendingDeviceLookupId.clear();
-        pendingDeviceLookupCode.clear();
+        if (pendingDeviceLookupCorrelationId != requestId) return;
+        pendingDeviceLookupCorrelationId.clear();
+        pendingDeviceLookupDeviceId.clear();
         showWarningMessage(this, "设备查询超时", "后端没有响应，请稍后重试。");
     });
 }

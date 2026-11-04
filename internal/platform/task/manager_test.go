@@ -44,7 +44,7 @@ func TestOutputBudgetAndCursor(t *testing.T) {
 	if _, err := m.AppendOutput("s1", "r1", StreamStderr, strings.Repeat("x", 20)); err != nil {
 		t.Fatal(err)
 	}
-	view, err := m.Result("s1", "r1", 0)
+	view, err := m.ResultFromCursor("s1", "r1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestOutputBudgetAndCursor(t *testing.T) {
 	if len(view.Chunks) != 2 || view.NextCursor != 2 {
 		t.Fatalf("chunks=%d next=%d", len(view.Chunks), view.NextCursor)
 	}
-	page, err := m.Result("s1", "r1", 1)
+	page, err := m.ResultFromCursor("s1", "r1", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestCancelRequested(t *testing.T) {
 	if _, _, err := m.Start("s1", "r1", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	task, err := m.CancelRequested("s1", "r1")
+	task, err := m.RequestCancel("s1", "r1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestCancelRequested(t *testing.T) {
 	if _, err := m.Finish("s1", "r1", StatusCancelled, nil, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.CancelRequested("s1", "missing"); !errors.Is(err, ErrNotFound) {
+	if _, err := m.RequestCancel("s1", "missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("got %v, want ErrNotFound", err)
 	}
 }
@@ -137,7 +137,7 @@ func TestExpireMarksTimedOut(t *testing.T) {
 	if len(expired) != 1 || expired[0].Status != StatusTimedOut || expired[0].ResultKnown {
 		t.Fatalf("unexpected expired task: %#v", expired)
 	}
-	if m.ActiveCount("s1") != 0 {
+	if m.CountUnfinishedBySession("s1") != 0 {
 		t.Fatalf("timed out task still counts as active")
 	}
 }

@@ -197,7 +197,7 @@ defer m.mu.Unlock()
 ### 2.5 goroutine、channel 和 mutex
 
 ```go
-go c.writeLoop()
+go clientConn.writeQueuedMessages()
 ```
 
 `go` 会启动一个 goroutine。它比创建一个操作系统线程轻量得多，但并不意味着“无需考虑并发”。本项目同时使用两种并发方式：
@@ -252,27 +252,27 @@ go test -race ./internal/platform/... ./internal/platformclient/...
         -> 初始化 device/session/task/transfer manager
     -> Server.Run(ctx)
         -> Accept 循环
-        -> 每个连接一个 serveConn goroutine
-        -> janitor 定期清理过期对象
+        -> 每个连接一个 serveConnection goroutine
+        -> runExpirationCleanup 定期清理过期对象
 ```
 
 `internal/platform/server/server.go` 中的 `Server` 包含：
 
 ```go
 type Server struct {
-    cfg      config.Config
-    listener net.Listener
-    devices  *device.Manager
-    sessions *session.Manager
-    tasks    *task.Manager
-    transfers *transfer.Manager
-    uploads   *transfer.Manager
-    conns    map[string]*conn
-    mu       sync.Mutex
+    config        config.Config
+    listener      *transport.WebSocketListener
+    devices       *device.Manager
+    sessions      *session.Manager
+    tasks         *task.Manager
+    downloads     *transfer.Manager
+    uploads       *transfer.Manager
+    connections   map[string]*clientConnection
+    connectionsMu sync.Mutex
 }
 ```
 
-这里没有数据库连接池，也没有 Redis 客户端，因为当前版本是内存状态服务。`transfers` 和 `uploads` 分开，分别管理下载和上传的生命周期。
+这里没有数据库连接池，也没有 Redis 客户端，因为当前版本是内存状态服务。`downloads` 和 `uploads` 分开，分别管理下载和上传的生命周期。
 
 ### 3.2 接收连接：不是一个连接一个线程的 C++ 直译
 
@@ -280,23 +280,23 @@ type Server struct {
 
 ```go
 for {
-    nc, err := s.listener.Accept()
+    transportConn, err := s.listener.Accept()
     if err != nil {
         // context 取消或 listener 关闭时退出
         return err
     }
-    go s.serveConn(nc)
+    go s.serveConnection(transportConn)
 }
 ```
 
-`serveConn` 会：
+`serveConnection` 会：
 
 1. 给连接生成随机内部 ID。
-2. 创建有界 `send` channel。
-3. 注册到服务端连接 map。
-4. 启动 `writeLoop`。
-5. 当前 goroutine 执行 `readLoop`。
-6. 读循环结束后注销连接并清理设备/操作者相关会话。
+2. 创建有界 `outgoingMessages` channel。
+3. 用 `addConnection` 注册到服务端连接 map。
+4. 启动 `writeQueuedMessages`。
+5. 当前 goroutine 执行 `readAndDispatchMessages`。
+6. 读循环结束后由 `removeConnectionAndEndSessions` 移除连接并结束关联会话。
 
 和 epoll 的差异：Go runtime 内部使用网络 poller，不需要业务代码手写 `epoll_wait`。你依然需要处理超时、关闭、半关闭、背压、连接状态和协议 framing，只是不再直接管理 fd 事件。
 
@@ -626,7 +626,7 @@ flush / fsync（本项目调用 tmp.Sync）
 rename(临时文件, 目标文件)
 ```
 
-项目的 `writeDownload` 在 `internal/platformclient/tools_file.go` 中使用 `os.CreateTemp`，写完后 `Sync`、`Close`，最后 `os.Rename`。发生错误时关闭并删除临时文件。
+项目的 `saveDownloadAtomically` 在 `internal/platformclient/tools_file.go` 中使用 `os.CreateTemp`，写完后 `Sync`、`Close`，最后 `os.Rename`。发生错误时关闭并删除临时文件。
 
 ### 8.2 “原子”是什么意思
 
@@ -743,7 +743,7 @@ sendToConnection(device, execute_command)
 
 ### 10.2 janitor
 
-服务中有定期清理任务，负责收敛无法靠业务消息自然结束的状态：
+`runExpirationCleanup` 每秒调用 `expireOperationsAndPruneDevices`，负责收敛无法靠业务消息自然结束的状态：
 
 - 过期的临时密码。
 - 到期的 pending/active 会话。

@@ -116,7 +116,7 @@ MainWindow::MainWindow() {
     setCentralWidget(root);
     setupSystemTray();
     startLocalBridge();
-    startPlatform();
+    initializePlatformClient();
 }
 
 
@@ -128,7 +128,7 @@ void MainWindow::setupSystemTray() {
     auto *activity = menu->addAction("打开远程协助活动");
     auto *quit = menu->addAction("退出");
     connect(open, &QAction::triggered, this, [this] { showMainWindow(); });
-    connect(activity, &QAction::triggered, this, [this] { showActivityWindow(); });
+    connect(activity, &QAction::triggered, this, [this] { openOrActivateActivityPanel(); });
     connect(quit, &QAction::triggered, this, [this] {
         if (trayIcon) trayIcon->hide();
         qApp->quit();
@@ -173,17 +173,17 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 QString MainWindow::loadOrCreateDeviceCode() {
     const QString configRoot = yiukConfigRoot();
     QDir().mkpath(configRoot);
-    const QString path = findYiukConfigPath("device.json");
+    const QString path = existingOrDefaultConfigPath("device.json");
     QFile file(path);
     if (file.open(QIODevice::ReadOnly)) {
         const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
         const QString id = doc.object().value("device_id").toString();
-        if (id.size() == 9) return spacedCode(id);
+        if (id.size() == 9) return formatDeviceCode(id);
     }
-    const QString id = randomDigits(9);
+    const QString id = generateRandomDigits(9);
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
         file.write(QJsonDocument(QJsonObject{{"device_id", id}}).toJson(QJsonDocument::Compact));
-    return spacedCode(id);
+    return formatDeviceCode(id);
 }
 
 
@@ -429,7 +429,7 @@ namespace {
 QString sessionCodeText(const QString &value) {
     QString digits;
     for (const QChar ch : value) if (ch.isDigit()) digits += ch;
-    return digits.size() == 9 ? spacedCode(digits) : value;
+    return digits.size() == 9 ? formatDeviceCode(digits) : value;
 }
 
 qint64 sessionCreatedMs(const QJsonObject &session) {
@@ -455,9 +455,9 @@ QString sessionTimeText(const QJsonValue &value) {
 
 QString MainWindow::sessionConnectorCode(const QJsonObject &session) const {
     // 如果会话由此客户端发起，连接方就是本设备
-    if (session.value("device_id").toString() != deviceId()) return spacedCode(deviceId());
+    if (session.value("device_id").toString() != deviceId()) return formatDeviceCode(deviceId());
     // 本地 MCP 请求也来自本设备
-    if (session.value("source").toString() != QLatin1String("platform")) return spacedCode(deviceId());
+    if (session.value("source").toString() != QLatin1String("platform")) return formatDeviceCode(deviceId());
     // 旧版会话记录中可能没有远程平台操作端的设备代码
     const QString forwarded = session.value("operator_device_id").toString().trimmed();
     if (!forwarded.isEmpty()) return sessionCodeText(forwarded);
@@ -548,7 +548,7 @@ bool MainWindow::hasOtherLiveSession(const QString &exceptId) const {
 }
 
 
-bool MainWindow::acceptPlatformSession(const QJsonObject &session) const {
+bool MainWindow::canAdmitPlatformSession(const QJsonObject &session) const {
     const QString id = session.value("session_id").toString();
     if (id.isEmpty() || sessions.contains(id) || session.value("device_id").toString() != deviceId()) return true;
     const QString status = session.value("status").toString();

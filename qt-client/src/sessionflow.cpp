@@ -4,34 +4,34 @@
 #include "yiukdialog.h"
 
 
-void MainWindow::expireSessionIfNeeded(const QString &id) {
-    if (!sessions.contains(id)) return;
-    QJsonObject session = sessions.value(id);
+void MainWindow::expireSessionIfNeeded(const QString &sessionId) {
+    if (!sessions.contains(sessionId)) return;
+    QJsonObject session = sessions.value(sessionId);
     const QString status = session.value("status").toString();
     const qint64 expiresAt = static_cast<qint64>(session.value("expires_at_ms").toDouble());
     if ((status == "pending_approval" || status == "approved" || status == "active") && expiresAt > 0 && QDateTime::currentMSecsSinceEpoch() >= expiresAt) {
         session.insert("status", "expired");
-        sessions.insert(id, session);
+        sessions.insert(sessionId, session);
         persistSessionState();
-        stopTasksForSession(id, "cancelled");
+        cancelSessionCommands(sessionId, "cancelled");
         refreshPendingRequests();
         refreshActiveSessions();
     }
 }
 
 
-void MainWindow::stopTasksForSession(const QString &id, const QString &status) {
+void MainWindow::cancelSessionCommands(const QString &sessionId, const QString &status) {
     QStringList requestIds;
-    for (auto it = tasks.cbegin(); it != tasks.cend(); ++it) {
-        if (it.value().value("session_id").toString() == id && runs.contains(it.key()))
-            requestIds.append(it.key());
+    for (auto taskIt = tasks.cbegin(); taskIt != tasks.cend(); ++taskIt) {
+        if (taskIt.value().value("session_id").toString() == sessionId && commandRunners.contains(taskIt.key()))
+            requestIds.append(taskIt.key());
     }
     for (const QString &requestId : requestIds) {
         // 先记录最终状态：运行器会向完成钩子报告 "cancelled"，该钩子会保留调用方已设置的状态
-        QJsonObject task = tasks.value(requestId);
-        task.insert("status", status);
-        tasks.insert(requestId, task);
-        if (PowerShellRunner *runner = runs.value(requestId)) runner->cancel();
+        QJsonObject commandTask = tasks.value(requestId);
+        commandTask.insert("status", status);
+        tasks.insert(requestId, commandTask);
+        if (PowerShellRunner *runner = commandRunners.value(requestId)) runner->cancel();
     }
 }
 
@@ -41,15 +41,15 @@ void MainWindow::refreshPendingRequests() {
         if (item->widget()) item->widget()->deleteLater();
         delete item;
     }
-    for (auto it = sessions.cbegin(); it != sessions.cend(); ++it) {
-        expireSessionIfNeeded(it.key());
-        const QJsonObject session = sessions.value(it.key());
+    for (auto sessionIt = sessions.cbegin(); sessionIt != sessions.cend(); ++sessionIt) {
+        expireSessionIfNeeded(sessionIt.key());
+        const QJsonObject session = sessions.value(sessionIt.key());
         if (session.value("status").toString() != "pending_approval") continue;
         auto *card = new QFrame;
         card->setStyleSheet("QFrame { background: #fff9e8; border: 1px solid #f2d58a; border-radius: 7px; }");
         auto *row = new QHBoxLayout(card);
         row->setContentsMargins(12, 9, 10, 9);
-        const QString permissionText = jsonArrayText(session.value("permissions").toArray());
+        const QString permissionText = joinJsonStringArray(session.value("permissions").toArray());
         const qint64 remaining = qMax<qint64>(0, (static_cast<qint64>(session.value("expires_at_ms").toDouble()) - QDateTime::currentMSecsSinceEpoch()) / 1000);
         const QString details = QString("请求者：%1  ·  来源：%2\n请求时间：%3  ·  剩余：%4 秒\n用途：%5\n权限：%6")
             .arg(session.value("requester").toString(), session.value("source_device").toString(),
@@ -63,25 +63,25 @@ void MainWindow::refreshPendingRequests() {
         reject->setObjectName("subtle");
         row->addWidget(approve);
         row->addWidget(reject);
-        const QString id = it.key();
-        connect(approve, &QPushButton::clicked, this, [this, id] { decideSession(id, true); });
-        connect(reject, &QPushButton::clicked, this, [this, id] { decideSession(id, false); });
+        const QString sessionId = sessionIt.key();
+        connect(approve, &QPushButton::clicked, this, [this, sessionId] { applySessionDecision(sessionId, true); });
+        connect(reject, &QPushButton::clicked, this, [this, sessionId] { applySessionDecision(sessionId, false); });
         pendingLayout->addWidget(card);
     }
 }
 
 
-void MainWindow::showApprovalDialog(const QString &id) {
-    if (!sessions.contains(id) || sessions.value(id).value("status").toString() != "pending_approval") return;
-    expireSessionIfNeeded(id);
-    if (sessions.value(id).value("status").toString() != "pending_approval") return;
-    const QJsonObject session = sessions.value(id);
+void MainWindow::showApprovalDialog(const QString &sessionId) {
+    if (!sessions.contains(sessionId) || sessions.value(sessionId).value("status").toString() != "pending_approval") return;
+    expireSessionIfNeeded(sessionId);
+    if (sessions.value(sessionId).value("status").toString() != "pending_approval") return;
+    const QJsonObject session = sessions.value(sessionId);
     // 无边框的蓝白色批准窗口：标题栏和按钮与主窗口一致，不使用 Windows 原生对话框边框
     YiukDialog dialog(this, QStringLiteral("远程协助授权"));
     dialog.setFixedWidth(560);
     dialog.content()->addWidget(makeLabel(QStringLiteral("Agent 请求远程协助权限"),
                                           "font-size: 15px; font-weight: 650; color: #263446;"));
-    const QString permissionText = jsonArrayText(session.value("permissions").toArray());
+    const QString permissionText = joinJsonStringArray(session.value("permissions").toArray());
     auto *details = makeLabel(QString("请求者：%1\n来源设备：%2\n请求时间：%3\n用途：%4\n请求权限：%5\n有效期至：%6\n\n批准后，Agent 可在当前 Windows 用户权限范围内执行多条 PowerShell 命令、按 read_file 权限下载远端文件，或按 write_file 权限把文件上传到本机。普通用户权限不是沙箱。请求者身份尚未经过远程验证。")
         .arg(session.value("requester").toString(), session.value("source_device").toString(),
              session.value("created_at").toString(), session.value("purpose").toString(),
@@ -99,30 +99,30 @@ void MainWindow::showApprovalDialog(const QString &id) {
     QObject::connect(approve, &QPushButton::clicked, &dialog, &QDialog::accept);
     dialog.adjustSize();
     const bool approved = dialog.exec() == QDialog::Accepted;
-    decideSession(id, approved);
+    applySessionDecision(sessionId, approved);
     showNormal();
     activateWindow();
 }
 
 
-void MainWindow::decideSession(const QString &id, bool approved) {
-    if (!sessions.contains(id)) return;
-    QJsonObject session = sessions.value(id);
+void MainWindow::applySessionDecision(const QString &sessionId, bool approved) {
+    if (!sessions.contains(sessionId)) return;
+    QJsonObject session = sessions.value(sessionId);
     if (session.value("status").toString() != "pending_approval") return;
     session.insert("status", approved ? "active" : "rejected");
     session.insert("decided_at", QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
-    sessions.insert(id, session);
+    sessions.insert(sessionId, session);
     persistSessionState();
     refreshPendingRequests();
     refreshActiveSessions();
     refreshSessionsPage();
     const bool platformSession = session.value("source").toString() == "platform";
     if (platformSession && platform && platform->isConnected()) {
-        if (approved) platform->approveSession(id); else platform->rejectSession(id);
+        if (approved) platform->approveSession(sessionId); else platform->rejectSession(sessionId);
     }
-    appendActivity(id, approved ? "本机用户已批准 Agent 会话" : "本机用户已拒绝 Agent 会话",
+    appendActivity(sessionId, approved ? "本机用户已批准 Agent 会话" : "本机用户已拒绝 Agent 会话",
                    ActivityKind::Session);
-    if (approved && platformSession) syncActivityPanel();
+    if (approved && platformSession) refreshOpenActivityPanel();
     showStatusMessage(approved ? "会话已批准" : "连接申请已拒绝", 4000);
 }
 
@@ -140,7 +140,7 @@ void MainWindow::refreshActiveSessions() {
         const QString status = session.value("status").toString();
         if (status != "active" && status != "approved") continue;
         hasActive = true;
-        const QString id = sessionId;
+        const QString selectedSessionId = sessionId;
         auto *card = new QFrame;
         card->setStyleSheet("QFrame { background: #edf8f2; border: 1px solid #b9e2ca; border-radius: 7px; }");
         auto *column = new QVBoxLayout(card);
@@ -158,49 +158,49 @@ void MainWindow::refreshActiveSessions() {
         const QString remaining = QString("%1:%2").arg(remainingSeconds / 60, 2, 10, QLatin1Char('0')).arg(remainingSeconds % 60, 2, 10, QLatin1Char('0'));
         auto *details = makeLabel(QString("操作者：%1  ·  来源设备：%2\n开始时间：%3  ·  剩余时间：%4\n任务：%5")
             .arg(session.value("requester").toString(), session.value("source_device").toString(),
-                 session.value("decided_at").toString(), remaining, activeTaskSummary(id)),
+                 session.value("decided_at").toString(), remaining, activeTaskSummary(selectedSessionId)),
             "font-size: 12px; color: #536b5e;");
         details->setWordWrap(true);
         column->addWidget(details);
-        connect(viewActivity, &QPushButton::clicked, this, [this, id] { showActivityWindow(id); });
-        connect(stop, &QPushButton::clicked, this, [this, id] {
+        connect(viewActivity, &QPushButton::clicked, this, [this, selectedSessionId] { openOrActivateActivityPanel(selectedSessionId); });
+        connect(stop, &QPushButton::clicked, this, [this, selectedSessionId] {
             if (askConfirm(this, "立即停止会话", "停止后将撤销授权并取消正在运行的任务。", "立即停止"))
-                closeSession(id);
+                closeSessionAndStopTasks(selectedSessionId);
         });
         activeLayout->addWidget(card);
     }
     activePanel->setVisible(hasActive);
     // 只有会话变更可以更新活动面板；面板只能由所有者打开，此刷新流程不会打开面板
-    syncActivityPanel();
+    refreshOpenActivityPanel();
 }
 
 
 QString MainWindow::activeTaskSummary(const QString &sessionId) const {
-    for (auto it = tasks.cbegin(); it != tasks.cend(); ++it) {
-        if (it.value().value("session_id").toString() == sessionId && it.value().value("status").toString() == "running")
-            return "PowerShell 正在运行 (" + it.key().left(8) + ")";
+    for (auto taskIt = tasks.cbegin(); taskIt != tasks.cend(); ++taskIt) {
+        if (taskIt.value().value("session_id").toString() == sessionId && taskIt.value().value("status").toString() == "running")
+            return "PowerShell 正在运行 (" + taskIt.key().left(8) + ")";
     }
     return "无运行任务";
 }
 
 
-QJsonObject MainWindow::closeSession(const QString &id) {
-    if (!sessions.contains(id)) return fail("SESSION_EXPIRED", "会话不存在或已过期");
-    QJsonObject session = sessions.value(id);
+QJsonObject MainWindow::closeSessionAndStopTasks(const QString &sessionId) {
+    if (!sessions.contains(sessionId)) return localToolErrorResult("SESSION_EXPIRED", "会话不存在或已过期");
+    QJsonObject session = sessions.value(sessionId);
     const bool platformSession = session.value("source").toString().startsWith(QStringLiteral("platform"));
     session.insert("status", "closed");
-    sessions.insert(id, session);
+    sessions.insert(sessionId, session);
     persistSessionState();
-    stopTasksForSession(id, "cancelled");
-    abortFileUploadsForSession(id);
+    cancelSessionCommands(sessionId, "cancelled");
+    discardSessionUploads(sessionId);
     refreshPendingRequests();
     refreshActiveSessions();
     refreshSessionsPage();
-    notificationSessions.remove(id);
-    if (platformSession && platform && platform->isConnected()) platform->closeSession(id);
-    appendActivity(id, "本机会话已断开，远程控制已停止", ActivityKind::Session);
+    notificationSessions.remove(sessionId);
+    if (platformSession && platform && platform->isConnected()) platform->requestSessionClose(sessionId);
+    appendActivity(sessionId, "本机会话已断开，远程控制已停止", ActivityKind::Session);
     showStatusMessage("会话已关闭", 3000);
-    return ok(session);
+    return localToolSuccessResult(session);
 }
 
 
@@ -232,8 +232,8 @@ void MainWindow::interruptPlatformSessions() {
         session.insert("status", "interrupted");
         session.insert("close_reason", "platform_disconnected");
         sessions.insert(sessionId, session);
-        stopTasksForSession(sessionId, "result_unknown");
-        abortFileUploadsForSession(sessionId);
+        cancelSessionCommands(sessionId, "result_unknown");
+        discardSessionUploads(sessionId);
         notificationSessions.remove(sessionId);
         appendActivity(sessionId, "平台连接已断开，会话中断", ActivityKind::Session);
         changed = true;
@@ -243,6 +243,6 @@ void MainWindow::interruptPlatformSessions() {
     refreshPendingRequests();
     refreshActiveSessions();
     refreshSessionsPage();
-    syncActivityPanel();
+    refreshOpenActivityPanel();
     showStatusMessage("平台连接已断开，远程协助已中断", 5000);
 }

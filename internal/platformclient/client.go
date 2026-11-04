@@ -16,121 +16,121 @@ import (
 
 // Client 表示与平台保持的持久操作端连接
 type Client struct {
-	cfg   Config
-	codec protocol.Codec
+	config Config
+	codec  protocol.Codec
 
-	callMu sync.Mutex // 串行化工具调用和连接初始化
+	requestMu sync.Mutex // 串行化请求交互和连接初始化
 
 	// writeMu 串行化帧写入，避免心跳 goroutine 与执行中的工具调用交错写入数据
 	writeMu sync.Mutex
 
-	mu        sync.Mutex
-	conn      transport.Conn
-	connID    string
-	inbox     chan protocol.Message
-	connDone  chan struct{}
-	connected bool
-	closed    bool
+	connectionMu     sync.Mutex // 保护连接状态；不负责串行化请求或帧写入
+	conn             transport.Conn
+	connectionID     string
+	incomingMessages chan protocol.Message
+	connectionClosed chan struct{}
+	connected        bool
+	closed           bool
 
-	// pongs 统计当前连接收到的 pong 帧数；心跳 goroutine 根据计数是否停滞判断对端是否失效
-	pongs atomic.Uint64
+	// pongCount 统计收到的 pong 帧数；心跳 goroutine 根据计数是否停滞判断对端是否失效
+	pongCount atomic.Uint64
 
-	cacheMu   sync.Mutex
-	sessions  map[string]protocol.SessionInfo
-	tasks     map[string]*taskCache
-	downloads map[string]*downloadCache
-	devices   []protocol.DeviceInfo
+	cacheMu         sync.Mutex
+	cachedSessions  map[string]protocol.SessionInfo
+	cachedCommands  map[string]*commandResultCache
+	cachedDownloads map[string]*downloadCache
+	cachedDevices   []protocol.DeviceInfo
 }
 
 // Close 关闭操作端连接
 func (c *Client) Close() error {
-	c.callMu.Lock()
-	defer c.callMu.Unlock()
-	c.mu.Lock()
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	c.connectionMu.Lock()
 	c.closed = true
-	conn, done := c.conn, c.connDone
-	c.mu.Unlock()
+	conn, connectionClosed := c.conn, c.connectionClosed
+	c.connectionMu.Unlock()
 	if conn != nil {
 		_ = conn.Close()
 	}
-	if done != nil {
-		c.markDisconnected(done)
+	if connectionClosed != nil {
+		c.closeConnection(connectionClosed)
 	}
 	return nil
 }
 
 // Invoke 按工具名称分发调用，并将原始 JSON 参数交给对应的平台操作。
-func (c *Client) Invoke(ctx context.Context, req agenttools.Request) (any, error) {
-	switch req.Name {
+func (c *Client) Invoke(ctx context.Context, request agenttools.Request) (any, error) {
+	switch request.Name {
 	case agenttools.ListDevices:
-		return c.listDevices(ctx)
+		return c.handleListDevices(ctx)
 	case agenttools.GetDeviceStatus:
-		return c.getDeviceStatus(ctx, req.Input)
+		return c.handleGetDeviceStatus(ctx, request.Input)
 	case agenttools.RequestConnection:
-		return c.requestConnection(ctx, req.Input)
+		return c.handleRequestConnection(ctx, request.Input)
 	case agenttools.RunCommand:
-		return c.runCommand(ctx, req.Input)
+		return c.handleRunCommand(ctx, request.Input)
 	case agenttools.GetSessionStatus:
-		return c.getSessionStatus(ctx, req.Input)
+		return c.handleGetSessionStatus(ctx, request.Input)
 	case agenttools.ExecuteCommand:
-		return c.executeCommand(ctx, req.Input)
+		return c.handleExecuteCommand(ctx, request.Input)
 	case agenttools.GetCommandResult:
-		return c.getCommandResult(ctx, req.Input)
+		return c.handleGetCommandResult(ctx, request.Input)
 	case agenttools.DownloadFile:
-		return c.downloadFile(ctx, req.Input)
+		return c.handleDownloadFile(ctx, request.Input)
 	case agenttools.UploadFile:
-		return c.uploadFile(ctx, req.Input)
+		return c.handleUploadFile(ctx, request.Input)
 	case agenttools.CancelCommand:
-		return c.cancelCommand(ctx, req.Input)
+		return c.handleCancelCommand(ctx, request.Input)
 	case agenttools.CloseSession:
-		return c.closeSession(ctx, req.Input)
+		return c.handleCloseSession(ctx, request.Input)
 	default:
 		return nil, &agenttools.Error{Code: "UNKNOWN_TOOL", Message: "unsupported tool"}
 	}
 }
 
-// call 使用客户端配置的默认超时发送请求。
-func (c *Client) call(ctx context.Context, req protocol.Message, match func(protocol.Message) bool) (protocol.Message, error) {
-	return c.callTimeout(ctx, req, match, time.Duration(c.cfg.TimeoutSeconds)*time.Second)
+// sendRequest 使用客户端配置的默认超时发送请求，并等待匹配的响应。
+func (c *Client) sendRequest(ctx context.Context, request protocol.Message, matchesResponse func(protocol.Message) bool) (protocol.Message, error) {
+	return c.sendRequestWithTimeout(ctx, request, matchesResponse, time.Duration(c.config.TimeoutSeconds)*time.Second)
 }
 
-// callTimeout 使用指定超时发送不需要额外数据帧的请求。
-func (c *Client) callTimeout(ctx context.Context, req protocol.Message, match func(protocol.Message) bool, timeout time.Duration) (protocol.Message, error) {
-	return c.callStream(ctx, req, nil, match, timeout)
+// sendRequestWithTimeout 使用指定超时发送请求，并等待匹配的响应。
+func (c *Client) sendRequestWithTimeout(ctx context.Context, request protocol.Message, matchesResponse func(protocol.Message) bool, timeout time.Duration) (protocol.Message, error) {
+	return c.sendStreamingRequest(ctx, request, nil, matchesResponse, timeout)
 }
 
-// callStream 发送一个请求，可选地在同一连接上继续发送额外数据帧（如文件分块），然后等待对应的响应
-// 整个交互期间都会持有调用互斥锁，避免其他工具调用将数据帧插入流中
-func (c *Client) callStream(ctx context.Context, req protocol.Message, frames func(write func(protocol.Message) error) error, match func(protocol.Message) bool, timeout time.Duration) (protocol.Message, error) {
-	c.callMu.Lock()
-	defer c.callMu.Unlock()
+// sendStreamingRequest 发送请求及可选的后续数据帧，然后等待同一 correlation_id 下匹配的响应。
+// 整个交互期间持有 requestMu，避免其他请求将数据帧插入流中。
+func (c *Client) sendStreamingRequest(ctx context.Context, request protocol.Message, sendFrames func(sendFrame func(protocol.Message) error) error, matchesResponse func(protocol.Message) bool, timeout time.Duration) (protocol.Message, error) {
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
 
-	if err := c.ensureConnectedLocked(); err != nil {
+	if err := c.connectIfNeeded(); err != nil {
 		return protocol.Message{}, err
 	}
-	c.mu.Lock()
-	conn, inbox, done := c.conn, c.inbox, c.connDone
-	c.mu.Unlock()
+	c.connectionMu.Lock()
+	conn, incomingMessages, connectionClosed := c.conn, c.incomingMessages, c.connectionClosed
+	c.connectionMu.Unlock()
 
 	// 处理两次调用之间到达的事件，确保将新请求与响应关联前缓存的输出是最新的
-	c.drainInbox(inbox)
+	c.cachePendingMessages(incomingMessages)
 
 	correlationID := randomID()
-	req.Version = protocol.Version
-	req.BusinessType = protocol.BusinessAgentAssist
-	req.CorrelationID = correlationID
-	if err := c.writeMessage(conn, req); err != nil {
-		c.markDisconnected(done)
+	request.Version = protocol.Version
+	request.BusinessType = protocol.BusinessAgentAssist
+	request.CorrelationID = correlationID
+	if err := c.writeProtocolMessage(conn, request); err != nil {
+		c.closeConnection(connectionClosed)
 		return protocol.Message{}, &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not send request to platform"}
 	}
-	if frames != nil {
-		write := func(m protocol.Message) error {
-			m.Version = protocol.Version
-			m.BusinessType = protocol.BusinessAgentAssist
-			return c.writeMessage(conn, m)
+	if sendFrames != nil {
+		sendFrame := func(message protocol.Message) error {
+			message.Version = protocol.Version
+			message.BusinessType = protocol.BusinessAgentAssist
+			return c.writeProtocolMessage(conn, message)
 		}
-		if err := frames(write); err != nil {
-			c.markDisconnected(done)
+		if err := sendFrames(sendFrame); err != nil {
+			c.closeConnection(connectionClosed)
 			return protocol.Message{}, &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not stream data to platform: " + err.Error()}
 		}
 	}
@@ -142,33 +142,33 @@ func (c *Client) callStream(ctx context.Context, req protocol.Message, frames fu
 			return protocol.Message{}, &agenttools.Error{Code: "CANCELLED", Message: "tool call was cancelled"}
 		case <-timer.C:
 			return protocol.Message{}, &agenttools.Error{Code: "PLATFORM_TIMEOUT", Message: "platform did not respond in time"}
-		case <-done:
+		case <-connectionClosed:
 			return protocol.Message{}, &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "platform connection is unavailable"}
-		case m := <-inbox:
-			c.observe(m)
-			if m.CorrelationID != correlationID {
+		case message := <-incomingMessages:
+			c.cacheMessage(message)
+			if message.CorrelationID != correlationID {
 				continue
 			}
-			if m.Type == protocol.TypeError {
-				code := m.Code
+			if message.Type == protocol.TypeError {
+				code := message.Code
 				if code == "" {
 					code = "PLATFORM_ERROR"
 				}
-				return m, &agenttools.Error{Code: code, Message: m.Message}
+				return message, &agenttools.Error{Code: code, Message: message.Message}
 			}
-			if match(m) {
-				return m, nil
+			if matchesResponse(message) {
+				return message, nil
 			}
 		}
 	}
 }
 
-// drainInbox 处理当前已排队的消息，使事件缓存不会滞后于下一次请求。
-func (c *Client) drainInbox(inbox chan protocol.Message) {
+// cachePendingMessages 将当前已排队的消息写入缓存，供下一次请求使用。
+func (c *Client) cachePendingMessages(incomingMessages chan protocol.Message) {
 	for {
 		select {
-		case m := <-inbox:
-			c.observe(m)
+		case message := <-incomingMessages:
+			c.cacheMessage(message)
 		default:
 			return
 		}

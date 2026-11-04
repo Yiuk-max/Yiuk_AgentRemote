@@ -9,70 +9,70 @@ import (
 	"encoding/json"
 )
 
-// executeCommand 校验并提交已授权会话中的 PowerShell 命令。
-func (c *Client) executeCommand(ctx context.Context, raw json.RawMessage) (any, error) {
+// handleExecuteCommand 解析工具参数并提交已授权会话中的 PowerShell 命令。
+func (c *Client) handleExecuteCommand(ctx context.Context, arguments json.RawMessage) (any, error) {
 	var input struct {
 		SessionID        string `json:"session_id"`
 		Command          string `json:"command"`
 		WorkingDirectory string `json:"working_directory"`
 		TimeoutSeconds   int    `json:"timeout_seconds"`
 	}
-	if err := json.Unmarshal(raw, &input); err != nil {
+	if err := json.Unmarshal(arguments, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
-	requestID, status, err := c.executeCommandInternal(ctx, input.SessionID, input.Command, input.WorkingDirectory, input.TimeoutSeconds)
+	requestID, status, err := c.submitCommand(ctx, input.SessionID, input.Command, input.WorkingDirectory, input.TimeoutSeconds)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{"session_id": input.SessionID, "request_id": requestID, "status": status}, nil
 }
 
-// executeCommandInternal 分配请求标识并等待平台确认命令已接收。
-func (c *Client) executeCommandInternal(ctx context.Context, sessionID, command, workingDirectory string, timeoutSeconds int) (string, string, error) {
+// submitCommand 分配请求标识并提交命令，等待平台确认接收后返回，不等待执行结束。
+func (c *Client) submitCommand(ctx context.Context, sessionID, command, workingDirectory string, timeoutSeconds int) (string, string, error) {
 	requestID := randomID()
-	resp, err := c.call(ctx, protocol.Message{
+	response, err := c.sendRequest(ctx, protocol.Message{
 		Type: protocol.TypeExecuteCommand, SessionID: sessionID, RequestID: requestID,
 		Command: command, WorkingDirectory: workingDirectory, TimeoutSeconds: timeoutSeconds,
-	}, func(m protocol.Message) bool {
-		return m.Type == protocol.TypeCommandAccepted
+	}, func(message protocol.Message) bool {
+		return message.Type == protocol.TypeCommandAccepted
 	})
 	if err != nil {
 		return "", "", err
 	}
-	return requestID, resp.Status, nil
+	return requestID, response.Status, nil
 }
 
-// getCommandResult 解析分页参数，并查询指定命令的输出与状态。
-func (c *Client) getCommandResult(ctx context.Context, raw json.RawMessage) (any, error) {
+// handleGetCommandResult 解析工具分页参数，并查询指定命令的输出与状态。
+func (c *Client) handleGetCommandResult(ctx context.Context, arguments json.RawMessage) (any, error) {
 	var input struct {
 		SessionID string `json:"session_id"`
 		RequestID string `json:"request_id"`
 		Cursor    int    `json:"cursor"`
 	}
-	if err := json.Unmarshal(raw, &input); err != nil {
+	if err := json.Unmarshal(arguments, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
-	return c.getCommandResultInternal(ctx, input.SessionID, input.RequestID, input.Cursor)
+	return c.fetchCommandResult(ctx, input.SessionID, input.RequestID, input.Cursor)
 }
 
-// getCommandResultInternal 优先返回终态缓存，否则向平台请求最新结果。
-func (c *Client) getCommandResultInternal(ctx context.Context, sessionID, requestID string, cursor int) (map[string]any, error) {
-	if result, ok := c.cachedResult(sessionID, requestID, cursor); ok {
+// fetchCommandResult 优先返回终态缓存，否则向平台请求最新结果。
+func (c *Client) fetchCommandResult(ctx context.Context, sessionID, requestID string, cursor int) (map[string]any, error) {
+	if result, ok := c.cachedFinalCommandResult(sessionID, requestID, cursor); ok {
 		return result, nil
 	}
-	resp, err := c.call(ctx, protocol.Message{
+	response, err := c.sendRequest(ctx, protocol.Message{
 		Type: protocol.TypeGetCommandResult, SessionID: sessionID, RequestID: requestID, Cursor: cursor,
-	}, func(m protocol.Message) bool {
-		return m.Type == protocol.TypeCommandResult
+	}, func(message protocol.Message) bool {
+		return message.Type == protocol.TypeCommandResult
 	})
 	if err != nil {
 		return nil, err
 	}
-	return resultMap(resp), nil
+	return commandToolResult(response), nil
 }
 
-// runCommand 执行一次性操作端流程：请求会话（可选择等待设备所有者批准）、执行命令、等待结果，并在调用方未要求保持会话时关闭会话
-func (c *Client) runCommand(ctx context.Context, raw json.RawMessage) (any, error) {
+// handleRunCommand 执行一次性工具流程：请求会话、提交命令、等待结果，并按参数关闭会话。
+func (c *Client) handleRunCommand(ctx context.Context, arguments json.RawMessage) (any, error) {
 	var input struct {
 		DeviceID               string `json:"device_id"`
 		TemporaryPassword      string `json:"temporary_password"`
@@ -83,7 +83,7 @@ func (c *Client) runCommand(ctx context.Context, raw json.RawMessage) (any, erro
 		WaitForApprovalSeconds int    `json:"wait_for_approval_seconds"`
 		KeepSessionOpen        bool   `json:"keep_session_open"`
 	}
-	if err := json.Unmarshal(raw, &input); err != nil {
+	if err := json.Unmarshal(arguments, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
 	if input.Purpose == "" {
@@ -92,11 +92,11 @@ func (c *Client) runCommand(ctx context.Context, raw json.RawMessage) (any, erro
 	if input.TimeoutSeconds <= 0 {
 		input.TimeoutSeconds = 60
 	}
-	budget := time.Duration(input.WaitForApprovalSeconds+input.TimeoutSeconds)*time.Second + 30*time.Second
-	runCtx, cancel := context.WithTimeout(ctx, budget)
+	operationTimeout := time.Duration(input.WaitForApprovalSeconds+input.TimeoutSeconds)*time.Second + 30*time.Second
+	runCtx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
 
-	session, err := c.createSession(runCtx, connectionRequest{
+	session, err := c.requestSession(runCtx, sessionRequestOptions{
 		DeviceID:          input.DeviceID,
 		Purpose:           input.Purpose,
 		Permissions:       []string{"execute_command"},
@@ -106,52 +106,52 @@ func (c *Client) runCommand(ctx context.Context, raw json.RawMessage) (any, erro
 	if err != nil {
 		return nil, err
 	}
-	id := sessionIDFromResult(session)
-	authorization, _ := session["status"].(string)
-	if authorization != protocol.StatusApproved && authorization != protocol.StatusActive {
+	sessionID := sessionIDFromResult(session)
+	authorizationStatus, _ := session["status"].(string)
+	if authorizationStatus != protocol.StatusApproved && authorizationStatus != protocol.StatusActive {
 		return map[string]any{
-			"session_id": id, "device_id": input.DeviceID, "authorization": authorization,
+			"session_id": sessionID, "device_id": input.DeviceID, "authorization": authorizationStatus,
 			"executed": false, "message": "session was not approved; the command was not executed",
 		}, nil
 	}
 
-	requestID, commandStatus, err := c.executeCommandInternal(runCtx, id, input.Command, input.WorkingDirectory, input.TimeoutSeconds)
+	requestID, initialCommandStatus, err := c.submitCommand(runCtx, sessionID, input.Command, input.WorkingDirectory, input.TimeoutSeconds)
 	if err != nil {
 		return nil, err
 	}
-	result, err := c.waitCommandResult(runCtx, id, requestID, time.Duration(input.TimeoutSeconds)*time.Second+15*time.Second)
+	result, err := c.waitForCommandResult(runCtx, sessionID, requestID, time.Duration(input.TimeoutSeconds)*time.Second+15*time.Second)
 	if err != nil {
 		return nil, err
 	}
 	if !input.KeepSessionOpen {
-		if _, closeErr := c.closeSessionInternal(runCtx, id); closeErr == nil {
+		if _, closeErr := c.requestSessionClose(runCtx, sessionID); closeErr == nil {
 			result["session_closed"] = true
 		}
 	}
-	result["session_id"] = id
+	result["session_id"] = sessionID
 	result["device_id"] = input.DeviceID
-	result["authorization"] = authorization
+	result["authorization"] = authorizationStatus
 	result["executed"] = true
-	if commandStatus != "" {
-		result["initial_status"] = commandStatus
+	if initialCommandStatus != "" {
+		result["initial_status"] = initialCommandStatus
 	}
 	return result, nil
 }
 
-// waitCommandResult 定期查询命令结果，直到任务结束或达到等待时限。
-func (c *Client) waitCommandResult(ctx context.Context, sessionID, requestID string, timeout time.Duration) (map[string]any, error) {
+// waitForCommandResult 定期查询命令结果，直到任务结束或达到等待时限。
+func (c *Client) waitForCommandResult(ctx context.Context, sessionID, requestID string, timeout time.Duration) (map[string]any, error) {
 	deadline := time.Now().Add(timeout)
 	for {
-		result, err := c.getCommandResultInternal(ctx, sessionID, requestID, 0)
+		result, err := c.fetchCommandResult(ctx, sessionID, requestID, 0)
 		if err == nil {
 			if status, _ := result["status"].(string); status != protocol.TaskRunning && status != protocol.TaskQueued && status != "" {
-				return aggregateResult(result), nil
+				return aggregateCommandOutput(result), nil
 			}
 			if time.Now().After(deadline) {
 				result["status"] = protocol.TaskResultUnknown
 				result["result_known"] = false
 				result["message"] = "timed out waiting for command result"
-				return aggregateResult(result), nil
+				return aggregateCommandOutput(result), nil
 			}
 		} else if time.Now().After(deadline) {
 			return nil, err
@@ -166,22 +166,22 @@ func (c *Client) waitCommandResult(ctx context.Context, sessionID, requestID str
 	}
 }
 
-// cancelCommand 请求平台取消指定会话中的命令。
-func (c *Client) cancelCommand(ctx context.Context, raw json.RawMessage) (any, error) {
+// handleCancelCommand 解析工具参数并请求平台取消指定会话中的命令。
+func (c *Client) handleCancelCommand(ctx context.Context, arguments json.RawMessage) (any, error) {
 	var input struct {
 		SessionID string `json:"session_id"`
 		RequestID string `json:"request_id"`
 	}
-	if err := json.Unmarshal(raw, &input); err != nil {
+	if err := json.Unmarshal(arguments, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
-	resp, err := c.call(ctx, protocol.Message{
+	response, err := c.sendRequest(ctx, protocol.Message{
 		Type: protocol.TypeCancelCommand, SessionID: input.SessionID, RequestID: input.RequestID,
-	}, func(m protocol.Message) bool {
-		return m.Type == protocol.TypeCommandCanceled
+	}, func(message protocol.Message) bool {
+		return message.Type == protocol.TypeCommandCanceled
 	})
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"session_id": input.SessionID, "request_id": input.RequestID, "status": resp.Status}, nil
+	return map[string]any{"session_id": input.SessionID, "request_id": input.RequestID, "status": response.Status}, nil
 }

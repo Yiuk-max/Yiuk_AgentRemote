@@ -15,20 +15,20 @@ func TestTransferEnforcesContiguousSequencesAndSize(t *testing.T) {
 	if err != nil || !created || tr.RequestID != "r1" {
 		t.Fatalf("start: %#v %v %v", tr, created, err)
 	}
-	if _, err := m.Append("s1", "r1", 2, encoded("a")); err != ErrSequence {
+	if _, err := m.RecordChunk("s1", "r1", 2, encoded("a")); err != ErrSequence {
 		t.Fatalf("out-of-order append = %v, want ErrSequence", err)
 	}
-	if _, err := m.Append("s1", "r1", 1, "not base64!"); err != ErrInvalidBase64 {
+	if _, err := m.RecordChunk("s1", "r1", 1, "not base64!"); err != ErrInvalidBase64 {
 		t.Fatalf("invalid base64 = %v, want ErrInvalidBase64", err)
 	}
-	if _, err := m.Append("s1", "r1", 1, ""); err != ErrEmptyChunk {
+	if _, err := m.RecordChunk("s1", "r1", 1, ""); err != ErrEmptyChunk {
 		t.Fatalf("empty chunk = %v, want ErrEmptyChunk", err)
 	}
-	tr, err = m.Append("s1", "r1", 1, encoded("abc"))
-	if err != nil || tr.Bytes != 3 || tr.NextSeq != 2 {
+	tr, err = m.RecordChunk("s1", "r1", 1, encoded("abc"))
+	if err != nil || tr.TransferredBytes != 3 || tr.NextSequence != 2 {
 		t.Fatalf("append: %#v %v", tr, err)
 	}
-	tr, err = m.Append("s1", "r1", 2, encoded("def"))
+	tr, err = m.RecordChunk("s1", "r1", 2, encoded("def"))
 	if err != ErrSizeLimit || tr.Status != StatusFailed {
 		t.Fatalf("size limit append = %#v %v", tr, err)
 	}
@@ -39,7 +39,7 @@ func TestTransferRejectsOversizedChunk(t *testing.T) {
 	if _, _, err := m.Start("s1", "r1", "", MaxChunkBytes*2, 0); err != nil {
 		t.Fatal(err)
 	}
-	_, err := m.Append("s1", "r1", 1, encoded(strings.Repeat("x", MaxChunkBytes+1)))
+	_, err := m.RecordChunk("s1", "r1", 1, encoded(strings.Repeat("x", MaxChunkBytes+1)))
 	if err != ErrChunkTooLarge {
 		t.Fatalf("got %v, want ErrChunkTooLarge", err)
 	}
@@ -66,7 +66,7 @@ func TestTransferResultSizeMismatchIsUnknown(t *testing.T) {
 	if _, _, err := m.Start("s1", "r1", "corr", 100, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Append("s1", "r1", 1, encoded("abc")); err != nil {
+	if _, err := m.RecordChunk("s1", "r1", 1, encoded("abc")); err != nil {
 		t.Fatal(err)
 	}
 	tr, err := m.Finish("s1", "r1", StatusSucceeded, "a.txt", 10, true)

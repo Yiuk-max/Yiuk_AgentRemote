@@ -42,107 +42,108 @@ QString MainWindow::platformConfigPath() const {
 
 
 void MainWindow::loadPlatformConfig() {
-    PlatformClient::Config cfg;
-    cfg.deviceId = deviceId();
-    cfg.deviceName = QSysInfo::machineHostName();
-    cfg.mode = "approval";
-    cfg.ttlSeconds = 24 * 60 * 60;
-    cfg.enabled = true;
-    cfg.allowInsecure = false;
-    cfg.temporaryPassword = randomPassword(32);
-    QFile file(findYiukConfigPath("platform.json"));
+    PlatformClient::Config platformConfig;
+    platformConfig.deviceId = deviceId();
+    platformConfig.deviceName = QSysInfo::machineHostName();
+    platformConfig.mode = "approval";
+    platformConfig.ttlSeconds = 24 * 60 * 60;
+    platformConfig.enabled = true;
+    platformConfig.allowInsecure = false;
+    platformConfig.temporaryPassword = generateTemporaryPassword(32);
+    QFile file(existingOrDefaultConfigPath("platform.json"));
     if (file.open(QIODevice::ReadOnly)) {
         const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
-        cfg.enabled = true;
-        cfg.address = object.value("address").toString();
-        cfg.tls = object.value("tls").toBool(true);
-        cfg.allowInsecure = false;
-        cfg.caFile = object.value("ca_file").toString();
-        cfg.pinnedFingerprint = object.value("certificate_fingerprint").toString();
-        cfg.mode = object.value("mode").toString("approval");
-        cfg.passwordVersion = object.value("password_version").toInt(1);
-        cfg.playerPassword = SecureStore::unprotect(object.value("player_password").toString());
+        platformConfig.enabled = true;
+        platformConfig.address = object.value("address").toString();
+        platformConfig.tls = object.value("tls").toBool(true);
+        platformConfig.allowInsecure = false;
+        platformConfig.caFile = object.value("ca_file").toString();
+        platformConfig.pinnedFingerprint = object.value("certificate_fingerprint").toString();
+        platformConfig.mode = object.value("mode").toString("approval");
+        platformConfig.passwordVersion = object.value("password_version").toInt(1);
+        platformConfig.playerPassword = SecureStore::unprotect(object.value("player_password").toString());
         const QString storedPassword = SecureStore::unprotect(object.value("temporary_password").toString());
-        if (!storedPassword.isEmpty()) cfg.temporaryPassword = storedPassword;
+        if (!storedPassword.isEmpty()) platformConfig.temporaryPassword = storedPassword;
     }
-    temporaryPassword = cfg.temporaryPassword;
-    passwordVersion = cfg.passwordVersion;
-    platform->setConfig(cfg);
+    temporaryPassword = platformConfig.temporaryPassword;
+    passwordVersion = platformConfig.passwordVersion;
+    platform->setConfig(platformConfig);
     const QSignalBlocker blockAddress(platformAddress);
     const QSignalBlocker blockPassword(platformPassword);
     const QSignalBlocker blockTls(platformTls);
     const QSignalBlocker blockMode(platformMode);
-    if (platformAddress) platformAddress->setText(cfg.address);
-    if (platformPassword) platformPassword->setText(cfg.playerPassword);
-    if (platformTls) platformTls->setChecked(cfg.tls);
+    if (platformAddress) platformAddress->setText(platformConfig.address);
+    if (platformPassword) platformPassword->setText(platformConfig.playerPassword);
+    if (platformTls) platformTls->setChecked(platformConfig.tls);
     if (platformMode) {
-        const int index = platformMode->findData(cfg.mode);
+        const int index = platformMode->findData(platformConfig.mode);
         platformMode->setCurrentIndex(index >= 0 ? index : 0);
     }
-    if (passwordValue) passwordValue->setText(passwordVisible ? groupedPassword(temporaryPassword) : "********");
-    syncMcpClientConfig(cfg);
+    if (passwordValue) passwordValue->setText(passwordVisible ? formatTemporaryPassword(temporaryPassword) : "********");
+    writeMcpPlatformClientConfig(platformConfig);
 }
 
 
 void MainWindow::savePlatformConfig() {
     if (!platform) return;
-    PlatformClient::Config cfg = platform->config();
-    cfg.deviceId = deviceId();
-    cfg.deviceName = QSysInfo::machineHostName();
-    cfg.temporaryPassword = temporaryPassword;
-    cfg.passwordVersion = passwordVersion;
-    if (platformAddress) cfg.address = platformAddress->text().trimmed();
-    if (platformPassword) cfg.playerPassword = platformPassword->text();
-    if (platformTls) cfg.tls = platformTls->isChecked();
-    cfg.enabled = true;
-    cfg.allowInsecure = false;
-    if (platformMode) cfg.mode = platformMode->currentData().toString();
-    platform->setConfig(cfg);
+    PlatformClient::Config platformConfig = platform->config();
+    platformConfig.deviceId = deviceId();
+    platformConfig.deviceName = QSysInfo::machineHostName();
+    platformConfig.temporaryPassword = temporaryPassword;
+    platformConfig.passwordVersion = passwordVersion;
+    if (platformAddress) platformConfig.address = platformAddress->text().trimmed();
+    if (platformPassword) platformConfig.playerPassword = platformPassword->text();
+    if (platformTls) platformConfig.tls = platformTls->isChecked();
+    platformConfig.enabled = true;
+    platformConfig.allowInsecure = false;
+    if (platformMode) platformConfig.mode = platformMode->currentData().toString();
+    platform->setConfig(platformConfig);
     QDir().mkpath(QFileInfo(platformConfigPath()).absolutePath());
     const QJsonObject object{
         {"enabled", true},
-        {"address", cfg.address},
-        {"tls", cfg.tls},
+        {"address", platformConfig.address},
+        {"tls", platformConfig.tls},
         {"allow_insecure", false},
-        {"ca_file", cfg.caFile},
-        {"certificate_fingerprint", cfg.pinnedFingerprint},
-        {"mode", cfg.mode},
-        {"password_version", cfg.passwordVersion},
-        {"player_password", SecureStore::protect(cfg.playerPassword)},
-        {"temporary_password", SecureStore::protect(cfg.temporaryPassword)},
+        {"ca_file", platformConfig.caFile},
+        {"certificate_fingerprint", platformConfig.pinnedFingerprint},
+        {"mode", platformConfig.mode},
+        {"password_version", platformConfig.passwordVersion},
+        {"player_password", SecureStore::protect(platformConfig.playerPassword)},
+        {"temporary_password", SecureStore::protect(platformConfig.temporaryPassword)},
     };
     QFile file(platformConfigPath());
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
         file.write(QJsonDocument(object).toJson(QJsonDocument::Compact));
-    syncMcpClientConfig(cfg);
+    writeMcpPlatformClientConfig(platformConfig);
 }
 
 
-QString MainWindow::mcpToolSourcePath() const {
+QString MainWindow::mcpExecutablePath() const {
     return QDir(QCoreApplication::applicationDirPath()).filePath("yiuk-mcp.exe");
 }
 
 
 QString MainWindow::mcpAgentConfigText() const {
-    QJsonObject server{{"command", mcpToolSourcePath()}, {"args", QJsonArray{}}};
+    QJsonObject server{{"command", mcpExecutablePath()}, {"args", QJsonArray{}}};
     QJsonObject root{{"mcpServers", QJsonObject{{"agentremote", server}}}};
     return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented));
 }
 
 
-bool MainWindow::syncMcpClientConfig(const PlatformClient::Config &cfg) {
-    if (cfg.address.trimmed().isEmpty() || cfg.playerPassword.isEmpty()) return false;
+// 将 Qt 平台连接配置转换并写入 Go MCP 客户端使用的 platform-client.json。
+bool MainWindow::writeMcpPlatformClientConfig(const PlatformClient::Config &platformConfig) {
+    if (platformConfig.address.trimmed().isEmpty() || platformConfig.playerPassword.isEmpty()) return false;
     const QString root = yiukConfigRoot();
     if (!QDir().mkpath(root)) return false;
     QJsonObject object{
-        {"address", cfg.address.trimmed()},
-        {"player_password", cfg.playerPassword},
+        {"address", platformConfig.address.trimmed()},
+        {"player_password", platformConfig.playerPassword},
         {"timeout_seconds", 30},
     };
-    if (cfg.tls) {
-        if (!cfg.caFile.trimmed().isEmpty()) object.insert("tls_ca", cfg.caFile.trimmed());
-        if (!cfg.pinnedFingerprint.trimmed().isEmpty()) object.insert("pinned_cert_sha256", cfg.pinnedFingerprint.trimmed());
-        object.insert("insecure_skip_verify", cfg.allowInsecure);
+    if (platformConfig.tls) {
+        if (!platformConfig.caFile.trimmed().isEmpty()) object.insert("tls_ca", platformConfig.caFile.trimmed());
+        if (!platformConfig.pinnedFingerprint.trimmed().isEmpty()) object.insert("pinned_cert_sha256", platformConfig.pinnedFingerprint.trimmed());
+        object.insert("insecure_skip_verify", platformConfig.allowInsecure);
     } else {
         object.insert("allow_plaintext", true);
     }
@@ -158,7 +159,8 @@ void MainWindow::copyMcpAgentConfig() {
 }
 
 
-void MainWindow::startPlatform() {
+// 创建平台客户端、绑定信号并加载配置，已配置地址时安排首次连接。
+void MainWindow::initializePlatformClient() {
     platform = new PlatformClient(this);
     connect(platform, &PlatformClient::stateChanged, this, [this](const QString &state) { updatePlatformState(state); });
     connect(platform, &PlatformClient::credentialsRenewed, this,
@@ -166,7 +168,7 @@ void MainWindow::startPlatform() {
         temporaryPassword = password;
         passwordVersion = version;
         if (passwordValue)
-            passwordValue->setText(passwordVisible ? groupedPassword(password) : "********");
+            passwordValue->setText(passwordVisible ? formatTemporaryPassword(password) : "********");
         savePlatformConfig();
     });
     connect(platform, &PlatformClient::deviceListReceived, this, &MainWindow::onDeviceListReceived);
@@ -187,9 +189,9 @@ void MainWindow::startPlatform() {
             state->file->deleteLater();
             state->file = nullptr;
         }
-        delete state->hash;
-        state->hash = nullptr;
-        if (!state->tempPath.isEmpty()) QFile::remove(state->tempPath);
+        delete state->checksum;
+        state->checksum = nullptr;
+        if (!state->temporaryPath.isEmpty()) QFile::remove(state->temporaryPath);
         activeFileUploads.remove(requestId);
         refreshActiveSessions();
     });
@@ -205,7 +207,7 @@ void MainWindow::startPlatform() {
         temporaryPassword = password;
         passwordVersion = version;
         if (passwordValue)
-            passwordValue->setText(passwordVisible ? groupedPassword(temporaryPassword) : "********");
+            passwordValue->setText(passwordVisible ? formatTemporaryPassword(temporaryPassword) : "********");
         savePlatformConfig();
         showStatusMessage("连接密码已更新", 1800);
     });
@@ -244,9 +246,9 @@ void MainWindow::startPlatform() {
             showStatusMessage("已取消连接：服务器证书未被信任", 5000);
             return;
         }
-        PlatformClient::Config cfg = platform->config();
-        cfg.pinnedFingerprint = fingerprint;
-        platform->setConfig(cfg);
+        PlatformClient::Config platformConfig = platform->config();
+        platformConfig.pinnedFingerprint = fingerprint;
+        platform->setConfig(platformConfig);
         savePlatformConfig();
         platform->connectToPlatform();
     });
@@ -262,37 +264,37 @@ void MainWindow::startPlatform() {
 }
 
 
-void MainWindow::onDeviceListReceived(const QJsonArray &devices, const QString &requestId) {
-    if (pendingDeviceLookupId.isEmpty() || requestId != pendingDeviceLookupId) return;
-    const QString deviceId = pendingDeviceLookupCode;
-    pendingDeviceLookupId.clear();
-    pendingDeviceLookupCode.clear();
-    QJsonObject found;
+void MainWindow::onDeviceListReceived(const QJsonArray &devices, const QString &correlationId) {
+    if (pendingDeviceLookupCorrelationId.isEmpty() || correlationId != pendingDeviceLookupCorrelationId) return;
+    const QString deviceId = pendingDeviceLookupDeviceId;
+    pendingDeviceLookupCorrelationId.clear();
+    pendingDeviceLookupDeviceId.clear();
+    QJsonObject matchedDevice;
     for (const QJsonValue &value : devices) {
         const QJsonObject device = value.toObject();
         if (device.value("device_id").toString() == deviceId) {
-            found = device;
+            matchedDevice = device;
             break;
         }
     }
-    if (found.isEmpty()) {
+    if (matchedDevice.isEmpty()) {
         showWarningMessage(this, "设备不存在",
-            "后端没有找到设备码 " + spacedCode(deviceId) + "，请确认对方设备已在平台注册。");
+            "后端没有找到设备码 " + formatDeviceCode(deviceId) + "，请确认对方设备已在平台注册。");
         return;
     }
-    if (!found.value("online").toBool()) {
+    if (!matchedDevice.value("online").toBool()) {
         showWarningMessage(this, "设备不在线",
-            "后端找到了设备码 " + spacedCode(deviceId) + "，但该设备当前不在线。");
+            "后端找到了设备码 " + formatDeviceCode(deviceId) + "，但该设备当前不在线。");
         return;
     }
     promptAndRequestConnection(deviceId);
 }
 
 
-void MainWindow::onPlatformRequestFailed(const QString &requestId, const QString &code, const QString &message) {
-    if (pendingDeviceLookupId.isEmpty() || requestId != pendingDeviceLookupId) return;
-    pendingDeviceLookupId.clear();
-    pendingDeviceLookupCode.clear();
+void MainWindow::onPlatformRequestFailed(const QString &correlationId, const QString &code, const QString &message) {
+    if (pendingDeviceLookupCorrelationId.isEmpty() || correlationId != pendingDeviceLookupCorrelationId) return;
+    pendingDeviceLookupCorrelationId.clear();
+    pendingDeviceLookupDeviceId.clear();
     showWarningMessage(this, "设备查询失败",
         QString("后端返回错误：%1\n%2").arg(code, message));
 }
@@ -301,8 +303,8 @@ void MainWindow::onPlatformRequestFailed(const QString &requestId, const QString
 void MainWindow::updatePlatformState(const QString &state) {
     const bool connected = state == "connected";
     const bool connecting = state == "connecting" || state == "authenticating";
-    const bool linkLost = platformLinkWasUp && !connected;
-    platformLinkWasUp = connected;
+    const bool linkLost = platformWasConnected && !connected;
+    platformWasConnected = connected;
     if (linkLost) {
         // 连接已断开，因此平台会话不可能仍在运行
         // 否则平台断开连接后，所有者界面仍会显示“远程协助进行中”

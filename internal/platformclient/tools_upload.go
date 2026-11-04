@@ -24,16 +24,16 @@ const maxUploadFileBytes = 32 << 20
 // uploadChunkBytes 确保每个 base64 分块远小于协议帧上限；解码后的 64 KiB 约对应 87 KiB 编码数据
 const uploadChunkBytes = 64 << 10
 
-// uploadFile 将本地文件发送到目标设备
-// 平台按顺序转发 base64 分块；设备将其写入 remote_path（为空时写入设备自己的 uploads 目录），并返回最终路径、大小和 SHA-256
-func (c *Client) uploadFile(ctx context.Context, raw json.RawMessage) (any, error) {
+// handleUploadFile 解析工具参数，将本地文件发送到目标设备。
+// 平台按顺序转发 base64 分块；设备将其写入 remote_path（为空时写入设备自己的 uploads 目录），并返回最终路径、大小和 SHA-256。
+func (c *Client) handleUploadFile(ctx context.Context, arguments json.RawMessage) (any, error) {
 	var input struct {
 		SessionID  string `json:"session_id"`
 		LocalPath  string `json:"local_path"`
 		RemotePath string `json:"remote_path"`
 		Overwrite  bool   `json:"overwrite"`
 	}
-	if err := json.Unmarshal(raw, &input); err != nil {
+	if err := json.Unmarshal(arguments, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
 	localPath := strings.TrimSpace(input.LocalPath)
@@ -43,7 +43,7 @@ func (c *Client) uploadFile(ctx context.Context, raw json.RawMessage) (any, erro
 	if len(input.RemotePath) > 4096 {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "remote_path exceeds 4096 characters"}
 	}
-	file, info, digest, err := openUploadSource(localPath)
+	file, fileInfo, fileSHA256, err := prepareUploadFile(localPath)
 	if err != nil {
 		return nil, err
 	}
@@ -51,70 +51,70 @@ func (c *Client) uploadFile(ctx context.Context, raw json.RawMessage) (any, erro
 
 	requestID := randomID()
 	chunksSent := 0
-	resp, err := c.callStream(ctx, protocol.Message{
+	response, err := c.sendStreamingRequest(ctx, protocol.Message{
 		Type:       protocol.TypeUploadFile,
 		SessionID:  input.SessionID,
 		RequestID:  requestID,
 		RemotePath: input.RemotePath,
-		FileName:   info.Name(),
-		FileSize:   info.Size(),
-		FileSHA256: digest,
+		FileName:   fileInfo.Name(),
+		FileSize:   fileInfo.Size(),
+		FileSHA256: fileSHA256,
 		Overwrite:  input.Overwrite,
-	}, func(write func(protocol.Message) error) error {
-		if info.Size() == 0 {
+	}, func(sendFrame func(protocol.Message) error) error {
+		if fileInfo.Size() == 0 {
 			// 设备根据请求元数据创建空文件；空的协议分块不是有效的传输帧
 			return nil
 		}
 		// 提前读取一个分块，以便文件大小恰好是分块大小整数倍时，仍能将 EOF 标记在最后一块上
-		pending, err := readUploadChunk(file)
+		currentChunk, err := readUploadChunk(file)
 		if err != nil {
 			return err
 		}
 		var sequence uint64 = 1
 		for {
-			next, nextErr := readUploadChunk(file)
-			eof := nextErr != nil
-			if nextErr != nil && !errors.Is(nextErr, io.EOF) {
-				return nextErr
+			nextChunk, nextChunkErr := readUploadChunk(file)
+			isLastChunk := nextChunkErr != nil
+			if nextChunkErr != nil && !errors.Is(nextChunkErr, io.EOF) {
+				return nextChunkErr
 			}
-			if err := write(protocol.Message{
+			if err := sendFrame(protocol.Message{
 				Type:      protocol.TypeFileUploadChunk,
 				SessionID: input.SessionID,
 				RequestID: requestID,
 				Sequence:  sequence,
-				Data:      base64.StdEncoding.EncodeToString(pending),
-				EOF:       eof,
+				Data:      base64.StdEncoding.EncodeToString(currentChunk),
+				EOF:       isLastChunk,
 			}); err != nil {
 				return err
 			}
 			sequence++
 			chunksSent++
-			if eof {
+			if isLastChunk {
 				return nil
 			}
-			pending = next
+			currentChunk = nextChunk
 		}
-	}, func(m protocol.Message) bool {
-		return m.Type == protocol.TypeFileUploadResult && m.RequestID == requestID
+	}, func(message protocol.Message) bool {
+		return message.Type == protocol.TypeFileUploadResult && message.RequestID == requestID
 	}, c.fileTransferTimeout())
 	if err != nil {
 		return nil, err
 	}
 
-	if resp.Status != string(protocol.TaskSucceeded) || !resp.ResultKnown {
-		if resp.Code != "" {
-			return nil, &agenttools.Error{Code: resp.Code, Message: resp.Message}
+	if response.Status != string(protocol.TaskSucceeded) || !response.ResultKnown {
+		if response.Code != "" {
+			return nil, &agenttools.Error{Code: response.Code, Message: response.Message}
 		}
-		return nil, &agenttools.Error{Code: "FILE_UPLOAD_FAILED", Message: "file upload did not complete successfully (status " + resp.Status + ")"}
+		return nil, &agenttools.Error{Code: "FILE_UPLOAD_FAILED", Message: "file upload did not complete successfully (status " + response.Status + ")"}
 	}
-	if resp.FileSize != info.Size() {
-		return nil, &agenttools.Error{Code: "FILE_INTEGRITY_FAILED", Message: fmt.Sprintf("device wrote %d bytes, expected %d", resp.FileSize, info.Size())}
+	if response.FileSize != fileInfo.Size() {
+		return nil, &agenttools.Error{Code: "FILE_INTEGRITY_FAILED", Message: fmt.Sprintf("device wrote %d bytes, expected %d", response.FileSize, fileInfo.Size())}
 	}
-	remoteSHA := strings.ToLower(strings.TrimSpace(resp.FileSHA256))
-	if remoteSHA != "" && remoteSHA != digest {
+	remoteSHA256 := strings.ToLower(strings.TrimSpace(response.FileSHA256))
+	if remoteSHA256 != "" && remoteSHA256 != fileSHA256 {
 		return nil, &agenttools.Error{Code: "FILE_INTEGRITY_FAILED", Message: "device checksum does not match the uploaded file"}
 	}
-	remotePath := resp.RemotePath
+	remotePath := response.RemotePath
 	if remotePath == "" {
 		remotePath = input.RemotePath
 	}
@@ -123,23 +123,22 @@ func (c *Client) uploadFile(ctx context.Context, raw json.RawMessage) (any, erro
 		"request_id":  requestID,
 		"local_path":  localPath,
 		"remote_path": remotePath,
-		"file_name":   resp.FileName,
-		"size":        resp.FileSize,
-		"sha256":      digest,
+		"file_name":   response.FileName,
+		"size":        response.FileSize,
+		"sha256":      fileSHA256,
 		"chunks":      chunksSent,
 		"overwrite":   input.Overwrite,
-		"status":      resp.Status,
+		"status":      response.Status,
 	}, nil
 }
 
 // readUploadChunk 最多读取一个上传分块
 // 仅当没有剩余数据时才返回 io.EOF，以便调用方将前一个分块标记为最后一块
-// readUploadChunk 读取不超过协议分块上限的数据，供上传循环逐块发送。
 func readUploadChunk(file *os.File) ([]byte, error) {
 	buffer := make([]byte, uploadChunkBytes)
-	n, err := io.ReadFull(file, buffer)
-	if n > 0 {
-		return buffer[:n], nil
+	bytesRead, err := io.ReadFull(file, buffer)
+	if bytesRead > 0 {
+		return buffer[:bytesRead], nil
 	}
 	if err == nil {
 		return nil, io.EOF
@@ -147,28 +146,27 @@ func readUploadChunk(file *os.File) ([]byte, error) {
 	return nil, err
 }
 
-// openUploadSource 验证本地文件、计算哈希并将文件指针复位
-// 确保流式传输的数据与声明的摘要及大小一致
-func openUploadSource(localPath string) (*os.File, os.FileInfo, string, error) {
+// prepareUploadFile 打开并验证本地文件，计算 SHA-256 后将文件指针复位，供后续流式上传。
+func prepareUploadFile(localPath string) (*os.File, os.FileInfo, string, error) {
 	file, err := os.Open(localPath)
 	if err != nil {
 		return nil, nil, "", &agenttools.Error{Code: "LOCAL_READ_FAILED", Message: "could not open local_path"}
 	}
-	info, err := file.Stat()
+	fileInfo, err := file.Stat()
 	if err != nil {
 		_ = file.Close()
 		return nil, nil, "", &agenttools.Error{Code: "LOCAL_READ_FAILED", Message: "could not inspect local_path"}
 	}
-	if !info.Mode().IsRegular() {
+	if !fileInfo.Mode().IsRegular() {
 		_ = file.Close()
 		return nil, nil, "", &agenttools.Error{Code: "LOCAL_READ_FAILED", Message: "local_path must be a regular file"}
 	}
-	if info.Size() > maxUploadFileBytes {
+	if fileInfo.Size() > maxUploadFileBytes {
 		_ = file.Close()
 		return nil, nil, "", &agenttools.Error{Code: "FILE_TOO_LARGE", Message: "local file exceeds the 32 MiB upload limit"}
 	}
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
+	checksum := sha256.New()
+	if _, err := io.Copy(checksum, file); err != nil {
 		_ = file.Close()
 		return nil, nil, "", &agenttools.Error{Code: "LOCAL_READ_FAILED", Message: "could not read local_path"}
 	}
@@ -176,5 +174,5 @@ func openUploadSource(localPath string) (*os.File, os.FileInfo, string, error) {
 		_ = file.Close()
 		return nil, nil, "", &agenttools.Error{Code: "LOCAL_READ_FAILED", Message: "could not rewind local_path"}
 	}
-	return file, info, hex.EncodeToString(hash.Sum(nil)), nil
+	return file, fileInfo, hex.EncodeToString(checksum.Sum(nil)), nil
 }

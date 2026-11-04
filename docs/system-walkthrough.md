@@ -100,7 +100,7 @@
 | `internal/platform/protocol/protocol.go` | 【契约】 | `Message` 结构、`Type*`/`Status*`/`Task*` 常量、JSON codec 与 256 KiB 帧上限 |
 | `internal/platform/transport/*` | 【共享】 | 后端监听（TLS + WebSocket，路径 `/`）与 `DialWebSocket`（每次连接一方复用） |
 | `internal/platform/server/conn.go` | 【后端】 | 每连接读写循环、握手期 10 s / 认证后 45 s 读超时、有界发送队列（慢客户端直接断开） |
-| `internal/platform/server/routing.go` | 【后端】 | `send` / `sendToConnection` / `sendToDevice` / `notifySession`：所有跨机转发都在这 |
+| `internal/platform/server/routing.go` | 【后端】 | `enqueueMessage` / `sendToConnection` / `sendToDevice` / `notifySessionStatus`：所有跨机转发都在这 |
 | `internal/platform/server/handler.go` | 【后端】 | 帧类型分发 + 认证 + 设备注册 + 心跳 |
 | `internal/platform/server/handler_session.go` | 【后端】 | 申请/批准/拒绝/查询/关闭会话 |
 | `internal/platform/server/handler_command.go` | 【后端】 | 提交命令→校验授权→起 task→转发设备；命令输出累加并回灌 operator；取结果分页 |
@@ -222,7 +222,7 @@ pi 通过 stdio 与 `yiuk-mcp` 交换**换行分隔**的 JSON-RPC：
 
 两个给服务器常驻 Agent 的实用点：
 
-- **`run_command`** 是为"服务器托管的 Agent"设计的一次性封装（工具描述原文就是 *one-shot remote task for a server-hosted agent*）：内部就是 `createSession → executeCommand → waitCommandResult → closeSession`，并对整段设了 `wait_for_approval + timeout + 30s` 预算。单条命令用它最省事。
+- **`run_command`** 是为"服务器托管的 Agent"设计的一次性封装（工具描述原文就是 *one-shot remote task for a server-hosted agent*）：内部就是 `requestSession → submitCommand → waitForCommandResult → requestSessionClose`，并对整段设了 `wait_for_approval + timeout + 30s` 预算。单条命令用它最省事。
 - **长流程**（本任务要执行多次、还要传文件）必须用长版本：`request_connection` 拿 `session_id`，之后 `execute_command` / `upload_file` / `get_command_result` 复用同一会话，最后 `close_session`。
 
 ### 4.4 参数校验分三层（都不可省）
@@ -232,6 +232,46 @@ pi 通过 stdio 与 `yiuk-mcp` 交换**换行分隔**的 JSON-RPC：
 3. **`internal/platform/server`**：自己的上限（`CommandMaxLen`、`IdentifierMaxLen`、密码长度 `WEAK_TEMPORARY_PASSWORD`）+ 状态机校验（会话必须 approved/active，设备必须仍在线且连接一致）。
 
 > 客户端校验只是"别浪费一次往返"，**服务端从不相信客户端**。
+
+### 4.5 四个 ID 的分工（最容易读叉的地方）
+
+| ID | 谁生成 | 生成频率 | 作用域 | 干什么用 | 能不能复用 |
+| --- | --- | --- | --- | --- | --- |
+| `connection_id` | 服务端 `newID()`（`server.go:150`，随 `authenticated` 下发） | 每条连接一次 | 一条 WSS 连接 | 平台内部路由：`connections` 表、`sendToConnection`、会话“绑定的是哪条管道” | 不能。重连 = 新值，旧会话因 `DeviceConnectionID` 不匹配而作废 |
+| `session_id` | 服务端 `newID()`（`handler_session.go:41`） | 每次 `request_connection` 成功 | 一次授权 | 权限/状态机/审计的主体；后面每条命令、每个文件操作都要带它 | **复用**：一次任务流程内多条命令共享同一个 |
+| `request_id` | **客户端** `randomID()`（`tools_command.go:32`、`tools_file.go:58`、`tools_upload.go:52`） | **每次** `execute_command` / `download_file` / `upload_file` 各一个新值 | 一次具体动作 | ① 幂等键 `tasks.Start(session, request)`；② 结果寻址 `get_command_result` / `cancel_command`；③ 设备端临时脚本名 `yiuk-<requestId>.ps1`、输出序号表、上传/下载状态机键 | **绝不复用**。同会话重复 = 返回已有任务（不重跑）；跨会话重复 = `REQUEST_ID_CONFLICT` |
+| `correlation_id` | **客户端** `randomID()`，在 `sendStreamingRequest` 里每次调用现生成（`client.go:118`） | 每次请求-响应对 | 一次往返（一个请求帧 + 它的直接回复） | 只做“回执配对”：服务端 `sendResponse` 原样回显（`routing.go:92`），客户端 `sendStreamingRequest` 用它丢弃无关事件 | 一次性、无状态；异步事件（`command_output`、`session_status` 推送）**不带它** |
+
+一句话区分：
+
+- `connection_id` = **哪条管道**（路由用）
+- `session_id` = **哪次授权**（谁、多久、能干什么）
+- `request_id` = **哪个动作**（幂等 + 结果寻址 + 设备端资源命名）
+- `correlation_id` = **哪次问答**（活在一次往返里，用完即忘）
+
+同一条命令里它们怎么出现：
+
+```text
+execute_command
+  request_id     = 7b41d9e0…   ← 客户端新生成（这次动作的身份，后面一直用它）
+  correlation_id = a1b2c3d4…   ← 客户端新生成（只给这一次问答用）
+  {type:execute_command, session_id:5f0c…, request_id:7b41…, correlation_id:a1b2…}
+        └─► 服务端 Authorize(session_id, conn.id=connection_id)，转发设备时**丢掉 correlation_id**
+            {type:execute_command, session_id:5f0c…, request_id:7b41…}
+  ◄── command_accepted  {correlation_id:a1b2…}   ← sendResponse 回显，配对完成
+  ◄── command_output(seq=1) {session_id, request_id}   ← 异步事件，无 correlation
+
+get_command_result
+  request_id     = 7b41…        ← **沿用刚才那个，不是新生成**
+  correlation_id = c9d8e7f6…    ← 这条查询自己新生成
+```
+
+所以：**`request_id` 是“动作”，每次 `execute_command` 都是新的；`correlation_id` 是“回合”，每次工具调用（包括 `get_command_result` 这种查询）都是新的；`session_id` 跨越整个会话不变。**
+
+两个实现细节：
+
+- `get_command_result` / `cancel_command` 的 `request_id` 来自**工具参数**（人/模型传入），客户端不会替你生成——传错就是真的查不到（`TASK_NOT_FOUND`）。
+- `request_id` 会变成设备上的文件名，而服务端只校验“非空 + ≤128 字节”（`errors.go:14`）；客户端现用 32 位十六进制所以安全。若想更严，设备端应加 `^[A-Za-z0-9_-]{1,128}$` 白名单。
 
 ---
 
@@ -267,7 +307,7 @@ pi 通过 stdio 与 `yiuk-mcp` 交换**换行分隔**的 JSON-RPC：
 
 要点：
 
-- **输出两条路**：`command_output` 是流式增量（operator 侧缓存，`cache.go:observeOutput`）；`command_result` 是终态（含完整 `chunks`、`exit_code`、`truncated`）。`get_command_result` 先看本地缓存，已是终态就直接分页返回，不再打平台（`cachedResult`）。
+- **输出两条路**：`command_output` 是流式增量（operator 侧缓存，`cache.go:cacheCommandOutput`）；`command_result` 是终态（含完整 `chunks`、`exit_code`、`truncated`）。`get_command_result` 先看本地缓存，已是终态就直接分页返回，不再打平台（`cachedFinalCommandResult`）。
 - **截断是全局的**：`max_output_bytes`（默认 2 MiB）在 task 管理器里控，超出后 `truncated=true`，后续输出被丢弃而不是把内存撑爆。
 - **`request_id` 不可复用**（重复提交同一 `(session,request)` 只会返回已存在的任务，不会重跑）；断线**不自动重放**。
 - **命令正文与输出不落服务器日志**：审计只记 `session/request/device` 的脱敏 ID。
@@ -378,13 +418,27 @@ pi 所在用户读 `~/.config/Yiuk/DeviceAssist/platform-client.json`（Windows 
   "request_id":"c81d4f27a95b43e6b0d72a1c9e5f3018","status":"running"}}
 ```
 
-设备上真正发生的事（`platformevents.cpp:executePlatformCommand`）：
+设备上真正发生的事（`platformevents.cpp:startPlatformCommand`）：
 
 1. 会话状态必须是 `active`/`approved`，否则直接回 `cancelled` 结果；
 2. `PowerShellRunner` 把命令写成 `%TEMP%\yiuk-<requestId>.ps1`（**带 UTF-8 BOM**），并预置 `[Console]::OutputEncoding = UTF8`（避免 936 代码页把中文输出搞乱）；
 3. 优先 `pwsh.exe`，没有则 `powershell.exe`，参数 `-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <脚本>`；
 4. 边跑边 `command_output` 回传（递增 `sequence`），同时写进活动面板与 `sessions.json`；
 5. 结束发 `command_result`：`status` = `succeeded`/`failed`/`timed_out`/`cancelled`，附 `exit_code`、`truncated`。
+
+#### 6.4.1 执行用的临时脚本为什么按 request 命名，重复执行会不会撞名
+
+不会撞名，也不存在"重命名"：
+
+- **名字**：`%TEMP%\yiuk-<requestId>.ps1`（`powershellrunner.cpp:54`）。`requestId` 由 operator 端 `randomID()` 现生成——16 字节 `crypto/rand` → 32 位十六进制（`platformclient/transport.go:randomID`、`tools_command.go:submitCommand`），**每次 `execute_command` 都是新值**。所以"跑第 N 次"= 第 N 个不同的文件名，不是覆盖同一个名字。
+- **生命周期**：任务结束（成功/失败/超时/取消）→ `finishAndReport()` → `stopProcessAndRemoveScript()` → `QFile::remove(scriptPath_)` + 清空路径（`powershellrunner.cpp:124-138`）。正常路径下 `%TEMP%` 里不会留东西。即使同名重开，`QIODevice::WriteOnly` 也是**截断**写，不会追加旧内容。
+- **重复提交有三层挡着**：
+  1. 服务端 `tasks.Start(sessionID, requestID)` 幂等——同会话重复提交直接返回已存在任务、**不再转发设备**（`handler_command.go:56-62`）；不同会话复用同一 `requestId` → `REQUEST_ID_CONFLICT`；
+  2. 设备端 `commandRunners.contains(requestId)` 把在跑的重复帧直接丢弃（`platformevents.cpp:572`）；
+  3. 客户端断线**不自动重放**。
+- **唯一残留**：设备进程被强杀/断电 → `stopProcessAndRemoveScript()` 没跑 → `%TEMP%` 留几个 `yiuk-*.ps1`（每个几 KB，纯垃圾、无安全含义，因为 `requestId` 一次性）。要彻底干净可以在客户端启动时顺手删掉 24 小时前的 `yiuk-*.ps1`。
+
+> 别和**任务产物**混：`C:\dsh\start-dsh.ps1` 是**固定文件名**，重复 `upload_file` 需要 `overwrite:true`，否则设备直接拒绝（`目标文件已存在；如需覆盖请设置 overwrite=true`，`platformevents.cpp:449`）。临时脚本按 request 命名、产物用固定名 + 显式覆盖，两套语义不要混。
 
 ### 6.5 第 4 跳：`get_command_result`（取输出，按 cursor 翻页）
 
@@ -486,6 +540,7 @@ pi 所在用户读 `~/.config/Yiuk/DeviceAssist/platform-client.json`（Windows 
 | 行为 | 解析 dsh 启动方式（`dsh.exe` → `python -m dsh` → npm shim）→ 定位 `dsh-pet` 插件目录 → 写 PID 与日志 → 先停旧实例再启动 |
 | 验收 | `-DryRun` 只解析不启动、退出码 0；失败时给人能照做的下一步（提示 `-Install` 或 `-DshExe`） |
 | 约束 | 纯 ASCII（PowerShell 5.1 按 ANSI 读无 BOM 的 `.ps1`，有中文必乱码）；日志超 5 MB 轮转；停进程用 `taskkill /T` 连带子进程 |
+| 重复投放 | 固定文件名，重传必须带 `overwrite:true`；这与执行期临时脚本 `%TEMP%\yiuk-<requestId>.ps1`（每个 request 一个新文件名、结束即删）是两套不同语义（见 §6.4.1） |
 
 设备上的使用方式（人手动或 MCP 命令都行）：
 

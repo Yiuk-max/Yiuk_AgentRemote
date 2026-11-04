@@ -59,43 +59,43 @@ type Task struct {
 	CancelRequested bool
 }
 
-func (t *Task) clone() *Task {
-	if t == nil {
+func (commandTask *Task) clone() *Task {
+	if commandTask == nil {
 		return nil
 	}
-	out := *t
-	out.Chunks = append([]Chunk(nil), t.Chunks...)
-	if t.ExitCode != nil {
-		v := *t.ExitCode
-		out.ExitCode = &v
+	snapshot := *commandTask
+	snapshot.Chunks = append([]Chunk(nil), commandTask.Chunks...)
+	if commandTask.ExitCode != nil {
+		exitCodeCopy := *commandTask.ExitCode
+		snapshot.ExitCode = &exitCodeCopy
 	}
-	return &out
+	return &snapshot
 }
 
 // Manager 拥有所有的任务状态
 type Manager struct {
-	mu            sync.Mutex
-	tasks         map[string]*Task
-	maxOutput     int
-	maxPerSession int
-	now           func() time.Time
+	mu                 sync.Mutex
+	tasks              map[string]*Task
+	maxOutputBytes     int
+	maxTasksPerSession int
+	now                func() time.Time
 }
 
 // NewManager 创建一个任务管理器。
-// maxOutput 是每个任务的 stdout 和 stderr 总字节预算；
-// maxPerSession 限制同时排队/运行的任务数
-func NewManager(maxOutput, maxPerSession int) *Manager {
-	return newManager(maxOutput, maxPerSession, time.Now)
+// maxOutputBytes 是每个任务的 stdout 和 stderr 总字节预算；
+// maxTasksPerSession 限制同时排队或运行的任务数。
+func NewManager(maxOutputBytes, maxTasksPerSession int) *Manager {
+	return newManager(maxOutputBytes, maxTasksPerSession, time.Now)
 }
 
-func newManager(maxOutput, maxPerSession int, now func() time.Time) *Manager {
-	if maxOutput < 1 {
-		maxOutput = 1 << 20
+func newManager(maxOutputBytes, maxTasksPerSession int, now func() time.Time) *Manager {
+	if maxOutputBytes < 1 {
+		maxOutputBytes = 1 << 20
 	}
-	if maxPerSession < 1 {
-		maxPerSession = 1
+	if maxTasksPerSession < 1 {
+		maxTasksPerSession = 1
 	}
-	return &Manager{tasks: make(map[string]*Task), maxOutput: maxOutput, maxPerSession: maxPerSession, now: now}
+	return &Manager{tasks: make(map[string]*Task), maxOutputBytes: maxOutputBytes, maxTasksPerSession: maxTasksPerSession, now: now}
 }
 
 // Start 会创建一个正在运行的任务，或者返回重复请求 ID 的已有任务
@@ -112,18 +112,18 @@ func (m *Manager) Start(sessionID, requestID string, timeout time.Duration) (*Ta
 		}
 		return existing.clone(), false, nil
 	}
-	active := 0
-	//找到设备，已激活任务数量+1
-	for _, t := range m.tasks {
-		if t.SessionID == sessionID && !isTerminal(t.Status) {
-			active++
+	unfinishedTaskCount := 0
+	// 统计该会话尚未结束的任务。
+	for _, commandTask := range m.tasks {
+		if commandTask.SessionID == sessionID && !isTerminal(commandTask.Status) {
+			unfinishedTaskCount++
 		}
 	}
-	if active >= m.maxPerSession {
+	if unfinishedTaskCount >= m.maxTasksPerSession {
 		return nil, false, ErrTaskLimit
 	}
 	now := m.now()
-	t := &Task{
+	commandTask := &Task{
 		RequestID:   requestID,
 		SessionID:   sessionID,
 		Status:      StatusRunning,
@@ -131,10 +131,10 @@ func (m *Manager) Start(sessionID, requestID string, timeout time.Duration) (*Ta
 		ResultKnown: false,
 	}
 	if timeout > 0 {
-		t.Deadline = now.Add(timeout)
+		commandTask.Deadline = now.Add(timeout)
 	}
-	m.tasks[requestID] = t
-	return t.clone(), true, nil
+	m.tasks[requestID] = commandTask
+	return commandTask.clone(), true, nil
 }
 
 // AppendOutput 会记录一个输出块，同时执行每个任务的字节额度
@@ -142,31 +142,31 @@ func (m *Manager) Start(sessionID, requestID string, timeout time.Duration) (*Ta
 func (m *Manager) AppendOutput(sessionID, requestID, stream, data string) (*Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	t, ok := m.tasks[requestID]
-	if !ok || t.SessionID != sessionID {
+	commandTask, ok := m.tasks[requestID]
+	if !ok || commandTask.SessionID != sessionID {
 		return nil, ErrNotFound
 	}
-	if isTerminal(t.Status) {
-		return t.clone(), ErrTerminal
+	if isTerminal(commandTask.Status) {
+		return commandTask.clone(), ErrTerminal
 	}
 	if stream != StreamStdout && stream != StreamStderr {
 		return nil, errors.New("invalid output stream")
 	}
 	if data == "" {
-		return t.clone(), nil
+		return commandTask.clone(), nil
 	}
-	available := m.maxOutput - t.OutputBytes
-	if available <= 0 {
-		t.Truncated = true
-		return t.clone(), nil
+	remainingOutputBytes := m.maxOutputBytes - commandTask.OutputBytes
+	if remainingOutputBytes <= 0 {
+		commandTask.Truncated = true
+		return commandTask.clone(), nil
 	}
-	if len(data) > available {
-		data = data[:available]
-		t.Truncated = true
+	if len(data) > remainingOutputBytes {
+		data = data[:remainingOutputBytes]
+		commandTask.Truncated = true
 	}
-	t.OutputBytes += len(data)
-	t.Chunks = append(t.Chunks, Chunk{Stream: stream, Sequence: uint64(len(t.Chunks) + 1), Data: data})
-	return t.clone(), nil
+	commandTask.OutputBytes += len(data)
+	commandTask.Chunks = append(commandTask.Chunks, Chunk{Stream: stream, Sequence: uint64(len(commandTask.Chunks) + 1), Data: data})
+	return commandTask.clone(), nil
 }
 
 // Finish 记录了任务的终端状态。终端任务会原样返
@@ -176,73 +176,73 @@ func (m *Manager) Finish(sessionID, requestID string, status Status, exitCode *i
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	t, ok := m.tasks[requestID]
-	if !ok || t.SessionID != sessionID {
+	commandTask, ok := m.tasks[requestID]
+	if !ok || commandTask.SessionID != sessionID {
 		return nil, ErrNotFound
 	}
-	if isTerminal(t.Status) {
-		return t.clone(), nil
+	if isTerminal(commandTask.Status) {
+		return commandTask.clone(), nil
 	}
-	t.Status = status
-	t.FinishedAt = m.now()
-	t.ResultKnown = resultKnown && status != StatusResultUnknown
+	commandTask.Status = status
+	commandTask.FinishedAt = m.now()
+	commandTask.ResultKnown = resultKnown && status != StatusResultUnknown
 	if exitCode != nil {
-		v := *exitCode
-		t.ExitCode = &v
+		exitCodeCopy := *exitCode
+		commandTask.ExitCode = &exitCodeCopy
 	}
-	return t.clone(), nil
+	return commandTask.clone(), nil
 }
 
-// CancelRequested 表示已请求取消。如果任务尚未开始执行，它会立即被取消
-func (m *Manager) CancelRequested(sessionID, requestID string) (*Task, error) {
+// RequestCancel 标记取消请求；排队任务立即取消，运行中的任务等待设备确认。
+func (m *Manager) RequestCancel(sessionID, requestID string) (*Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	t, ok := m.tasks[requestID]
-	if !ok || t.SessionID != sessionID {
+	commandTask, ok := m.tasks[requestID]
+	if !ok || commandTask.SessionID != sessionID {
 		return nil, ErrNotFound
 	}
-	if isTerminal(t.Status) {
-		return t.clone(), nil
+	if isTerminal(commandTask.Status) {
+		return commandTask.clone(), nil
 	}
-	t.CancelRequested = true
-	if t.Status == StatusQueued {
-		t.Status = StatusCancelled
-		t.FinishedAt = m.now()
+	commandTask.CancelRequested = true
+	if commandTask.Status == StatusQueued {
+		commandTask.Status = StatusCancelled
+		commandTask.FinishedAt = m.now()
 	}
-	return t.clone(), nil
+	return commandTask.clone(), nil
 }
 
 // 获取任务信息副本
 func (m *Manager) Get(sessionID, requestID string) (*Task, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	t, ok := m.tasks[requestID]
-	if !ok || t.SessionID != sessionID {
+	commandTask, ok := m.tasks[requestID]
+	if !ok || commandTask.SessionID != sessionID {
 		return nil, false
 	}
-	return t.clone(), true
+	return commandTask.clone(), true
 }
 
 // 给session返回任务副本
 func (m *Manager) ListBySession(sessionID string) []*Task {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var out []*Task
-	for _, t := range m.tasks {
-		if t.SessionID == sessionID {
-			out = append(out, t.clone())
+	var taskSnapshots []*Task
+	for _, commandTask := range m.tasks {
+		if commandTask.SessionID == sessionID {
+			taskSnapshots = append(taskSnapshots, commandTask.clone())
 		}
 	}
-	return out
+	return taskSnapshots
 }
 
-// 返回一个会话正在排队、处理的任务数量
-func (m *Manager) ActiveCount(sessionID string) int {
+// CountUnfinishedBySession 返回该会话尚未结束的任务数。
+func (m *Manager) CountUnfinishedBySession(sessionID string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	count := 0
-	for _, t := range m.tasks {
-		if t.SessionID == sessionID && !isTerminal(t.Status) {
+	for _, commandTask := range m.tasks {
+		if commandTask.SessionID == sessionID && !isTerminal(commandTask.Status) {
 			count++
 		}
 	}
@@ -259,17 +259,17 @@ func (m *Manager) FinishSession(sessionID string, finishStatus Status) []*Task {
 		finishStatus = StatusResultUnknown
 	}
 	now := m.now()
-	var out []*Task
-	for _, t := range m.tasks {
-		if t.SessionID != sessionID || isTerminal(t.Status) {
+	var finishedTasks []*Task
+	for _, commandTask := range m.tasks {
+		if commandTask.SessionID != sessionID || isTerminal(commandTask.Status) {
 			continue
 		}
-		t.Status = finishStatus
-		t.FinishedAt = now
-		t.ResultKnown = finishStatus != StatusResultUnknown
-		out = append(out, t.clone())
+		commandTask.Status = finishStatus
+		commandTask.FinishedAt = now
+		commandTask.ResultKnown = finishStatus != StatusResultUnknown
+		finishedTasks = append(finishedTasks, commandTask.clone())
 	}
-	return out
+	return finishedTasks
 }
 
 // 将服务器端截止时间已过的正在运行任务标记为超时
@@ -278,17 +278,17 @@ func (m *Manager) Expire() []*Task {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
-	var out []*Task
-	for _, t := range m.tasks {
-		if isTerminal(t.Status) || t.Deadline.IsZero() || now.Before(t.Deadline) {
+	var timedOutTasks []*Task
+	for _, commandTask := range m.tasks {
+		if isTerminal(commandTask.Status) || commandTask.Deadline.IsZero() || now.Before(commandTask.Deadline) {
 			continue
 		}
-		t.Status = StatusTimedOut
-		t.FinishedAt = now
-		t.ResultKnown = false
-		out = append(out, t.clone())
+		commandTask.Status = StatusTimedOut
+		commandTask.FinishedAt = now
+		commandTask.ResultKnown = false
+		timedOutTasks = append(timedOutTasks, commandTask.clone())
 	}
-	return out
+	return timedOutTasks
 }
 
 // ResultView 是从光标开始的输出的有界切片
@@ -298,23 +298,23 @@ type ResultView struct {
 	NextCursor int
 }
 
-// Result 会返回光标后的输出块。
-// 光标是块索引，而不是字节偏移量，所以客户端可以确定性地分页
-func (m *Manager) Result(sessionID, requestID string, cursor int) (*ResultView, error) {
+// ResultFromCursor 返回游标开始处的输出块及任务快照。
+// 游标是块索引，不是字节偏移量。
+func (m *Manager) ResultFromCursor(sessionID, requestID string, cursor int) (*ResultView, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	t, ok := m.tasks[requestID]
-	if !ok || t.SessionID != sessionID {
+	commandTask, ok := m.tasks[requestID]
+	if !ok || commandTask.SessionID != sessionID {
 		return nil, ErrNotFound
 	}
 	if cursor < 0 {
 		cursor = 0
 	}
-	if cursor > len(t.Chunks) {
-		cursor = len(t.Chunks)
+	if cursor > len(commandTask.Chunks) {
+		cursor = len(commandTask.Chunks)
 	}
-	chunks := append([]Chunk(nil), t.Chunks[cursor:]...)
-	return &ResultView{Task: t.clone(), Chunks: chunks, NextCursor: len(t.Chunks)}, nil
+	chunks := append([]Chunk(nil), commandTask.Chunks[cursor:]...)
+	return &ResultView{Task: commandTask.clone(), Chunks: chunks, NextCursor: len(commandTask.Chunks)}, nil
 }
 
 func isTerminal(status Status) bool {

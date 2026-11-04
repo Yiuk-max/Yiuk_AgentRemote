@@ -20,13 +20,13 @@ QPushButton *makeDangerButton(const QString &text, int height = 0);
 QString yiukConfigRoot();
 QString legacyYiukConfigRoot();
 QString yiukConfigPath(const QString &name);
-QString findYiukConfigPath(const QString &name);
+QString existingOrDefaultConfigPath(const QString &name);
 
 QString defaultCommandWorkingDirectory();
 
-QString spacedCode(const QString &digits);
-QString groupedPassword(const QString &password);
-QString randomDigits(int count);
+QString formatDeviceCode(const QString &digits);
+QString formatTemporaryPassword(const QString &password);
+QString generateRandomDigits(int count);
 // 密码使用 32 字符的 base32 字符表，并排除语音沟通中容易混淆的字符
-QString randomPassword(int count);
-QString jsonArrayText(const QJsonArray &array);
+QString generateTemporaryPassword(int count);
+QString joinJsonStringArray(const QJsonArray &array);

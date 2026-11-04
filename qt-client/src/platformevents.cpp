@@ -5,112 +5,112 @@
 #include <QDateTime>
 
 
-// adoptDeviceSession 记录本客户端作为被协助设备参与的会话
+// storeIncomingDeviceSession 记录本客户端作为被协助设备参与的会话
 // 包括平台跳过批准请求的直连模式
-void MainWindow::adoptDeviceSession(const QJsonObject &session, bool approved) {
-    const QString id = session.value("session_id").toString();
-    if (id.isEmpty()) return;
-    if (!acceptPlatformSession(session)) {
-        if (platform && platform->isConnected()) platform->closeSession(id);
+void MainWindow::storeIncomingDeviceSession(const QJsonObject &session, bool approved) {
+    const QString sessionId = session.value("session_id").toString();
+    if (sessionId.isEmpty()) return;
+    if (!canAdmitPlatformSession(session)) {
+        if (platform && platform->isConnected()) platform->requestSessionClose(sessionId);
         return;
     }
-    const bool fresh = !sessions.contains(id);
-    QJsonObject record = session;
-    record.insert("source", "platform");
-    if (!record.contains("expires_at_ms") && record.value("expires_at").isDouble())
-        record.insert("expires_at_ms", record.value("expires_at").toDouble() * 1000.0);
-    if (record.value("requester").toString().isEmpty())
-        record.insert("requester", session.value("operator").toString("平台操作者"));
-    if (record.value("source_device").toString().isEmpty())
-        record.insert("source_device", session.value("operator_device").toString());
-    sessions.insert(id, record);
-    if (fresh) {
-        appendActivity(id, approved
-            ? QString("Agent 已直接连接（无需批准）：%1").arg(record.value("purpose").toString())
-            : QString("收到 Agent 协助请求：%1").arg(record.value("purpose").toString()),
+    const bool isNewSession = !sessions.contains(sessionId);
+    QJsonObject sessionRecord = session;
+    sessionRecord.insert("source", "platform");
+    if (!sessionRecord.contains("expires_at_ms") && sessionRecord.value("expires_at").isDouble())
+        sessionRecord.insert("expires_at_ms", sessionRecord.value("expires_at").toDouble() * 1000.0);
+    if (sessionRecord.value("requester").toString().isEmpty())
+        sessionRecord.insert("requester", session.value("operator").toString("平台操作者"));
+    if (sessionRecord.value("source_device").toString().isEmpty())
+        sessionRecord.insert("source_device", session.value("operator_device").toString());
+    sessions.insert(sessionId, sessionRecord);
+    if (isNewSession) {
+        appendActivity(sessionId, approved
+            ? QString("Agent 已直接连接（无需批准）：%1").arg(sessionRecord.value("purpose").toString())
+            : QString("收到 Agent 协助请求：%1").arg(sessionRecord.value("purpose").toString()),
             ActivityKind::Session);
-        notificationSessions.insert(id, record.value("purpose").toString());
+        notificationSessions.insert(sessionId, sessionRecord.value("purpose").toString());
     }
     persistSessionState();
     refreshPendingRequests();
     refreshActiveSessions();
     refreshSessionsPage();
     showStatusMessage(approved ? "已建立直接连接会话" : "有待批准的协助请求", 4000);
-    if (fresh && trayIcon && QSystemTrayIcon::supportsMessages()) {
+    if (isNewSession && trayIcon && QSystemTrayIcon::supportsMessages()) {
         trayIcon->showMessage(approved ? "远程协助已连接" : "需要批准远程协助",
-                              record.value("purpose").toString(),
+                              sessionRecord.value("purpose").toString(),
                               QSystemTrayIcon::Information, 10000);
     }
 }
 
 
 void MainWindow::onPlatformSessionRequested(const QJsonObject &session) {
-    const QString id = session.value("session_id").toString();
-    if (id.isEmpty() || sessions.contains(id)) return;
-    if (!acceptPlatformSession(session)) {
-        if (platform && platform->isConnected()) platform->rejectSession(id);
+    const QString sessionId = session.value("session_id").toString();
+    if (sessionId.isEmpty() || sessions.contains(sessionId)) return;
+    if (!canAdmitPlatformSession(session)) {
+        if (platform && platform->isConnected()) platform->rejectSession(sessionId);
         QJsonObject rejected = session;
         rejected.insert("source", "platform");
         rejected.insert("status", "rejected");
         rejected.insert("end_reason", "已有活动会话");
-        sessions.insert(id, rejected);
+        sessions.insert(sessionId, rejected);
         persistSessionState();
         refreshSessionsPage();
         showStatusMessage("已有一个远程会话，已拒绝新的连接请求", 5000);
         return;
     }
-    adoptDeviceSession(session, false);
+    storeIncomingDeviceSession(session, false);
     if (trayIcon && QSystemTrayIcon::supportsMessages()) return;
-    QTimer::singleShot(0, this, [this, id] { showApprovalDialog(id); });
+    QTimer::singleShot(0, this, [this, sessionId] { showApprovalDialog(sessionId); });
 }
 
 
 void MainWindow::onPlatformSessionUpdated(const QJsonObject &session) {
-    const QString id = session.value("session_id").toString();
-    if (id.isEmpty()) return;
-    const QJsonObject existing = sessions.value(id);
-    const bool known = existing.contains("source");
-    if (!acceptPlatformSession(session)) {
-        if (platform && platform->isConnected()) platform->closeSession(id);
+    const QString sessionId = session.value("session_id").toString();
+    if (sessionId.isEmpty()) return;
+    const QJsonObject existing = sessions.value(sessionId);
+    const bool hasStoredSessionSource = existing.contains("source");
+    if (!canAdmitPlatformSession(session)) {
+        if (platform && platform->isConnected()) platform->requestSessionClose(sessionId);
         QJsonObject rejected = session;
         rejected.insert("source", "platform");
         rejected.insert("status", "closed");
         rejected.insert("end_reason", "已有活动会话");
-        sessions.insert(id, rejected);
+        sessions.insert(sessionId, rejected);
         persistSessionState();
         refreshSessionsPage();
         return;
     }
-    QJsonObject record = session;
-    if (!record.contains("source")) {
-        if (known) {
-            record.insert("source", existing.value("source"));
+    QJsonObject sessionRecord = session;
+    if (!sessionRecord.contains("source")) {
+        if (hasStoredSessionSource) {
+            sessionRecord.insert("source", existing.value("source"));
         } else if (session.value("device_id").toString() == deviceId()) {
             // direct 模式：平台直接下发已批准会话，没有 session_request 阶段
-            adoptDeviceSession(session, session.value("status").toString() == "approved");
+            storeIncomingDeviceSession(session, session.value("status").toString() == "approved");
             return;
         } else {
-            record.insert("source", "platform-operator");
+            sessionRecord.insert("source", "platform-operator");
         }
     }
-    if (!record.contains("expires_at_ms") && record.value("expires_at").isDouble())
-        record.insert("expires_at_ms", record.value("expires_at").toDouble() * 1000.0);
-    if (record.value("source").toString() == QLatin1String("platform")) {
-        if (record.value("requester").toString().isEmpty())
-            record.insert("requester", record.value("operator").toString("平台操作者"));
-        if (record.value("source_device").toString().isEmpty())
-            record.insert("source_device", record.value("operator_device").toString());
+    if (!sessionRecord.contains("expires_at_ms") && sessionRecord.value("expires_at").isDouble())
+        sessionRecord.insert("expires_at_ms", sessionRecord.value("expires_at").toDouble() * 1000.0);
+    if (sessionRecord.value("source").toString() == QLatin1String("platform")) {
+        if (sessionRecord.value("requester").toString().isEmpty())
+            sessionRecord.insert("requester", sessionRecord.value("operator").toString("平台操作者"));
+        if (sessionRecord.value("source_device").toString().isEmpty())
+            sessionRecord.insert("source_device", sessionRecord.value("operator_device").toString());
     }
-    const bool statusChanged = existing.value("status").toString() != record.value("status").toString();
-    sessions.insert(id, record);
+    const bool statusChanged = existing.value("status").toString() != sessionRecord.value("status").toString();
+    sessions.insert(sessionId, sessionRecord);
     if (statusChanged)
-        appendActivity(id, QString("平台会话状态：%1").arg(session.value("status").toString()),
+        appendActivity(sessionId, QString("平台会话状态：%1").arg(session.value("status").toString()),
                        ActivityKind::Session);
     persistSessionState();
     const QString status = session.value("status").toString();
     if (status != "active" && status != "approved" && status != "pending_approval") {
-        stopTasksForSession(id, status == "closed" ? "cancelled" : "result_unknown");
-        abortFileUploadsForSession(id);
+        cancelSessionCommands(sessionId, status == "closed" ? "cancelled" : "result_unknown");
+        discardSessionUploads(sessionId);
     }
     refreshPendingRequests();
     refreshActiveSessions();
@@ -120,21 +120,21 @@ void MainWindow::onPlatformSessionUpdated(const QJsonObject &session) {
 
 void MainWindow::onPlatformSessionCreated(const QJsonObject &session) {
     if (session.value("device_id").toString() == deviceId()) {
-        if (!acceptPlatformSession(session)) {
-            const QString id = session.value("session_id").toString();
-            if (platform && platform->isConnected()) platform->closeSession(id);
+        if (!canAdmitPlatformSession(session)) {
+            const QString sessionId = session.value("session_id").toString();
+            if (platform && platform->isConnected()) platform->requestSessionClose(sessionId);
             return;
         }
-        adoptDeviceSession(session, session.value("status").toString() == "approved");
+        storeIncomingDeviceSession(session, session.value("status").toString() == "approved");
         return;
     }
-    const QString id = session.value("session_id").toString();
-    if (id.isEmpty()) return;
-    QJsonObject record = session;
-    record.insert("source", "platform-operator");
-    if (!record.contains("expires_at_ms") && record.value("expires_at").isDouble())
-        record.insert("expires_at_ms", record.value("expires_at").toDouble() * 1000.0);
-    sessions.insert(id, record);
+    const QString sessionId = session.value("session_id").toString();
+    if (sessionId.isEmpty()) return;
+    QJsonObject sessionRecord = session;
+    sessionRecord.insert("source", "platform-operator");
+    if (!sessionRecord.contains("expires_at_ms") && sessionRecord.value("expires_at").isDouble())
+        sessionRecord.insert("expires_at_ms", sessionRecord.value("expires_at").toDouble() * 1000.0);
+    sessions.insert(sessionId, sessionRecord);
     persistSessionState();
     refreshSessionsPage();
     const QString status = session.value("status").toString();
@@ -144,7 +144,7 @@ void MainWindow::onPlatformSessionCreated(const QJsonObject &session) {
 
 void MainWindow::onPlatformCloseRequested(const QString &sessionId) {
     appendActivity(sessionId, "平台已请求结束会话", ActivityKind::Session);
-    stopTasksForSession(sessionId, "cancelled");
+    cancelSessionCommands(sessionId, "cancelled");
     QJsonObject session = sessions.value(sessionId);
     session.insert("status", "closed");
     sessions.insert(sessionId, session);
@@ -157,14 +157,14 @@ void MainWindow::onPlatformCloseRequested(const QString &sessionId) {
 
 void MainWindow::onPlatformCancelRequested(const QString &sessionId, const QString &requestId) {
     appendActivity(sessionId, QString("Agent 请求停止任务：%1").arg(requestId.left(8)));
-    QJsonObject task = tasks.value(requestId);
-    task.insert("status", "cancelled");
-    task.insert("exit_code", QJsonValue(QJsonValue::Null));
-    tasks.insert(requestId, task);
+    QJsonObject commandTask = tasks.value(requestId);
+    commandTask.insert("status", "cancelled");
+    commandTask.insert("exit_code", QJsonValue(QJsonValue::Null));
+    tasks.insert(requestId, commandTask);
     persistSessionState();
-    if (PowerShellRunner *runner = runs.value(requestId)) runner->cancel();
-    platformOutputSequence.remove(requestId);
-    platformTaskSession.remove(requestId);
+    if (PowerShellRunner *runner = commandRunners.value(requestId)) runner->cancel();
+    nextPlatformOutputSequenceByRequest.remove(requestId);
+    platformSessionByRequest.remove(requestId);
     if (platform && platform->isConnected())
         platform->sendCommandResult(sessionId, requestId, "cancelled", QJsonValue(), true, false);
     refreshSessionsPage();
@@ -186,87 +186,89 @@ bool MainWindow::sessionAllowsFileRead(const QString &sessionId) {
 }
 
 
-void MainWindow::finishFileDownload(const QSharedPointer<FileDownloadState> &state, const QString &status,
-                        bool resultKnown) {
-    if (!state || state->requestId.isEmpty()) return;
-    const QString sha = status == QLatin1String("succeeded") && state->hash
-        ? QString::fromLatin1(state->hash->result().toHex()) : QString();
+// 上报下载结果并释放文件和校验资源。
+void MainWindow::reportDownloadResultAndCleanup(const QSharedPointer<FileDownloadState> &transferState,
+                                               const QString &status, bool resultKnown) {
+    if (!transferState || transferState->requestId.isEmpty()) return;
+    const QString fileSHA256 = status == QLatin1String("succeeded") && transferState->checksum
+        ? QString::fromLatin1(transferState->checksum->result().toHex()) : QString();
     if (platform && platform->isConnected()) {
-        platform->sendFileDownloadResult(state->sessionId, state->requestId, status, state->fileName,
-                                         state->sent, sha, resultKnown);
+        platform->sendFileDownloadResult(transferState->sessionId, transferState->requestId, status, transferState->fileName,
+                                         transferState->sentBytes, fileSHA256, resultKnown);
     }
-    activeFileDownloads.remove(state->requestId);
-    if (state->file) {
-        state->file->close();
-        state->file->deleteLater();
-        state->file = nullptr;
+    activeFileDownloads.remove(transferState->requestId);
+    if (transferState->file) {
+        transferState->file->close();
+        transferState->file->deleteLater();
+        transferState->file = nullptr;
     }
-    delete state->hash;
-    state->hash = nullptr;
+    delete transferState->checksum;
+    transferState->checksum = nullptr;
     refreshActiveSessions();
 }
 
 
-void MainWindow::pumpFileDownload(const QSharedPointer<FileDownloadState> &state) {
-    if (!state) return;
-    if (!activeFileDownloads.contains(state->requestId)) {
-        if (state->file) {
-            state->file->close();
-            state->file->deleteLater();
+// 每次最多发送一个分块，再通过事件循环调度下一块；结束或失去授权时收敛传输状态。
+void MainWindow::sendNextDownloadChunk(const QSharedPointer<FileDownloadState> &transferState) {
+    if (!transferState) return;
+    if (!activeFileDownloads.contains(transferState->requestId)) {
+        if (transferState->file) {
+            transferState->file->close();
+            transferState->file->deleteLater();
         }
-        delete state->hash;
+        delete transferState->checksum;
         return;
     }
-    if (!sessionAllowsFileRead(state->sessionId)) {
-        appendActivity(state->sessionId, QString("文件下载 %1 已停止：会话不再授权读取").arg(state->requestId.left(8)),
+    if (!sessionAllowsFileRead(transferState->sessionId)) {
+        appendActivity(transferState->sessionId, QString("文件下载 %1 已停止：会话不再授权读取").arg(transferState->requestId.left(8)),
                        ActivityKind::Error);
-        finishFileDownload(state, QStringLiteral("cancelled"), true);
+        reportDownloadResultAndCleanup(transferState, QStringLiteral("cancelled"), true);
         return;
     }
-    if (state->file->atEnd()) {
-        finishFileDownload(state, QStringLiteral("succeeded"), true);
+    if (transferState->file->atEnd()) {
+        reportDownloadResultAndCleanup(transferState, QStringLiteral("succeeded"), true);
         return;
     }
     constexpr qint64 chunkSize = 64 * 1024;
-    const QByteArray chunk = state->file->read(chunkSize);
-    if (chunk.isEmpty() && state->file->error() != QFile::NoError) {
-        appendActivity(state->sessionId, QString("文件下载 %1 读取失败：%2").arg(state->requestId.left(8), state->file->errorString()),
+    const QByteArray chunk = transferState->file->read(chunkSize);
+    if (chunk.isEmpty() && transferState->file->error() != QFile::NoError) {
+        appendActivity(transferState->sessionId, QString("文件下载 %1 读取失败：%2").arg(transferState->requestId.left(8), transferState->file->errorString()),
                        ActivityKind::Error);
-        finishFileDownload(state, QStringLiteral("failed"), true);
+        reportDownloadResultAndCleanup(transferState, QStringLiteral("failed"), true);
         return;
     }
     constexpr qint64 maxDownloadBytes = 32LL * 1024 * 1024;
-    if (state->sent + chunk.size() > maxDownloadBytes) {
-        appendActivity(state->sessionId, QString("文件下载 %1 已停止：文件超过 32 MiB 上限").arg(state->requestId.left(8)),
+    if (transferState->sentBytes + chunk.size() > maxDownloadBytes) {
+        appendActivity(transferState->sessionId, QString("文件下载 %1 已停止：文件超过 32 MiB 上限").arg(transferState->requestId.left(8)),
                        ActivityKind::Error);
-        finishFileDownload(state, QStringLiteral("failed"), true);
+        reportDownloadResultAndCleanup(transferState, QStringLiteral("failed"), true);
         return;
     }
-    state->hash->addData(chunk);
-    state->sent += chunk.size();
-    const bool eof = state->file->atEnd();
+    transferState->checksum->addData(chunk);
+    transferState->sentBytes += chunk.size();
+    const bool eof = transferState->file->atEnd();
     if (platform && platform->isConnected()) {
-        platform->sendFileChunk(state->sessionId, state->requestId, state->sequence++, chunk, eof);
+        platform->sendFileDownloadChunk(transferState->sessionId, transferState->requestId, transferState->nextSequence++, chunk, eof);
     }
     if (eof) {
-        if (state->expected >= 0 && state->sent != state->expected) {
-            appendActivity(state->sessionId, QString("文件下载 %1 失败：读取大小与预期不一致").arg(state->requestId.left(8)),
+        if (transferState->expectedBytes >= 0 && transferState->sentBytes != transferState->expectedBytes) {
+            appendActivity(transferState->sessionId, QString("文件下载 %1 失败：读取大小与预期不一致").arg(transferState->requestId.left(8)),
                            ActivityKind::Error);
-            finishFileDownload(state, QStringLiteral("failed"), true);
+            reportDownloadResultAndCleanup(transferState, QStringLiteral("failed"), true);
             return;
         }
-        appendActivity(state->sessionId, QString("文件下载 %1 完成：%2 字节").arg(state->requestId.left(8)).arg(state->sent),
+        appendActivity(transferState->sessionId, QString("文件下载 %1 完成：%2 字节").arg(transferState->requestId.left(8)).arg(transferState->sentBytes),
                        ActivityKind::Success);
-        finishFileDownload(state, QStringLiteral("succeeded"), true);
+        reportDownloadResultAndCleanup(transferState, QStringLiteral("succeeded"), true);
         return;
     }
-    QTimer::singleShot(0, this, [this, state] { pumpFileDownload(state); });
+    QTimer::singleShot(0, this, [this, transferState] { sendNextDownloadChunk(transferState); });
 }
 
 
 void MainWindow::onPlatformFileDownloadRequested(const QString &sessionId, const QString &requestId,
                                      const QString &remotePath) {
-    auto fail = [this, sessionId, requestId](const QString &message) {
+    auto reportTransferFailure = [this, sessionId, requestId](const QString &message) {
         appendActivity(sessionId, QString("文件下载 %1 被拒绝：%2").arg(requestId.left(8), message),
                        ActivityKind::Error);
         if (platform && platform->isConnected())
@@ -274,43 +276,43 @@ void MainWindow::onPlatformFileDownloadRequested(const QString &sessionId, const
     };
     if (requestId.isEmpty() || activeFileDownloads.contains(requestId)) return;
     if (!sessionAllowsFileRead(sessionId)) {
-        fail(QStringLiteral("会话未获得 read_file 权限或已结束"));
+        reportTransferFailure(QStringLiteral("会话未获得 read_file 权限或已结束"));
         return;
     }
-    const QString path = remotePath.trimmed();
-    if (path.isEmpty() || path.size() > 4096) {
-        fail(QStringLiteral("远程路径为空或过长"));
+    const QString sourcePath = remotePath.trimmed();
+    if (sourcePath.isEmpty() || sourcePath.size() > 4096) {
+        reportTransferFailure(QStringLiteral("远程路径为空或过长"));
         return;
     }
-    QFileInfo info(path);
-    if (!info.exists() || !info.isFile()) {
-        fail(QStringLiteral("远程路径不是可读取的普通文件"));
+    QFileInfo sourceFileInfo(sourcePath);
+    if (!sourceFileInfo.exists() || !sourceFileInfo.isFile()) {
+        reportTransferFailure(QStringLiteral("远程路径不是可读取的普通文件"));
         return;
     }
     constexpr qint64 maxDownloadBytes = 32LL * 1024 * 1024;
-    if (info.size() > maxDownloadBytes) {
-        fail(QStringLiteral("文件超过 32 MiB 下载上限"));
+    if (sourceFileInfo.size() > maxDownloadBytes) {
+        reportTransferFailure(QStringLiteral("文件超过 32 MiB 下载上限"));
         return;
     }
-    auto *file = new QFile(path, this);
+    auto *file = new QFile(sourcePath, this);
     if (!file->open(QIODevice::ReadOnly)) {
         const QString error = file->errorString();
         file->deleteLater();
-        fail(QStringLiteral("无法打开文件：%1").arg(error));
+        reportTransferFailure(QStringLiteral("无法打开文件：%1").arg(error));
         return;
     }
-    auto state = QSharedPointer<FileDownloadState>::create();
-    state->sessionId = sessionId;
-    state->requestId = requestId;
-    state->fileName = info.fileName();
-    state->file = file;
-    state->hash = new QCryptographicHash(QCryptographicHash::Sha256);
-    state->expected = info.size();
+    auto transferState = QSharedPointer<FileDownloadState>::create();
+    transferState->sessionId = sessionId;
+    transferState->requestId = requestId;
+    transferState->fileName = sourceFileInfo.fileName();
+    transferState->file = file;
+    transferState->checksum = new QCryptographicHash(QCryptographicHash::Sha256);
+    transferState->expectedBytes = sourceFileInfo.size();
     activeFileDownloads.insert(requestId, true);
-    appendActivity(sessionId, QString("Agent 请求下载文件 %1（%2 字节）").arg(state->fileName).arg(info.size()),
+    appendActivity(sessionId, QString("Agent 请求下载文件 %1（%2 字节）").arg(transferState->fileName).arg(sourceFileInfo.size()),
                    ActivityKind::Download);
     refreshActiveSessions();
-    QTimer::singleShot(0, this, [this, state] { pumpFileDownload(state); });
+    QTimer::singleShot(0, this, [this, transferState] { sendNextDownloadChunk(transferState); });
 }
 
 
@@ -331,72 +333,72 @@ namespace {
 constexpr qint64 kMaxUploadBytes = 32LL * 1024 * 1024;
 
 // 确保操作端提供的文件名可作为单独的路径组成部分使用
-QString safeUploadName(const QString &fileName) {
-    QString base = fileName;
-    base.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    const int slash = base.lastIndexOf(QLatin1Char('/'));
-    if (slash >= 0) base = base.mid(slash + 1);
-    QString out;
-    out.reserve(base.size());
-    for (const QChar ch : base) {
-        if (ch.unicode() < 0x20 || QStringLiteral("<>:\"/|?*").contains(ch)) out += QLatin1Char('_');
-        else out += ch;
+QString sanitizeUploadFileName(const QString &fileName) {
+    QString baseName = fileName;
+    baseName.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    const int lastPathSeparator = baseName.lastIndexOf(QLatin1Char('/'));
+    if (lastPathSeparator >= 0) baseName = baseName.mid(lastPathSeparator + 1);
+    QString sanitizedName;
+    sanitizedName.reserve(baseName.size());
+    for (const QChar character : baseName) {
+        if (character.unicode() < 0x20 || QStringLiteral("<>:\"/|?*").contains(character)) sanitizedName += QLatin1Char('_');
+        else sanitizedName += character;
     }
-    out = out.trimmed();
-    while (out.startsWith(QLatin1Char('.'))) out.remove(0, 1);
-    if (out.isEmpty()) out = QStringLiteral("upload.bin");
-    return out.left(160);
+    sanitizedName = sanitizedName.trimmed();
+    while (sanitizedName.startsWith(QLatin1Char('.'))) sanitizedName.remove(0, 1);
+    if (sanitizedName.isEmpty()) sanitizedName = QStringLiteral("upload.bin");
+    return sanitizedName.left(160);
 }
 
 }  // namespace
 
 
-// finishFileUpload 上报最终结果并释放临时文件
-void MainWindow::finishFileUpload(const QSharedPointer<FileUploadState> &state, const QString &status) {
-    if (!state || state->requestId.isEmpty()) return;
-    const QString sessionStatus = sessions.value(state->sessionId).value("status").toString();
-    const bool sessionLive = sessionStatus == "active" || sessionStatus == "approved";
-    QString sha;
-    if (status == QLatin1String("succeeded") && state->hash)
-        sha = QString::fromLatin1(state->hash->result().toHex());
-    if (state->file) {
-        state->file->close();
-        state->file->deleteLater();
-        state->file = nullptr;
+// reportUploadResultAndCleanup 在会话仍有效时上报最终结果，并释放文件和校验资源。
+void MainWindow::reportUploadResultAndCleanup(const QSharedPointer<FileUploadState> &transferState, const QString &status) {
+    if (!transferState || transferState->requestId.isEmpty()) return;
+    const QString sessionStatusValue = sessions.value(transferState->sessionId).value("status").toString();
+    const bool sessionLive = sessionStatusValue == "active" || sessionStatusValue == "approved";
+    QString fileSHA256;
+    if (status == QLatin1String("succeeded") && transferState->checksum)
+        fileSHA256 = QString::fromLatin1(transferState->checksum->result().toHex());
+    if (transferState->file) {
+        transferState->file->close();
+        transferState->file->deleteLater();
+        transferState->file = nullptr;
     }
-    delete state->hash;
-    state->hash = nullptr;
-    activeFileUploads.remove(state->requestId);
-    if (status != QLatin1String("succeeded") && !state->tempPath.isEmpty())
-        QFile::remove(state->tempPath);
+    delete transferState->checksum;
+    transferState->checksum = nullptr;
+    activeFileUploads.remove(transferState->requestId);
+    if (status != QLatin1String("succeeded") && !transferState->temporaryPath.isEmpty())
+        QFile::remove(transferState->temporaryPath);
     if (sessionLive && platform && platform->isConnected()) {
-        platform->sendFileUploadResult(state->sessionId, state->requestId, status,
-                                      status == QLatin1String("succeeded") ? state->targetPath : QString(),
-                                      state->fileName,
-                                      status == QLatin1String("succeeded") ? state->received : 0,
-                                      sha, true);
+        platform->sendFileUploadResult(transferState->sessionId, transferState->requestId, status,
+                                      status == QLatin1String("succeeded") ? transferState->targetPath : QString(),
+                                      transferState->fileName,
+                                      status == QLatin1String("succeeded") ? transferState->receivedBytes : 0,
+                                      fileSHA256, true);
     }
     refreshActiveSessions();
 }
 
 
-// abortFileUploadsForSession 终止本地上传任务
-// 这些任务所属会话已结束，且平台未收到通知（平台侧的会话已经不存在）
-void MainWindow::abortFileUploadsForSession(const QString &sessionId) {
+// discardSessionUploads 终止会话的上传并删除临时文件，不再向平台上报结果。
+// 会话已由平台结束或因断线失效。
+void MainWindow::discardSessionUploads(const QString &sessionId) {
     const QStringList requestIds = activeFileUploads.keys();
     for (const QString &requestId : requestIds) {
-        QSharedPointer<FileUploadState> state = activeFileUploads.value(requestId);
-        if (!state || state->sessionId != sessionId) continue;
+        QSharedPointer<FileUploadState> transferState = activeFileUploads.value(requestId);
+        if (!transferState || transferState->sessionId != sessionId) continue;
         appendActivity(sessionId, QString("文件上传 %1 已停止：会话已结束").arg(requestId.left(8)),
                        ActivityKind::Error);
-        if (state->file) {
-            state->file->close();
-            state->file->deleteLater();
-            state->file = nullptr;
+        if (transferState->file) {
+            transferState->file->close();
+            transferState->file->deleteLater();
+            transferState->file = nullptr;
         }
-        delete state->hash;
-        state->hash = nullptr;
-        if (!state->tempPath.isEmpty()) QFile::remove(state->tempPath);
+        delete transferState->checksum;
+        transferState->checksum = nullptr;
+        if (!transferState->temporaryPath.isEmpty()) QFile::remove(transferState->temporaryPath);
         activeFileUploads.remove(requestId);
     }
     refreshActiveSessions();
@@ -406,7 +408,7 @@ void MainWindow::abortFileUploadsForSession(const QString &sessionId) {
 void MainWindow::onPlatformFileUploadRequested(const QString &sessionId, const QString &requestId,
                                                const QString &remotePath, const QString &fileName,
                                                qint64 fileSize, const QString &sha256, bool overwrite) {
-    auto fail = [this, sessionId, requestId, fileName](const QString &message) {
+    auto reportTransferFailure = [this, sessionId, requestId, fileName](const QString &message) {
         appendActivity(sessionId, QString("文件上传 %1 被拒绝：%2").arg(requestId.left(8), message),
                        ActivityKind::Error);
         if (platform && platform->isConnected())
@@ -415,161 +417,161 @@ void MainWindow::onPlatformFileUploadRequested(const QString &sessionId, const Q
     };
     if (requestId.isEmpty() || activeFileUploads.contains(requestId)) return;
     if (!sessionAllowsFileWrite(sessionId)) {
-        fail(QStringLiteral("会话未获得 write_file 权限或已结束"));
+        reportTransferFailure(QStringLiteral("会话未获得 write_file 权限或已结束"));
         return;
     }
     if (fileSize < 0 || fileSize > kMaxUploadBytes) {
-        fail(QStringLiteral("文件超过 32 MiB 上传上限"));
+        reportTransferFailure(QStringLiteral("文件超过 32 MiB 上传上限"));
         return;
     }
     if (sha256.size() > 128) {
-        fail(QStringLiteral("校验值过长"));
+        reportTransferFailure(QStringLiteral("校验值过长"));
         return;
     }
 
-    const QString name = safeUploadName(fileName);
-    const QString requested = remotePath.trimmed();
-    QString target;
-    if (requested.isEmpty()) {
+    const QString sanitizedFileName = sanitizeUploadFileName(fileName);
+    const QString requestedPath = remotePath.trimmed();
+    QString targetPath;
+    if (requestedPath.isEmpty()) {
         const QString dir = QDir(yiukConfigRoot()).filePath("uploads");
-        target = QDir(dir).filePath(QString("%1-%2").arg(QDateTime::currentMSecsSinceEpoch()).arg(name));
+        targetPath = QDir(dir).filePath(QString("%1-%2").arg(QDateTime::currentMSecsSinceEpoch()).arg(sanitizedFileName));
     } else {
-        if (!QDir::isAbsolutePath(requested)) {
-            fail(QStringLiteral("远程路径必须是绝对路径"));
+        if (!QDir::isAbsolutePath(requestedPath)) {
+            reportTransferFailure(QStringLiteral("远程路径必须是绝对路径"));
             return;
         }
-        const QFileInfo requestedInfo(requested);
-        target = requestedInfo.isDir() ? QDir(requested).filePath(name) : requested;
+        const QFileInfo requestedInfo(requestedPath);
+        targetPath = requestedInfo.isDir() ? QDir(requestedPath).filePath(sanitizedFileName) : requestedPath;
     }
-    if (target.isEmpty() || target.size() > 4096) {
-        fail(QStringLiteral("目标路径无效或过长"));
+    if (targetPath.isEmpty() || targetPath.size() > 4096) {
+        reportTransferFailure(QStringLiteral("目标路径无效或过长"));
         return;
     }
-    const QFileInfo targetInfo(target);
+    const QFileInfo targetInfo(targetPath);
     if (targetInfo.exists() && !overwrite) {
-        fail(QStringLiteral("目标文件已存在；如需覆盖请设置 overwrite=true"));
+        reportTransferFailure(QStringLiteral("目标文件已存在；如需覆盖请设置 overwrite=true"));
         return;
     }
     if (!QDir().mkpath(targetInfo.absolutePath())) {
-        fail(QStringLiteral("无法创建目标目录"));
+        reportTransferFailure(QStringLiteral("无法创建目标目录"));
         return;
     }
-    const QString tempPath = target + QString(".yiuk-upload-%1.part").arg(requestId.left(8));
+    const QString tempPath = targetPath + QString(".yiuk-upload-%1.part").arg(requestId.left(8));
     QFile::remove(tempPath);
     auto *file = new QFile(tempPath, this);
     if (!file->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         const QString error = file->errorString();
         file->deleteLater();
-        fail(QStringLiteral("无法创建目标文件：%1").arg(error));
+        reportTransferFailure(QStringLiteral("无法创建目标文件：%1").arg(error));
         return;
     }
-    auto state = QSharedPointer<FileUploadState>::create();
-    state->sessionId = sessionId;
-    state->requestId = requestId;
-    state->targetPath = target;
-    state->tempPath = tempPath;
-    state->fileName = name;
-    state->file = file;
-    state->hash = new QCryptographicHash(QCryptographicHash::Sha256);
-    state->expected = fileSize;
-    state->expectedSha256 = sha256.toLower();
-    state->overwrite = overwrite;
-    activeFileUploads.insert(requestId, state);
-    appendActivity(sessionId, QString("Agent 开始上传文件 %1（%2 字节）→ %3").arg(name).arg(fileSize).arg(target),
+    auto transferState = QSharedPointer<FileUploadState>::create();
+    transferState->sessionId = sessionId;
+    transferState->requestId = requestId;
+    transferState->targetPath = targetPath;
+    transferState->temporaryPath = tempPath;
+    transferState->fileName = sanitizedFileName;
+    transferState->file = file;
+    transferState->checksum = new QCryptographicHash(QCryptographicHash::Sha256);
+    transferState->expectedBytes = fileSize;
+    transferState->expectedSha256 = sha256.toLower();
+    transferState->overwrite = overwrite;
+    activeFileUploads.insert(requestId, transferState);
+    appendActivity(sessionId, QString("Agent 开始上传文件 %1（%2 字节）→ %3").arg(sanitizedFileName).arg(fileSize).arg(targetPath),
                    ActivityKind::Upload);
     refreshActiveSessions();
     if (fileSize == 0) {
         // 空文件不包含数据分块；文件信息由请求元数据携带
-        QFile::remove(target);
-        if (!QFile::rename(tempPath, target)) {
+        QFile::remove(targetPath);
+        if (!QFile::rename(tempPath, targetPath)) {
             appendActivity(sessionId, QString("文件上传 %1 失败：无法创建空文件").arg(requestId.left(8)),
                            ActivityKind::Error);
-            finishFileUpload(state, QStringLiteral("failed"));
+            reportUploadResultAndCleanup(transferState, QStringLiteral("failed"));
             return;
         }
         appendActivity(sessionId, QString("文件上传 %1 完成：0 字节").arg(requestId.left(8)),
                        ActivityKind::Success);
-        finishFileUpload(state, QStringLiteral("succeeded"));
+        reportUploadResultAndCleanup(transferState, QStringLiteral("succeeded"));
     }
 }
 
 
 void MainWindow::onPlatformFileUploadChunk(const QString &sessionId, const QString &requestId,
-                                           quint64 sequence, const QString &data, bool eof) {
-    auto state = activeFileUploads.value(requestId);
-    if (!state || state->sessionId != sessionId || !state->file) return;
-    auto fail = [this, state, requestId](const QString &message) {
-        appendActivity(state->sessionId, QString("文件上传 %1 失败：%2").arg(requestId.left(8), message),
+                                           quint64 sequence, const QString &base64Data, bool eof) {
+    auto transferState = activeFileUploads.value(requestId);
+    if (!transferState || transferState->sessionId != sessionId || !transferState->file) return;
+    auto reportTransferFailure = [this, transferState, requestId](const QString &message) {
+        appendActivity(transferState->sessionId, QString("文件上传 %1 失败：%2").arg(requestId.left(8), message),
                        ActivityKind::Error);
-        finishFileUpload(state, QStringLiteral("failed"));
+        reportUploadResultAndCleanup(transferState, QStringLiteral("failed"));
     };
     if (!sessionAllowsFileWrite(sessionId)) {
         appendActivity(sessionId, QString("文件上传 %1 已停止：会话不再授权写入").arg(requestId.left(8)),
                        ActivityKind::Error);
-        finishFileUpload(state, QStringLiteral("cancelled"));
+        reportUploadResultAndCleanup(transferState, QStringLiteral("cancelled"));
         return;
     }
-    if (sequence != state->expectedSequence) {
-        fail(QStringLiteral("分块序号不连续"));
+    if (sequence != transferState->expectedSequence) {
+        reportTransferFailure(QStringLiteral("分块序号不连续"));
         return;
     }
-    const QByteArray chunk = QByteArray::fromBase64(data.toLatin1());
-    if (chunk.isEmpty() && !data.isEmpty()) {
-        fail(QStringLiteral("分块数据不是有效的 Base64"));
+    const QByteArray chunk = QByteArray::fromBase64(base64Data.toLatin1());
+    if (chunk.isEmpty() && !base64Data.isEmpty()) {
+        reportTransferFailure(QStringLiteral("分块数据不是有效的 Base64"));
         return;
     }
-    if (state->received + chunk.size() > kMaxUploadBytes ||
-        (state->expected > 0 && state->received + chunk.size() > state->expected)) {
-        fail(QStringLiteral("写入字节数超过声明的文件大小"));
+    if (transferState->receivedBytes + chunk.size() > kMaxUploadBytes ||
+        (transferState->expectedBytes > 0 && transferState->receivedBytes + chunk.size() > transferState->expectedBytes)) {
+        reportTransferFailure(QStringLiteral("写入字节数超过声明的文件大小"));
         return;
     }
-    if (!chunk.isEmpty() && state->file->write(chunk) != chunk.size()) {
-        fail(QStringLiteral("写入目标文件失败：%1").arg(state->file->errorString()));
+    if (!chunk.isEmpty() && transferState->file->write(chunk) != chunk.size()) {
+        reportTransferFailure(QStringLiteral("写入目标文件失败：%1").arg(transferState->file->errorString()));
         return;
     }
-    state->hash->addData(chunk);
-    state->received += chunk.size();
-    state->expectedSequence++;
+    transferState->checksum->addData(chunk);
+    transferState->receivedBytes += chunk.size();
+    transferState->expectedSequence++;
     if (!eof) return;
 
-    state->file->flush();
-    state->file->close();
-    state->file->deleteLater();
-    state->file = nullptr;
-    if (state->received != state->expected) {
+    transferState->file->flush();
+    transferState->file->close();
+    transferState->file->deleteLater();
+    transferState->file = nullptr;
+    if (transferState->receivedBytes != transferState->expectedBytes) {
         appendActivity(sessionId, QString("文件上传 %1 失败：收到 %2 字节，声明 %3 字节")
-                                   .arg(requestId.left(8)).arg(state->received).arg(state->expected),
+                                   .arg(requestId.left(8)).arg(transferState->receivedBytes).arg(transferState->expectedBytes),
                        ActivityKind::Error);
-        finishFileUpload(state, QStringLiteral("failed"));
+        reportUploadResultAndCleanup(transferState, QStringLiteral("failed"));
         return;
     }
-    if (!state->expectedSha256.isEmpty()) {
-        const QString actual = QString::fromLatin1(state->hash->result().toHex());
-        if (actual != state->expectedSha256) {
+    if (!transferState->expectedSha256.isEmpty()) {
+        const QString actualSHA256 = QString::fromLatin1(transferState->checksum->result().toHex());
+        if (actualSHA256 != transferState->expectedSha256) {
             appendActivity(sessionId, QString("文件上传 %1 失败：校验值不一致").arg(requestId.left(8)),
                            ActivityKind::Error);
-            finishFileUpload(state, QStringLiteral("failed"));
+            reportUploadResultAndCleanup(transferState, QStringLiteral("failed"));
             return;
         }
     }
-    if (state->overwrite) QFile::remove(state->targetPath);
-    if (!QFile::rename(state->tempPath, state->targetPath)) {
+    if (transferState->overwrite) QFile::remove(transferState->targetPath);
+    if (!QFile::rename(transferState->temporaryPath, transferState->targetPath)) {
         appendActivity(sessionId, QString("文件上传 %1 失败：无法写入目标文件 %2")
-                                   .arg(requestId.left(8), state->targetPath),
+                                   .arg(requestId.left(8), transferState->targetPath),
                        ActivityKind::Error);
-        finishFileUpload(state, QStringLiteral("failed"));
+        reportUploadResultAndCleanup(transferState, QStringLiteral("failed"));
         return;
     }
     appendActivity(sessionId, QString("文件上传 %1 完成：%2 字节 → %3")
-                               .arg(requestId.left(8)).arg(state->received).arg(state->targetPath),
+                               .arg(requestId.left(8)).arg(transferState->receivedBytes).arg(transferState->targetPath),
                    ActivityKind::Success);
-    finishFileUpload(state, QStringLiteral("succeeded"));
+    reportUploadResultAndCleanup(transferState, QStringLiteral("succeeded"));
 }
 
 
 void MainWindow::onPlatformCommandRequested(const QString &sessionId, const QString &requestId, const QString &command,
                                 const QString &workingDirectory, int timeoutSeconds) {
-    if (requestId.isEmpty() || runs.contains(requestId)) return;
+    if (requestId.isEmpty() || commandRunners.contains(requestId)) return;
     const QString sessionState = sessions.value(sessionId).value("status").toString();
     if (sessionState != QLatin1String("active") && sessionState != QLatin1String("approved")) {
         if (platform && platform->isConnected())
@@ -578,16 +580,16 @@ void MainWindow::onPlatformCommandRequested(const QString &sessionId, const QStr
     }
     appendActivity(sessionId, QString("Agent 开始执行任务 %1\nPowerShell> %2").arg(requestId.left(8), command),
                    ActivityKind::Execute);
-    executePlatformCommand(sessionId, requestId, command, workingDirectory, timeoutSeconds);
+    startPlatformCommand(sessionId, requestId, command, workingDirectory, timeoutSeconds);
 }
 
 
-void MainWindow::executePlatformCommand(const QString &sessionId, const QString &requestId, const QString &command,
+void MainWindow::startPlatformCommand(const QString &sessionId, const QString &requestId, const QString &command,
                             const QString &workingDirectory, int timeoutSeconds) {
     auto sendFailure = [this, sessionId, requestId](const QString &message) {
-        QJsonObject task{{"session_id", sessionId}, {"request_id", requestId}, {"status", "failed"},
+        QJsonObject commandTask{{"session_id", sessionId}, {"request_id", requestId}, {"status", "failed"},
                          {"stdout", ""}, {"stderr", message}, {"exit_code", QJsonValue(QJsonValue::Null)}, {"truncated", false}};
-        tasks.insert(requestId, task);
+        tasks.insert(requestId, commandTask);
         if (platform && platform->isConnected())
             platform->sendCommandResult(sessionId, requestId, "failed", QJsonValue(), true, false);
         refreshSessionsPage();
@@ -599,53 +601,53 @@ void MainWindow::executePlatformCommand(const QString &sessionId, const QString 
     const QString effectiveWorkingDirectory = workingDirectory.trimmed().isEmpty()
         ? defaultCommandWorkingDirectory() : workingDirectory.trimmed();
 
-    PowerShellRunner::Hooks hooks;
-    hooks.onOutput = [this, requestId, sessionId](const QByteArray &accepted, bool standardError, bool truncated) {
-        QJsonObject task = tasks.value(requestId);
-        const QString key = standardError ? QStringLiteral("stderr") : QStringLiteral("stdout");
-        const QString output = QString::fromUtf8(accepted);
-        task.insert(key, task.value(key).toString() + output);
-        task.insert("truncated", truncated);
-        tasks.insert(requestId, task);
+    PowerShellRunner::Callbacks callbacks;
+    callbacks.onOutput = [this, requestId, sessionId](const QByteArray &retainedOutput, bool isStandardError, bool truncated) {
+        QJsonObject commandTask = tasks.value(requestId);
+        const QString outputField = isStandardError ? QStringLiteral("stderr") : QStringLiteral("stdout");
+        const QString output = QString::fromUtf8(retainedOutput);
+        commandTask.insert(outputField, commandTask.value(outputField).toString() + output);
+        commandTask.insert("truncated", truncated);
+        tasks.insert(requestId, commandTask);
         appendActivity(sessionId, output.left(4000),
-                       standardError ? ActivityKind::Error : ActivityKind::Output);
-        if (platform && platform->isConnected() && !accepted.isEmpty()) {
-            const quint64 sequence = platformOutputSequence.value(requestId, 1);
-            platformOutputSequence.insert(requestId, sequence + 1);
-            platform->sendCommandOutput(sessionId, requestId, standardError ? "stderr" : "stdout", output, sequence);
+                       isStandardError ? ActivityKind::Error : ActivityKind::Output);
+        if (platform && platform->isConnected() && !retainedOutput.isEmpty()) {
+            const quint64 sequence = nextPlatformOutputSequenceByRequest.value(requestId, 1);
+            nextPlatformOutputSequenceByRequest.insert(requestId, sequence + 1);
+            platform->sendCommandOutput(sessionId, requestId, isStandardError ? "stderr" : "stdout", output, sequence);
         }
     };
-    hooks.onFinished = [this, requestId, sessionId](const QString &status, int exitCode, const QString &error) {
-        if (PowerShellRunner *runner = runs.take(requestId)) runner->deleteLater();
-        platformOutputSequence.remove(requestId);
-        platformTaskSession.remove(requestId);
-        QJsonObject task = tasks.value(requestId);
+    callbacks.onFinished = [this, requestId, sessionId](const QString &status, int exitCode, const QString &error) {
+        if (PowerShellRunner *runner = commandRunners.take(requestId)) runner->deleteLater();
+        nextPlatformOutputSequenceByRequest.remove(requestId);
+        platformSessionByRequest.remove(requestId);
+        QJsonObject commandTask = tasks.value(requestId);
         if (status == QLatin1String("timed_out")) {
-            task.insert("status", "timed_out");
-            tasks.insert(requestId, task);
+            commandTask.insert("status", "timed_out");
+            tasks.insert(requestId, commandTask);
             appendActivity(sessionId, QString("任务 %1 已超时，正在停止 PowerShell").arg(requestId.left(8)),
                            ActivityKind::Error);
             persistSessionState();
             if (platform && platform->isConnected())
-                platform->sendCommandResult(sessionId, requestId, "timed_out", QJsonValue(), false, task.value("truncated").toBool());
+                platform->sendCommandResult(sessionId, requestId, "timed_out", QJsonValue(), false, commandTask.value("truncated").toBool());
             refreshSessionsPage();
             refreshActiveSessions();
             return;
         }
         if (status == QLatin1String("cancelled")) {
             // 发起取消的调用方已经记录了最终状态
-            if (task.value("status").toString() == QLatin1String("running"))
-                task.insert("status", "cancelled");
-            tasks.insert(requestId, task);
+            if (commandTask.value("status").toString() == QLatin1String("running"))
+                commandTask.insert("status", "cancelled");
+            tasks.insert(requestId, commandTask);
             persistSessionState();
             refreshSessionsPage();
             refreshActiveSessions();
             return;
         }
         if (!error.isEmpty()) {
-            task.insert("status", "failed");
-            task.insert("stderr", task.value("stderr").toString() + error);
-            tasks.insert(requestId, task);
+            commandTask.insert("status", "failed");
+            commandTask.insert("stderr", commandTask.value("stderr").toString() + error);
+            tasks.insert(requestId, commandTask);
             persistSessionState();
             if (platform && platform->isConnected())
                 platform->sendCommandResult(sessionId, requestId, "failed", QJsonValue(), true, false);
@@ -653,12 +655,12 @@ void MainWindow::executePlatformCommand(const QString &sessionId, const QString 
             refreshActiveSessions();
             return;
         }
-        task.insert("status", status);
-        task.insert("exit_code", exitCode);
-        tasks.insert(requestId, task);
+        commandTask.insert("status", status);
+        commandTask.insert("exit_code", exitCode);
+        tasks.insert(requestId, commandTask);
         persistSessionState();
         if (platform && platform->isConnected())
-            platform->sendCommandResult(sessionId, requestId, status, exitCode, true, task.value("truncated").toBool());
+            platform->sendCommandResult(sessionId, requestId, status, exitCode, true, commandTask.value("truncated").toBool());
         refreshSessionsPage();
         refreshActiveSessions();
         showStatusMessage("平台命令任务完成", 3000);
@@ -666,19 +668,19 @@ void MainWindow::executePlatformCommand(const QString &sessionId, const QString 
 
     tasks.insert(requestId, {{"session_id", sessionId}, {"request_id", requestId}, {"status", "running"},
                              {"stdout", ""}, {"stderr", ""}, {"exit_code", QJsonValue(QJsonValue::Null)}, {"truncated", false}});
-    platformTaskSession.insert(requestId, sessionId);
-    platformOutputSequence.insert(requestId, 1);
+    platformSessionByRequest.insert(requestId, sessionId);
+    nextPlatformOutputSequenceByRequest.insert(requestId, 1);
     appendActivity(sessionId, QString("本机已启动 PowerShell 任务 %1").arg(requestId.left(8)));
 
-    auto *runner = new PowerShellRunner(this, requestId, command, effectiveWorkingDirectory, timeoutSeconds, hooks);
-    runs.insert(requestId, runner);
+    auto *runner = new PowerShellRunner(this, requestId, command, effectiveWorkingDirectory, timeoutSeconds, callbacks);
+    commandRunners.insert(requestId, runner);
     QString startError;
     if (!runner->start(&startError)) {
-        runs.remove(requestId);
+        commandRunners.remove(requestId);
         runner->deleteLater();
         tasks.remove(requestId);
-        platformTaskSession.remove(requestId);
-        platformOutputSequence.remove(requestId);
+        platformSessionByRequest.remove(requestId);
+        nextPlatformOutputSequenceByRequest.remove(requestId);
         sendFailure(startError);
         return;
     }

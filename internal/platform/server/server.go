@@ -30,55 +30,55 @@ const (
 
 // 服务器是纯内存的中继平台。它没有数据库，并且故意在重新启动时丢弃所有状态
 type Server struct {
-	cfg      config.Config
-	log      *slog.Logger
+	config   config.Config
+	logger   *slog.Logger
 	codec    protocol.Codec // JSON WebSocket 消息编解码器
 	listener *transport.WebSocketListener
 
 	devices   *device.Manager
 	sessions  *session.Manager
 	tasks     *task.Manager
-	transfers *transfer.Manager // 传输管理器
+	downloads *transfer.Manager // 下载传输状态；不保存文件内容
 	uploads   *transfer.Manager // 上传管理器
 	auth      *auth.Authenticator
 	audit     *audit.Logger //用于记录事件和警告的审计日志记录器
 
-	mu        sync.Mutex
-	conns     map[string]*conn // 连接映射，键是连接ID，值是连接对象，关闭时从这里清理连接
-	closeOnce sync.Once        //确保关闭逻辑只执行一次
-	done      chan struct{}    //通知 Goroutine 退出
-	wg        sync.WaitGroup
+	connectionsMu sync.Mutex
+	connections   map[string]*clientConnection // 连接映射，键是连接ID，值是连接对象，关闭时从这里清理连接
+	closeOnce     sync.Once                    //确保关闭逻辑只执行一次
+	shutdown      chan struct{}                //通知 Goroutine 退出
+	connectionWG  sync.WaitGroup
 }
 
-// 新建一个平台服务器并绑定其配置的lintener。
-func New(cfg config.Config, log *slog.Logger) (*Server, error) {
-	ln, err := transport.ListenWebSocket(cfg.Listen, cfg.TLSCert, cfg.TLSKey, cfg.AllowInsecure, cfg.MaxFrameBytes)
+// New 创建平台服务器并绑定配置中的监听地址。
+func New(serverConfig config.Config, logger *slog.Logger) (*Server, error) {
+	listener, err := transport.ListenWebSocket(serverConfig.Listen, serverConfig.TLSCert, serverConfig.TLSKey, serverConfig.AllowInsecure, serverConfig.MaxFrameBytes)
 	if err != nil {
 		return nil, err
 	}
-	return NewWithListener(cfg, log, ln), nil
+	return NewWithListener(serverConfig, logger, listener), nil
 }
 
-// 创建一个新的平台服务器并绑定其配置的侦听器，测试
-// 这个用于避免 TLS 证书设置；生产环境应使用 New。
-func NewWithListener(cfg config.Config, log *slog.Logger, ln *transport.WebSocketListener) *Server {
-	if log == nil {
-		log = slog.Default()
+// NewWithListener 使用已有监听器创建平台服务器，供测试注入监听器。
+// 生产环境应使用 New。
+func NewWithListener(serverConfig config.Config, logger *slog.Logger, listener *transport.WebSocketListener) *Server {
+	if logger == nil {
+		logger = slog.Default()
 	}
 	return &Server{
-		cfg:       cfg,
-		log:       log,
-		codec:     protocol.NewCodec(cfg.MaxFrameBytes),
-		listener:  ln,
-		devices:   device.NewManager(cfg.MaxDevices, cfg.TempPasswordTTL()),
-		sessions:  session.NewManager(cfg.MaxSessions, cfg.MaxSessionsPerDevice, cfg.SessionTimeout(), cfg.ApprovalTimeout()),
-		tasks:     task.NewManager(cfg.MaxOutputBytes, cfg.MaxTasksPerSession),
-		transfers: transfer.NewManager(cfg.MaxTasksPerSession),
-		uploads:   transfer.NewManager(cfg.MaxTasksPerSession),
-		auth:      auth.New(cfg.PlayerPassword, cfg.AuthRatePerMin),
-		audit:     audit.New(log),
-		conns:     make(map[string]*conn),
-		done:      make(chan struct{}),
+		config:      serverConfig,
+		logger:      logger,
+		codec:       protocol.NewCodec(serverConfig.MaxFrameBytes),
+		listener:    listener,
+		devices:     device.NewManager(serverConfig.MaxDevices, serverConfig.TempPasswordTTL()),
+		sessions:    session.NewManager(serverConfig.MaxSessions, serverConfig.MaxSessionsPerDevice, serverConfig.SessionTimeout(), serverConfig.ApprovalTimeout()),
+		tasks:       task.NewManager(serverConfig.MaxOutputBytes, serverConfig.MaxTasksPerSession),
+		downloads:   transfer.NewManager(serverConfig.MaxTasksPerSession),
+		uploads:     transfer.NewManager(serverConfig.MaxTasksPerSession),
+		auth:        auth.New(serverConfig.PlayerPassword, serverConfig.AuthRatePerMin),
+		audit:       audit.New(logger),
+		connections: make(map[string]*clientConnection),
+		shutdown:    make(chan struct{}),
 	}
 }
 
@@ -98,22 +98,22 @@ func (s *Server) Run(ctx context.Context) error {
 		case <-runDone:
 		}
 	}()
-	go s.janitor(ctx)
+	go s.runExpirationCleanup(ctx)
 
 	for {
-		nc, err := s.listener.Accept()
+		transportConn, err := s.listener.Accept()
 		if err != nil {
 			s.Close()
-			s.wg.Wait()
+			s.connectionWG.Wait()
 			if ctx.Err() != nil || s.isClosed() {
 				return nil
 			}
 			return err
 		}
-		s.wg.Add(1)
+		s.connectionWG.Add(1)
 		go func() {
-			defer s.wg.Done()
-			s.serveConn(nc)
+			defer s.connectionWG.Done()
+			s.serveConnection(transportConn)
 		}()
 	}
 }
@@ -121,23 +121,23 @@ func (s *Server) Run(ctx context.Context) error {
 // 关闭监听，不再接受新连接，并清理所有连接
 func (s *Server) Close() {
 	s.closeOnce.Do(func() {
-		close(s.done)
+		close(s.shutdown)
 		_ = s.listener.Close()
-		s.mu.Lock()
-		conns := make([]*conn, 0, len(s.conns))
-		for _, c := range s.conns {
-			conns = append(conns, c)
+		s.connectionsMu.Lock()
+		openConnections := make([]*clientConnection, 0, len(s.connections))
+		for _, clientConn := range s.connections {
+			openConnections = append(openConnections, clientConn)
 		}
-		s.mu.Unlock()
-		for _, c := range conns {
-			c.close("server_shutdown")
+		s.connectionsMu.Unlock()
+		for _, clientConn := range openConnections {
+			clientConn.close("server_shutdown")
 		}
 	})
 }
 
 func (s *Server) isClosed() bool {
 	select {
-	case <-s.done:
+	case <-s.shutdown:
 		return true
 	default:
 		return false
@@ -145,110 +145,112 @@ func (s *Server) isClosed() bool {
 }
 
 // 处理单个连接的生命周期，包括读取和写入循环。每个连接在单独的 goroutine 中处理。
-func (s *Server) serveConn(nc transport.Conn) {
-	c := &conn{
-		id:       newID(),
-		nc:       nc,
-		remote:   nc.RemoteAddr(),
-		srv:      s,
-		send:     make(chan protocol.Message, s.cfg.ObserverSlowClientBuf),
-		done:     make(chan struct{}),
-		lastSeen: time.Now(),
+func (s *Server) serveConnection(transportConn transport.Conn) {
+	clientConn := &clientConnection{
+		id:               newID(),
+		transportConn:    transportConn,
+		remoteAddr:       transportConn.RemoteAddr(),
+		server:           s,
+		outgoingMessages: make(chan protocol.Message, s.config.ObserverSlowClientBuf),
+		closed:           make(chan struct{}),
+		lastSeen:         time.Now(),
 	}
-	if !s.registerConn(c) {
-		_ = nc.Close()
+	if !s.addConnection(clientConn) {
+		_ = transportConn.Close()
 		return
 	}
-	defer s.unregisterConn(c)
-	defer c.close("connection_closed")
-	go c.writeLoop()
-	s.readLoop(c)
+	defer s.removeConnectionAndEndSessions(clientConn)
+	defer clientConn.close("connection_closed")
+	go clientConn.writeQueuedMessages()
+	s.readAndDispatchMessages(clientConn)
 }
 
-// 注册到map中
-func (s *Server) registerConn(c *conn) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.isClosed() || len(s.conns) >= s.cfg.MaxConnections {
+// addConnection 注册连接；服务器已关闭或连接数达到上限时返回 false。
+func (s *Server) addConnection(clientConn *clientConnection) bool {
+	s.connectionsMu.Lock()
+	defer s.connectionsMu.Unlock()
+	if s.isClosed() || len(s.connections) >= s.config.MaxConnections {
 		return false
 	}
-	s.conns[c.id] = c
+	s.connections[clientConn.id] = clientConn
 	return true
 }
 
-func (s *Server) unregisterConn(c *conn) {
-	s.mu.Lock()
-	delete(s.conns, c.id)
-	s.mu.Unlock()
-	c.close("unregistered")
+// removeConnectionAndEndSessions 移除并关闭连接，收敛其设备与操作者角色关联的会话。
+func (s *Server) removeConnectionAndEndSessions(clientConn *clientConnection) {
+	s.connectionsMu.Lock()
+	delete(s.connections, clientConn.id)
+	s.connectionsMu.Unlock()
+	clientConn.close("unregistered")
 
-	if c.role == roleAnonymous {
+	if clientConn.role == roleAnonymous {
 		// Useful when a client fails before authenticating (often a TLS
 		// handshake or wrong-port issue rather than a password problem).
-		s.audit.Warn("connection_closed_unauthenticated", "remote", c.remoteString())
+		s.audit.Warn("connection_closed_unauthenticated", "remote", clientConn.remoteAddress())
 		return
 	}
-	if c.role == roleDevice {
-		s.cleanupDevice(c)
+	if clientConn.role == roleDevice {
+		s.interruptDeviceSessionsOnDisconnect(clientConn)
 	}
 	// A registered device connection may also have acted as an operator, so
 	// clean up sessions owned by this connection in both roles.
-	s.cleanupOperator(c)
+	s.interruptOperatorSessionsOnDisconnect(clientConn)
 }
 
-// 清理设备连接
-func (s *Server) cleanupDevice(c *conn) {
-	if c.deviceID == "" {
+// interruptDeviceSessionsOnDisconnect 将设备标记为离线，中断其会话并上报未知结果。
+func (s *Server) interruptDeviceSessionsOnDisconnect(clientConn *clientConnection) {
+	if clientConn.deviceID == "" {
 		return
 	}
-	_, owned := s.devices.SetOffline(c.deviceID, c.id)
-	if !owned {
+	_, wasOnlineConnectionOwner := s.devices.SetOffline(clientConn.deviceID, clientConn.id)
+	if !wasOnlineConnectionOwner {
 		return
 	}
-	s.audit.Event("device_disconnected", "device", audit.RedactID(c.deviceID), "connection", audit.RedactID(c.id))
-	interrupted := s.sessions.InterruptByDevice(c.deviceID, "device_disconnected")
-	for _, ses := range interrupted {
-		s.devices.RemoveSession(ses.DeviceID, ses.ID)
-		finished := s.tasks.FinishSession(ses.ID, task.StatusResultUnknown)
-		s.notifySession(ses)
-		for _, t := range finished {
-			s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
+	s.audit.Event("device_disconnected", "device", audit.RedactID(clientConn.deviceID), "connection", audit.RedactID(clientConn.id))
+	interruptedSessions := s.sessions.InterruptByDevice(clientConn.deviceID, "device_disconnected")
+	for _, sessionRecord := range interruptedSessions {
+		s.devices.RemoveSession(sessionRecord.DeviceID, sessionRecord.ID)
+		finishedTasks := s.tasks.FinishSession(sessionRecord.ID, task.StatusResultUnknown)
+		s.notifySessionStatus(sessionRecord)
+		for _, commandTask := range finishedTasks {
+			s.sendToConnection(sessionRecord.OperatorConnectionID, commandResultMessage(commandTask))
 		}
-		for _, msg := range s.sessionTransferResults(ses.ID, transfer.StatusResultUnknown) {
-			s.sendToConnection(ses.OperatorConnectionID, msg)
+		for _, resultMessage := range s.finishSessionTransfers(sessionRecord.ID, transfer.StatusResultUnknown) {
+			s.sendToConnection(sessionRecord.OperatorConnectionID, resultMessage)
 		}
 	}
 }
 
-func (s *Server) cleanupOperator(c *conn) {
-	interrupted := s.sessions.InterruptByOperator(c.id, "operator_disconnected")
-	for _, ses := range interrupted {
-		s.devices.RemoveSession(ses.DeviceID, ses.ID)
-		finished := s.tasks.FinishSession(ses.ID, task.StatusCancelled)
-		for _, msg := range s.sessionTransferResults(ses.ID, transfer.StatusCancelled) {
-			s.sendToConnection(ses.OperatorConnectionID, msg)
+// interruptOperatorSessionsOnDisconnect 中断该操作者的会话，取消任务并通知设备停止执行。
+func (s *Server) interruptOperatorSessionsOnDisconnect(clientConn *clientConnection) {
+	interruptedSessions := s.sessions.InterruptByOperator(clientConn.id, "operator_disconnected")
+	for _, sessionRecord := range interruptedSessions {
+		s.devices.RemoveSession(sessionRecord.DeviceID, sessionRecord.ID)
+		finishedTasks := s.tasks.FinishSession(sessionRecord.ID, task.StatusCancelled)
+		for _, resultMessage := range s.finishSessionTransfers(sessionRecord.ID, transfer.StatusCancelled) {
+			s.sendToConnection(sessionRecord.OperatorConnectionID, resultMessage)
 		}
-		s.notifySession(ses)
-		if ses.DeviceConnectionID != "" {
-			s.sendToConnection(ses.DeviceConnectionID, protocol.Message{
+		s.notifySessionStatus(sessionRecord)
+		if sessionRecord.DeviceConnectionID != "" {
+			s.sendToConnection(sessionRecord.DeviceConnectionID, protocol.Message{
 				Type:      protocol.TypeCloseSession,
-				SessionID: ses.ID,
-				DeviceID:  ses.DeviceID,
+				SessionID: sessionRecord.ID,
+				DeviceID:  sessionRecord.DeviceID,
 				Code:      "OPERATOR_DISCONNECTED",
 				Message:   "operator disconnected",
 			})
 		}
-		for _, t := range finished {
-			s.sendToConnection(ses.OperatorConnectionID, taskResultMessage(t))
+		for _, commandTask := range finishedTasks {
+			s.sendToConnection(sessionRecord.OperatorConnectionID, commandResultMessage(commandTask))
 		}
 	}
 }
 
 func newID() string {
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
+	var randomBytes [16]byte
+	if _, err := rand.Read(randomBytes[:]); err != nil {
 		// crypto/rand failure is unrecoverable for identity generation.
 		panic("platform: crypto/rand unavailable: " + err.Error())
 	}
-	return hex.EncodeToString(raw[:])
+	return hex.EncodeToString(randomBytes[:])
 }

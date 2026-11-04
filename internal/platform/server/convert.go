@@ -10,7 +10,7 @@ import (
 	"agentremote/internal/platform/session"
 )
 
-func deviceInfo(info device.Info) protocol.DeviceInfo {
+func protocolDeviceInfo(info device.Info) protocol.DeviceInfo {
 	return protocol.DeviceInfo{
 		DeviceID:          info.ID,
 		Name:              info.Name,
@@ -18,34 +18,34 @@ func deviceInfo(info device.Info) protocol.DeviceInfo {
 		Mode:              string(info.Mode),
 		Online:            info.Online,
 		PasswordVersion:   info.PasswordVersion,
-		PasswordExpiresAt: unixOrZero(info.PasswordExpiresAt),
-		LastHeartbeat:     unixOrZero(info.LastHeartbeat),
+		PasswordExpiresAt: unixTimestampOrZero(info.PasswordExpiresAt),
+		LastHeartbeat:     unixTimestampOrZero(info.LastHeartbeat),
 		ActiveSessions:    info.ActiveSessions,
 	}
 }
 
-func sessionInfo(ses *session.Session) protocol.SessionInfo {
+func protocolSessionInfo(sessionRecord *session.Session) protocol.SessionInfo {
 	info := protocol.SessionInfo{
-		SessionID:      ses.ID,
-		DeviceID:       ses.DeviceID,
-		Operator:       ses.OperatorLabel,
-		OperatorDevice: ses.OperatorSource,
-		Purpose:        ses.Purpose,
-		Permissions:    ses.PermissionList(),
-		Mode:           string(ses.Mode),
-		Status:         string(ses.Status),
-		CreatedAt:      unixOrZero(ses.CreatedAt),
-		ExpiresAt:      unixOrZero(ses.ExpiresAt),
-		ApprovedAt:     unixOrZero(ses.ApprovedAt),
-		ClosedAt:       unixOrZero(ses.ClosedAt),
-		CloseReason:    ses.CloseReason,
+		SessionID:      sessionRecord.ID,
+		DeviceID:       sessionRecord.DeviceID,
+		Operator:       sessionRecord.OperatorLabel,
+		OperatorDevice: sessionRecord.OperatorSource,
+		Purpose:        sessionRecord.Purpose,
+		Permissions:    sessionRecord.PermissionList(),
+		Mode:           string(sessionRecord.Mode),
+		Status:         string(sessionRecord.Status),
+		CreatedAt:      unixTimestampOrZero(sessionRecord.CreatedAt),
+		ExpiresAt:      unixTimestampOrZero(sessionRecord.ExpiresAt),
+		ApprovedAt:     unixTimestampOrZero(sessionRecord.ApprovedAt),
+		ClosedAt:       unixTimestampOrZero(sessionRecord.ClosedAt),
+		CloseReason:    sessionRecord.CloseReason,
 	}
 	return info
 }
 
-func unixOrZero(t time.Time) int64 {
-	if t.IsZero() {
+func unixTimestampOrZero(timestamp time.Time) int64 {
+	if timestamp.IsZero() {
 		return 0
 	}
-	return t.Unix()
+	return timestamp.Unix()
 }

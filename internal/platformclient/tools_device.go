@@ -8,34 +8,34 @@ import (
 	"encoding/json"
 )
 
-// listDevices 请求当前操作端可见的设备列表。
-func (c *Client) listDevices(ctx context.Context) (any, error) {
-	resp, err := c.call(ctx, protocol.Message{Type: protocol.TypeListDevices}, func(m protocol.Message) bool {
-		return m.Type == protocol.TypeDeviceList
+// handleListDevices 请求当前操作端可见的设备列表。
+func (c *Client) handleListDevices(ctx context.Context) (any, error) {
+	response, err := c.sendRequest(ctx, protocol.Message{Type: protocol.TypeListDevices}, func(message protocol.Message) bool {
+		return message.Type == protocol.TypeDeviceList
 	})
 	if err != nil {
 		return nil, err
 	}
-	return resp.Devices, nil
+	return response.Devices, nil
 }
 
-// getDeviceStatus 从设备列表中查找指定设备，并返回其在线及会话状态。
-func (c *Client) getDeviceStatus(ctx context.Context, raw json.RawMessage) (any, error) {
+// handleGetDeviceStatus 解析工具参数，从设备列表中查找指定设备的在线及会话状态。
+func (c *Client) handleGetDeviceStatus(ctx context.Context, arguments json.RawMessage) (any, error) {
 	var input struct {
 		DeviceID string `json:"device_id"`
 	}
-	if err := json.Unmarshal(raw, &input); err != nil {
+	if err := json.Unmarshal(arguments, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
-	resp, err := c.call(ctx, protocol.Message{Type: protocol.TypeListDevices}, func(m protocol.Message) bool {
-		return m.Type == protocol.TypeDeviceList
+	response, err := c.sendRequest(ctx, protocol.Message{Type: protocol.TypeListDevices}, func(message protocol.Message) bool {
+		return message.Type == protocol.TypeDeviceList
 	})
 	if err != nil {
 		return nil, err
 	}
-	for _, d := range resp.Devices {
-		if d.DeviceID == input.DeviceID {
-			return d, nil
+	for _, device := range response.Devices {
+		if device.DeviceID == input.DeviceID {
+			return device, nil
 		}
 	}
 	return nil, &agenttools.Error{Code: "DEVICE_NOT_FOUND", Message: "device is not registered"}

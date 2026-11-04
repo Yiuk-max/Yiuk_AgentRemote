@@ -54,7 +54,7 @@ QString yiukConfigPath(const QString &name) {
     return QDir(yiukConfigRoot()).filePath(name);
 }
 
-QString findYiukConfigPath(const QString &name) {
+QString existingOrDefaultConfigPath(const QString &name) {
     const QString current = yiukConfigPath(name);
     if (QFileInfo::exists(current)) return current;
     const QString legacyRoot = legacyYiukConfigRoot();
@@ -67,19 +67,19 @@ QString defaultCommandWorkingDirectory() {
     return home.isEmpty() ? QDir::currentPath() : home;
 }
 
-QString spacedCode(const QString &digits) {
+QString formatDeviceCode(const QString &digits) {
     if (digits.size() != 9) return digits;
     return digits.left(3) + " " + digits.mid(3, 3) + " " + digits.right(3);
 }
 
-QString groupedPassword(const QString &password) {
+QString formatTemporaryPassword(const QString &password) {
     QStringList groups;
     for (int offset = 0; offset < password.size(); offset += 8)
         groups.append(password.mid(offset, 8));
     return groups.join(" ");
 }
 
-QString randomDigits(int count) {
+QString generateRandomDigits(int count) {
     QString value;
     value.reserve(count);
     for (int i = 0; i < count; ++i)
@@ -87,9 +87,8 @@ QString randomDigits(int count) {
     return value;
 }
 
-// randomPassword 生成由 32 个字符组成的 base32 密码
-// 字符表排除了在语音沟通中容易混淆的字符
-QString randomPassword(int count) {
+// generateTemporaryPassword 按指定长度生成密码，字符表排除语音沟通中易混淆的字符。
+QString generateTemporaryPassword(int count) {
     static const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     const int alphabetSize = static_cast<int>(sizeof(alphabet)) - 1;
     QString value;
@@ -99,7 +98,7 @@ QString randomPassword(int count) {
     return value;
 }
 
-QString jsonArrayText(const QJsonArray &array) {
+QString joinJsonStringArray(const QJsonArray &array) {
     QStringList values;
     for (const QJsonValue &value : array) values.append(value.toString());
     return values.join(", ");

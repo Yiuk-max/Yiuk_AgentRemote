@@ -19,30 +19,31 @@ import (
 	"encoding/hex"
 )
 
-// ensureConnectedLocked 在首次调用时建立认证连接；调用方需持有 callMu。
-func (c *Client) ensureConnectedLocked() error {
-	c.mu.Lock()
+// connectIfNeeded 复用现有连接，或建立认证连接并启动消息接收和心跳协程。
+// 调用方须持有 requestMu，以串行化连接初始化；连接状态由 connectionMu 保护。
+func (c *Client) connectIfNeeded() error {
+	c.connectionMu.Lock()
 	if c.closed {
-		c.mu.Unlock()
+		c.connectionMu.Unlock()
 		return &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "platform client is closed"}
 	}
 	if c.connected {
-		c.mu.Unlock()
+		c.connectionMu.Unlock()
 		return nil
 	}
-	c.mu.Unlock()
+	c.connectionMu.Unlock()
 
-	conn, connID, err := c.handshake()
+	conn, connectionID, err := c.dialAndAuthenticate()
 	if err != nil {
 		return err
 	}
-	inbox := make(chan protocol.Message, 256)
-	done := make(chan struct{})
-	c.mu.Lock()
-	c.conn, c.connID, c.inbox, c.connDone, c.connected = conn, connID, inbox, done, true
-	c.mu.Unlock()
-	go c.readLoop(conn, inbox, done)
-	go c.heartbeatLoop(conn, done)
+	incomingMessages := make(chan protocol.Message, 256)
+	connectionClosed := make(chan struct{})
+	c.connectionMu.Lock()
+	c.conn, c.connectionID, c.incomingMessages, c.connectionClosed, c.connected = conn, connectionID, incomingMessages, connectionClosed, true
+	c.connectionMu.Unlock()
+	go c.receiveMessages(conn, incomingMessages, connectionClosed)
+	go c.maintainHeartbeat(conn, connectionClosed)
 	return nil
 }
 
@@ -50,7 +51,7 @@ func (c *Client) ensureConnectedLocked() error {
 // 服务端会在连接静默超过 heartbeat_timeout_sec（默认 45 秒）后将其关闭
 // 因此操作端必须保持空闲连接活跃，避免会话中断
 func (c *Client) heartbeatInterval() time.Duration {
-	seconds := c.cfg.HeartbeatIntervalSeconds
+	seconds := c.config.HeartbeatIntervalSeconds
 	if seconds <= 0 {
 		seconds = defaultHeartbeatIntervalSeconds
 	}
@@ -60,51 +61,50 @@ func (c *Client) heartbeatInterval() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-// heartbeatLoop 保持空闲连接有效，并检测未关闭套接字但不再响应心跳的对端
-func (c *Client) heartbeatLoop(conn transport.Conn, done chan struct{}) {
+// maintainHeartbeat 定期发送心跳，在对端停止响应或写入失败时关闭连接。
+func (c *Client) maintainHeartbeat(conn transport.Conn, connectionClosed chan struct{}) {
 	ticker := time.NewTicker(c.heartbeatInterval())
 	defer ticker.Stop()
-	lastPongs := c.pongs.Load()
-	misses := 0
+	previousPongCount := c.pongCount.Load()
+	missedHeartbeats := 0
 	var sequence uint64
 	for {
 		select {
-		case <-done:
+		case <-connectionClosed:
 			return
 		case <-ticker.C:
 		}
-		pongs := c.pongs.Load()
-		if pongs == lastPongs {
-			misses++
+		currentPongCount := c.pongCount.Load()
+		if currentPongCount == previousPongCount {
+			missedHeartbeats++
 		} else {
-			misses = 0
+			missedHeartbeats = 0
 		}
-		lastPongs = pongs
-		if misses >= maxMissedHeartbeats {
+		previousPongCount = currentPongCount
+		if missedHeartbeats >= maxMissedHeartbeats {
 			// 平台已停止响应；断开连接，使下一次工具调用重新连接，而不是等待 TCP 超时
-			c.markDisconnected(done)
+			c.closeConnection(connectionClosed)
 			return
 		}
 		sequence++
-		if err := c.writeMessage(conn, protocol.Message{
+		if err := c.writeProtocolMessage(conn, protocol.Message{
 			Version:      protocol.Version,
 			BusinessType: protocol.BusinessAgentAssist,
 			Type:         protocol.TypePing,
 			Sequence:     sequence,
 		}); err != nil {
-			c.markDisconnected(done)
+			c.closeConnection(connectionClosed)
 			return
 		}
 	}
 }
 
-// writeMessage 串行化单个数据帧，并限制无响应对端阻塞写入的时间
-// writeMessage 对单帧写入加锁，并设置有限的写超时，避免对端失效时永久阻塞。
-func (c *Client) writeMessage(conn transport.Conn, m protocol.Message) error {
+// writeProtocolMessage 编码并串行写入一个协议帧，使用写超时限制阻塞时间。
+func (c *Client) writeProtocolMessage(conn transport.Conn, message protocol.Message) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	data, err := c.codec.Encode(m)
+	data, err := c.codec.Encode(message)
 	if err == nil {
 		err = conn.WriteMessage(data)
 	}
@@ -112,16 +112,16 @@ func (c *Client) writeMessage(conn transport.Conn, m protocol.Message) error {
 	return err
 }
 
-// handshake 建立 WebSocket 连接并完成操作端密码认证。
-func (c *Client) handshake() (transport.Conn, string, error) {
-	conn, err := c.dial()
+// dialAndAuthenticate 建立 WebSocket 连接并完成操作端密码认证。
+func (c *Client) dialAndAuthenticate() (transport.Conn, string, error) {
+	conn, err := c.dialPlatform()
 	if err != nil {
 		// 保留底层错误原因，以便区分主机不可达和证书指纹校验失败
 		return nil, "", &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not reach platform: " + err.Error()}
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	auth := protocol.Message{Version: protocol.Version, BusinessType: protocol.BusinessAgentAssist, Type: protocol.TypeAuthenticatePlayer, IdentityType: "player", PlayerPassword: c.cfg.PlayerPassword}
-	authData, err := c.codec.Encode(auth)
+	authRequest := protocol.Message{Version: protocol.Version, BusinessType: protocol.BusinessAgentAssist, Type: protocol.TypeAuthenticatePlayer, IdentityType: "player", PlayerPassword: c.config.PlayerPassword}
+	authData, err := c.codec.Encode(authRequest)
 	if err != nil || conn.WriteMessage(authData) != nil {
 		_ = conn.Close()
 		return nil, "", &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not authenticate with platform"}
@@ -132,22 +132,22 @@ func (c *Client) handshake() (transport.Conn, string, error) {
 			_ = conn.Close()
 			return nil, "", &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "platform authentication failed"}
 		}
-		m, err := c.codec.Decode(data)
+		response, err := c.codec.Decode(data)
 		if err != nil {
 			_ = conn.Close()
 			return nil, "", &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "platform authentication failed"}
 		}
-		switch m.Type {
+		switch response.Type {
 		case protocol.TypeAuthenticated:
 			_ = conn.SetReadDeadline(time.Time{})
-			return conn, m.ConnectionID, nil
+			return conn, response.ConnectionID, nil
 		case protocol.TypeError:
 			_ = conn.Close()
-			code := m.Code
+			code := response.Code
 			if code == "" {
 				code = "PLATFORM_AUTH_FAILED"
 			}
-			return nil, "", &agenttools.Error{Code: code, Message: m.Message}
+			return nil, "", &agenttools.Error{Code: code, Message: response.Message}
 		}
 	}
 }
@@ -168,65 +168,66 @@ func certPinVerifier(pin string) func(rawCerts [][]byte, _ [][]*x509.Certificate
 	}
 }
 
-// dial 根据明文、CA 信任或证书指纹固定配置创建平台连接。
-func (c *Client) dial() (transport.Conn, error) {
-	address := c.cfg.Address
-	if c.cfg.AllowPlaintext {
+// dialPlatform 根据明文、CA 信任或证书指纹固定配置创建平台连接。
+func (c *Client) dialPlatform() (transport.Conn, error) {
+	address := c.config.Address
+	if c.config.AllowPlaintext {
 		address = "ws://" + strings.TrimPrefix(strings.TrimPrefix(address, "ws://"), "wss://")
 		return transport.DialWebSocket(address, nil)
 	}
-	cfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: hostOnly(address)}
-	if c.cfg.InsecureSkipVerify {
-		cfg.InsecureSkipVerify = true
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: hostnameFromAddress(address)}
+	if c.config.InsecureSkipVerify {
+		tlsConfig.InsecureSkipVerify = true
 	}
-	if pin := strings.ToLower(strings.TrimSpace(c.cfg.PinnedCertSHA256)); pin != "" {
+	if pin := strings.ToLower(strings.TrimSpace(c.config.PinnedCertSHA256)); pin != "" {
 		// 使用精确的证书指纹检查替代常规验证
-		cfg.InsecureSkipVerify = true
-		cfg.VerifyPeerCertificate = certPinVerifier(pin)
+		tlsConfig.InsecureSkipVerify = true
+		tlsConfig.VerifyPeerCertificate = certPinVerifier(pin)
 	}
-	if c.cfg.TLSCAFile != "" {
-		pool, err := loadCertPool(c.cfg.TLSCAFile)
+	if c.config.TLSCAFile != "" {
+		pool, err := loadCertPool(c.config.TLSCAFile)
 		if err != nil {
 			return nil, err
 		}
-		cfg.RootCAs = pool
+		tlsConfig.RootCAs = pool
 	}
 	if strings.HasPrefix(address, "ws://") {
 		address = "wss://" + strings.TrimPrefix(address, "ws://")
 	}
-	return transport.DialWebSocket(address, cfg)
+	return transport.DialWebSocket(address, tlsConfig)
 }
 
-// readLoop 持续解码平台消息，将普通事件放入收件箱并单独统计心跳响应。
-func (c *Client) readLoop(conn transport.Conn, inbox chan protocol.Message, done chan struct{}) {
-	defer c.markDisconnected(done)
+// receiveMessages 持续解码平台消息，将普通事件放入队列并单独统计心跳响应。
+func (c *Client) receiveMessages(conn transport.Conn, incomingMessages chan protocol.Message, connectionClosed chan struct{}) {
+	defer c.closeConnection(connectionClosed)
 	for {
 		data, err := conn.ReadMessage()
 		if err != nil {
 			return
 		}
-		m, err := c.codec.Decode(data)
+		message, err := c.codec.Decode(data)
 		if err != nil {
 			return
 		}
-		if m.Type == protocol.TypePong {
+		if message.Type == protocol.TypePong {
 			// Pong 只能证明连接仍有效；心跳 goroutine 会读取计数器，无需将该帧传递给工具调用
-			c.pongs.Add(1)
+			c.pongCount.Add(1)
 			continue
 		}
 		select {
-		case inbox <- m:
-		case <-done:
+		case incomingMessages <- message:
+		case <-connectionClosed:
 			return
 		}
 	}
 }
 
-// markDisconnected 仅关闭当前连接对应的状态，避免旧连接协程影响新连接。
-func (c *Client) markDisconnected(done chan struct{}) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.connDone != done || !c.connected {
+// closeConnection 关闭连接、清理连接状态并通知等待方。
+// 仅当 connectionClosed 属于当前连接时执行，避免旧连接协程关闭新连接。
+func (c *Client) closeConnection(connectionClosed chan struct{}) {
+	c.connectionMu.Lock()
+	defer c.connectionMu.Unlock()
+	if c.connectionClosed != connectionClosed || !c.connected {
 		return
 	}
 	c.connected = false
@@ -234,7 +235,7 @@ func (c *Client) markDisconnected(done chan struct{}) {
 		_ = c.conn.Close()
 		c.conn = nil
 	}
-	close(done)
+	close(connectionClosed)
 }
 
 // loadCertPool 读取 PEM 格式的 CA 文件并构建 TLS 根证书池。
@@ -250,8 +251,8 @@ func loadCertPool(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// hostOnly 从连接地址中提取 TLS 校验所需的主机名。
-func hostOnly(address string) string {
+// hostnameFromAddress 从连接地址中提取 TLS 校验所需的主机名。
+func hostnameFromAddress(address string) string {
 	address = strings.TrimPrefix(strings.TrimPrefix(address, "wss://"), "ws://")
 	address = strings.TrimPrefix(strings.TrimPrefix(address, "tls://"), "tcp://")
 	if parsed, err := url.Parse("//" + address); err == nil && parsed.Hostname() != "" {

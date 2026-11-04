@@ -1,7 +1,7 @@
 package server
 
-// conn 结构 + readLoop（WebSocket/协议握手期用 handshake_timeout，
-//认证后切 heartbeat_timeout 作读 deadline）+ writeLoop + writeMu 保证帧不交错
+// 连接在认证前使用握手超时，认证后使用心跳超时。
+// 消息由接收协程分发，发送队列与致命错误响应共用 writeMu 串行写入。
 import (
 	"errors"
 	"net"
@@ -13,106 +13,109 @@ import (
 	"agentremote/internal/platform/transport"
 )
 
-type conn struct {
-	id        string
-	nc        transport.Conn
-	remote    net.Addr
-	srv       *Server
-	send      chan protocol.Message
-	done      chan struct{}
-	closeOnce sync.Once
-	writeMu   sync.Mutex
+// clientConnection 保存一条客户端连接的身份、发送队列和关闭信号。
+type clientConnection struct {
+	id               string
+	transportConn    transport.Conn
+	remoteAddr       net.Addr
+	server           *Server
+	outgoingMessages chan protocol.Message
+	closed           chan struct{}
+	closeOnce        sync.Once
+	writeMu          sync.Mutex
 
-	role     role
-	business string
-	deviceID string
-	label    string
-	lastSeen time.Time
+	role         role
+	businessType string
+	deviceID     string
+	displayName  string
+	lastSeen     time.Time
 }
 
-func (s *Server) readLoop(c *conn) {
-	deadline := s.cfg.HandshakeTimeout()
-	handshake := true
+// readAndDispatchMessages 读取并分发协议消息，必要时回复错误或关闭连接。
+func (s *Server) readAndDispatchMessages(clientConn *clientConnection) {
+	readTimeout := s.config.HandshakeTimeout()
+	awaitingAuthentication := true
 	for {
-		_ = c.nc.SetReadDeadline(time.Now().Add(deadline))
-		data, err := c.nc.ReadMessage()
+		_ = clientConn.transportConn.SetReadDeadline(time.Now().Add(readTimeout))
+		data, err := clientConn.transportConn.ReadMessage()
 		if err != nil {
-			if handshake {
-				s.log.Warn("platform WebSocket/protocol handshake failed", "remote", c.remoteString(), "error", err)
+			if awaitingAuthentication {
+				s.logger.Warn("platform WebSocket/protocol handshake failed", "remote", clientConn.remoteAddress(), "error", err)
 			} else if !errors.Is(err, net.ErrClosed) {
-				s.log.Debug("platform connection read ended", "remote", c.remoteString(), "error", err)
+				s.logger.Debug("platform connection read ended", "remote", clientConn.remoteAddress(), "error", err)
 			}
 			return
 		}
 
-		m, err := s.codec.Decode(data)
+		message, err := s.codec.Decode(data)
 		if err != nil {
-			s.log.Debug("platform message decode failed", "connection", audit.RedactID(c.id), "error", err)
+			s.logger.Debug("platform message decode failed", "connection", audit.RedactID(clientConn.id), "error", err)
 			return
 		}
-		c.lastSeen = time.Now()
+		clientConn.lastSeen = time.Now()
 
-		if err := s.handle(c, m); err != nil {
-			var pe *protoError
-			if errors.As(err, &pe) {
-				errMsg := protocol.ErrorMessage(pe.code, pe.message)
-				errMsg.CorrelationID = m.CorrelationID
-				if pe.fatal {
-					_ = c.writeRaw(errMsg)
+		if err := s.dispatchMessage(clientConn, message); err != nil {
+			var protocolErr *protocolError
+			if errors.As(err, &protocolErr) {
+				errorMessage := protocol.ErrorMessage(protocolErr.code, protocolErr.message)
+				errorMessage.CorrelationID = message.CorrelationID
+				if protocolErr.fatal {
+					_ = clientConn.writeProtocolMessage(errorMessage)
 					return
 				}
-				s.send(c, errMsg)
+				s.enqueueMessage(clientConn, errorMessage)
 			} else {
-				s.log.Error("platform request failed", "connection", audit.RedactID(c.id), "error", err)
-				errMsg := protocol.ErrorMessage("INTERNAL", "request failed")
-				errMsg.CorrelationID = m.CorrelationID
-				_ = c.writeRaw(errMsg)
+				s.logger.Error("platform request failed", "connection", audit.RedactID(clientConn.id), "error", err)
+				errorMessage := protocol.ErrorMessage("INTERNAL", "request failed")
+				errorMessage.CorrelationID = message.CorrelationID
+				_ = clientConn.writeProtocolMessage(errorMessage)
 				return
 			}
 		}
-		if handshake && c.role != roleAnonymous {
-			handshake = false
-			deadline = s.cfg.HeartbeatTimeout()
+		if awaitingAuthentication && clientConn.role != roleAnonymous {
+			awaitingAuthentication = false
+			readTimeout = s.config.HeartbeatTimeout()
 		}
 	}
 }
 
-func (c *conn) writeLoop() {
-	defer c.close("write_loop")
+// writeQueuedMessages 持续发送排队消息，写入失败或连接关闭时退出。
+func (clientConn *clientConnection) writeQueuedMessages() {
+	defer clientConn.close("write_loop")
 	for {
 		select {
-		case m := <-c.send: //有消息可发送，取出消息
-			if err := c.writeRaw(m); err != nil {
+		case message := <-clientConn.outgoingMessages: //有消息可发送，取出消息
+			if err := clientConn.writeProtocolMessage(message); err != nil {
 				return
 			}
-		case <-c.done:
+		case <-clientConn.closed:
 			return
 		}
 	}
 }
 
-// writeRaw 会将来自 writer 协程和致命错误路径的写操作序列化，这样协议帧就不会交错
-func (c *conn) writeRaw(m protocol.Message) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	_ = c.nc.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	data, err := c.srv.codec.Encode(m)
+// writeProtocolMessage 会将来自 writer 协程和致命错误路径的写操作序列化，这样协议帧就不会交错
+func (clientConn *clientConnection) writeProtocolMessage(message protocol.Message) error {
+	clientConn.writeMu.Lock()
+	defer clientConn.writeMu.Unlock()
+	_ = clientConn.transportConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	data, err := clientConn.server.codec.Encode(message)
 	if err != nil {
 		return err
 	}
-	return c.nc.WriteMessage(data)
+	return clientConn.transportConn.WriteMessage(data)
 }
 
-func (c *conn) close(reason string) {
-	c.closeOnce.Do(func() {
-		close(c.done)
-		_ = c.nc.Close()
+func (clientConn *clientConnection) close(reason string) {
+	clientConn.closeOnce.Do(func() {
+		close(clientConn.closed)
+		_ = clientConn.transportConn.Close()
 	})
 }
 
-func (c *conn) remoteString() string {
-	if c.remote == nil {
+func (clientConn *clientConnection) remoteAddress() string {
+	if clientConn.remoteAddr == nil {
 		return ""
 	}
-	return c.remote.String()
+	return clientConn.remoteAddr.String()
 }

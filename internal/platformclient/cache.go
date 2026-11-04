@@ -7,8 +7,8 @@ import (
 	"encoding/base64"
 )
 
-// taskCache 保存命令执行期间收到的输出块及最终状态。
-type taskCache struct {
+// commandResultCache 保存命令执行期间收到的输出块及最终状态。
+type commandResultCache struct {
 	sessionID   string
 	status      string
 	exitCode    *int
@@ -25,18 +25,18 @@ type downloadCache struct {
 	fileName    string
 	fileSHA256  string
 	resultKnown bool
-	bytes       int64
+	totalBytes  int64
 	chunks      [][]byte
 }
 
 // sessionIDFromResult 从结构化会话结果中提取会话标识。
 func sessionIDFromResult(result map[string]any) string {
-	id, _ := result["session_id"].(string)
-	return id
+	sessionID, _ := result["session_id"].(string)
+	return sessionID
 }
 
-// aggregateResult 将流式分块合并为 stdout/stderr 字符串，供不需要分页读取输出的调用方使用
-func aggregateResult(result map[string]any) map[string]any {
+// aggregateCommandOutput 将命令输出分块合并为 stdout/stderr 字符串。
+func aggregateCommandOutput(result map[string]any) map[string]any {
 	var stdout, stderr strings.Builder
 	switch chunks := result["chunks"].(type) {
 	case []protocol.OutputChunk:
@@ -78,183 +78,183 @@ func aggregateResult(result map[string]any) map[string]any {
 	}
 }
 
-// observe 根据消息类型更新会话、命令、文件和设备缓存。
-func (c *Client) observe(m protocol.Message) {
-	switch m.Type {
+// cacheMessage 根据消息类型更新会话、命令、下载和设备缓存。
+func (c *Client) cacheMessage(message protocol.Message) {
+	switch message.Type {
 	case protocol.TypeSessionCreated, protocol.TypeSessionStatus, protocol.TypeSessionRequest:
-		if m.Session != nil {
+		if message.Session != nil {
 			c.cacheMu.Lock()
-			c.sessions[m.Session.SessionID] = *m.Session
+			c.cachedSessions[message.Session.SessionID] = *message.Session
 			c.cacheMu.Unlock()
 		}
 	case protocol.TypeCommandOutput:
-		c.observeOutput(m)
+		c.cacheCommandOutput(message)
 	case protocol.TypeCommandResult:
-		c.observeResult(m)
+		c.cacheCommandResult(message)
 	case protocol.TypeFileChunk:
-		c.observeFileChunk(m)
+		c.cacheDownloadChunk(message)
 	case protocol.TypeFileDownloadResult:
-		c.observeFileResult(m)
+		c.cacheDownloadResult(message)
 	case protocol.TypeDeviceList:
 		c.cacheMu.Lock()
-		c.devices = append([]protocol.DeviceInfo(nil), m.Devices...)
+		c.cachedDevices = append([]protocol.DeviceInfo(nil), message.Devices...)
 		c.cacheMu.Unlock()
 	}
 }
 
-// observeOutput 缓存增量命令输出，并按序列号丢弃重复分块。
-func (c *Client) observeOutput(m protocol.Message) {
+// cacheCommandOutput 缓存增量命令输出，并按序列号丢弃重复分块。
+func (c *Client) cacheCommandOutput(message protocol.Message) {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
-	t := c.task(m.SessionID, m.RequestID)
-	if m.Data != "" {
-		last := uint64(0)
-		if len(t.chunks) > 0 {
-			last = t.chunks[len(t.chunks)-1].Sequence
+	commandCache := c.getOrCreateCommandCache(message.SessionID, message.RequestID)
+	if message.Data != "" {
+		lastSequence := uint64(0)
+		if len(commandCache.chunks) > 0 {
+			lastSequence = commandCache.chunks[len(commandCache.chunks)-1].Sequence
 		}
-		if m.Sequence > last {
-			t.chunks = append(t.chunks, protocol.OutputChunk{Stream: m.Stream, Sequence: m.Sequence, Data: m.Data})
+		if message.Sequence > lastSequence {
+			commandCache.chunks = append(commandCache.chunks, protocol.OutputChunk{Stream: message.Stream, Sequence: message.Sequence, Data: message.Data})
 		}
 	}
-	t.truncated = t.truncated || m.Truncated
-	if m.OutputBytes > 0 {
-		t.outputBytes = m.OutputBytes
-	} else if m.Data != "" {
-		t.outputBytes += len(m.Data)
+	commandCache.truncated = commandCache.truncated || message.Truncated
+	if message.OutputBytes > 0 {
+		commandCache.outputBytes = message.OutputBytes
+	} else if message.Data != "" {
+		commandCache.outputBytes += len(message.Data)
 	}
 }
 
-// observeFileChunk 解码并缓存一个下载文件分块。
-func (c *Client) observeFileChunk(m protocol.Message) {
-	data, err := base64.StdEncoding.DecodeString(m.Data)
+// cacheDownloadChunk 解码并缓存一个下载文件分块。
+func (c *Client) cacheDownloadChunk(message protocol.Message) {
+	data, err := base64.StdEncoding.DecodeString(message.Data)
 	if err != nil {
 		return
 	}
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
-	d := c.download(m.SessionID, m.RequestID)
-	d.chunks = append(d.chunks, data)
-	d.bytes += int64(len(data))
+	download := c.getOrCreateDownloadCache(message.SessionID, message.RequestID)
+	download.chunks = append(download.chunks, data)
+	download.totalBytes += int64(len(data))
 }
 
-// observeFileResult 记录下载结束状态和平台提供的文件元数据。
-func (c *Client) observeFileResult(m protocol.Message) {
+// cacheDownloadResult 记录下载结束状态和平台提供的文件元数据。
+func (c *Client) cacheDownloadResult(message protocol.Message) {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
-	d := c.download(m.SessionID, m.RequestID)
-	d.status = m.Status
-	d.fileName = m.FileName
-	d.fileSHA256 = m.FileSHA256
-	d.resultKnown = m.ResultKnown
-	if m.FileSize > 0 {
-		d.bytes = m.FileSize
+	download := c.getOrCreateDownloadCache(message.SessionID, message.RequestID)
+	download.status = message.Status
+	download.fileName = message.FileName
+	download.fileSHA256 = message.FileSHA256
+	download.resultKnown = message.ResultKnown
+	if message.FileSize > 0 {
+		download.totalBytes = message.FileSize
 	}
 }
 
-// 调用 download 时必须持有 cacheMu
-func (c *Client) download(sessionID, requestID string) *downloadCache {
-	d, ok := c.downloads[requestID]
-	if !ok || d.sessionID != sessionID {
-		d = &downloadCache{sessionID: sessionID, status: "running"}
-		c.downloads[requestID] = d
+// getOrCreateDownloadCache 查找或创建下载缓存；调用方须持有 cacheMu。
+func (c *Client) getOrCreateDownloadCache(sessionID, requestID string) *downloadCache {
+	download, exists := c.cachedDownloads[requestID]
+	if !exists || download.sessionID != sessionID {
+		download = &downloadCache{sessionID: sessionID, status: "running"}
+		c.cachedDownloads[requestID] = download
 	}
-	return d
+	return download
 }
 
-// observeResult 合并最终响应中的输出块，并更新命令的终态信息。
-func (c *Client) observeResult(m protocol.Message) {
+// cacheCommandResult 合并结果响应中的输出块，并更新命令状态。
+func (c *Client) cacheCommandResult(message protocol.Message) {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
-	t := c.task(m.SessionID, m.RequestID)
-	last := uint64(0)
-	if len(t.chunks) > 0 {
-		last = t.chunks[len(t.chunks)-1].Sequence
+	commandCache := c.getOrCreateCommandCache(message.SessionID, message.RequestID)
+	lastSequence := uint64(0)
+	if len(commandCache.chunks) > 0 {
+		lastSequence = commandCache.chunks[len(commandCache.chunks)-1].Sequence
 	}
-	for _, ch := range m.Chunks {
-		if ch.Sequence > last {
-			t.chunks = append(t.chunks, ch)
-			last = ch.Sequence
+	for _, chunk := range message.Chunks {
+		if chunk.Sequence > lastSequence {
+			commandCache.chunks = append(commandCache.chunks, chunk)
+			lastSequence = chunk.Sequence
 		}
 	}
-	t.status = m.Status
-	t.exitCode = m.ExitCode
-	t.truncated = t.truncated || m.Truncated
-	t.resultKnown = m.ResultKnown
-	if m.OutputBytes > t.outputBytes {
-		t.outputBytes = m.OutputBytes
+	commandCache.status = message.Status
+	commandCache.exitCode = message.ExitCode
+	commandCache.truncated = commandCache.truncated || message.Truncated
+	commandCache.resultKnown = message.ResultKnown
+	if message.OutputBytes > commandCache.outputBytes {
+		commandCache.outputBytes = message.OutputBytes
 	}
 }
 
-// 调用 task 时必须持有 cacheMu
-func (c *Client) task(sessionID, requestID string) *taskCache {
-	t, ok := c.tasks[requestID]
-	if !ok || t.sessionID != sessionID {
-		t = &taskCache{sessionID: sessionID, status: string(protocol.TaskRunning)}
-		c.tasks[requestID] = t
+// getOrCreateCommandCache 查找或创建命令结果缓存；调用方须持有 cacheMu。
+func (c *Client) getOrCreateCommandCache(sessionID, requestID string) *commandResultCache {
+	commandCache, exists := c.cachedCommands[requestID]
+	if !exists || commandCache.sessionID != sessionID {
+		commandCache = &commandResultCache{sessionID: sessionID, status: string(protocol.TaskRunning)}
+		c.cachedCommands[requestID] = commandCache
 	}
-	return t
+	return commandCache
 }
 
-// cachedResult 在结果已进入终态时从本地缓存分页读取命令输出。
-func (c *Client) cachedResult(sessionID, requestID string, cursor int) (map[string]any, bool) {
+// cachedFinalCommandResult 在结果已进入终态时从本地缓存分页读取命令输出。
+func (c *Client) cachedFinalCommandResult(sessionID, requestID string, cursor int) (map[string]any, bool) {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
-	t, ok := c.tasks[requestID]
-	if !ok || t.sessionID != sessionID || !isTerminalTaskStatus(t.status) {
+	commandCache, exists := c.cachedCommands[requestID]
+	if !exists || commandCache.sessionID != sessionID || !isTerminalTaskStatus(commandCache.status) {
 		return nil, false
 	}
 	if cursor < 0 {
 		cursor = 0
 	}
-	if cursor > len(t.chunks) {
-		cursor = len(t.chunks)
+	if cursor > len(commandCache.chunks) {
+		cursor = len(commandCache.chunks)
 	}
-	chunks := append([]protocol.OutputChunk(nil), t.chunks[cursor:]...)
+	chunks := append([]protocol.OutputChunk(nil), commandCache.chunks[cursor:]...)
 	return map[string]any{
 		"session_id":   sessionID,
 		"request_id":   requestID,
-		"status":       t.status,
-		"exit_code":    t.exitCode,
-		"truncated":    t.truncated,
-		"result_known": t.resultKnown,
-		"output_bytes": t.outputBytes,
+		"status":       commandCache.status,
+		"exit_code":    commandCache.exitCode,
+		"truncated":    commandCache.truncated,
+		"result_known": commandCache.resultKnown,
+		"output_bytes": commandCache.outputBytes,
 		"chunks":       chunks,
-		"next_cursor":  len(t.chunks),
+		"next_cursor":  len(commandCache.chunks),
 	}, true
 }
 
-// sessionResult 将协议会话消息转换为稳定的工具返回字段。
-func sessionResult(m protocol.Message) map[string]any {
-	if m.Session != nil {
+// sessionToolResult 将协议会话消息转换为稳定的工具返回字段。
+func sessionToolResult(message protocol.Message) map[string]any {
+	if message.Session != nil {
 		return map[string]any{
-			"session_id":      m.Session.SessionID,
-			"device_id":       m.Session.DeviceID,
-			"status":          m.Session.Status,
-			"mode":            m.Session.Mode,
-			"purpose":         m.Session.Purpose,
-			"permissions":     m.Session.Permissions,
-			"expires_at":      m.Session.ExpiresAt,
-			"created_at":      m.Session.CreatedAt,
-			"close_reason":    m.Session.CloseReason,
-			"operator":        m.Session.Operator,
-			"operator_device": m.Session.OperatorDevice,
+			"session_id":      message.Session.SessionID,
+			"device_id":       message.Session.DeviceID,
+			"status":          message.Session.Status,
+			"mode":            message.Session.Mode,
+			"purpose":         message.Session.Purpose,
+			"permissions":     message.Session.Permissions,
+			"expires_at":      message.Session.ExpiresAt,
+			"created_at":      message.Session.CreatedAt,
+			"close_reason":    message.Session.CloseReason,
+			"operator":        message.Session.Operator,
+			"operator_device": message.Session.OperatorDevice,
 		}
 	}
-	return map[string]any{"session_id": m.SessionID, "device_id": m.DeviceID, "status": m.Status}
+	return map[string]any{"session_id": message.SessionID, "device_id": message.DeviceID, "status": message.Status}
 }
 
-// resultMap 将命令结果消息转换为工具返回结构。
-func resultMap(m protocol.Message) map[string]any {
+// commandToolResult 将命令结果消息转换为工具返回结构。
+func commandToolResult(message protocol.Message) map[string]any {
 	return map[string]any{
-		"session_id":   m.SessionID,
-		"request_id":   m.RequestID,
-		"status":       m.Status,
-		"exit_code":    m.ExitCode,
-		"truncated":    m.Truncated,
-		"result_known": m.ResultKnown,
-		"output_bytes": m.OutputBytes,
-		"chunks":       m.Chunks,
-		"next_cursor":  m.NextCursor,
+		"session_id":   message.SessionID,
+		"request_id":   message.RequestID,
+		"status":       message.Status,
+		"exit_code":    message.ExitCode,
+		"truncated":    message.Truncated,
+		"result_known": message.ResultKnown,
+		"output_bytes": message.OutputBytes,
+		"chunks":       message.Chunks,
+		"next_cursor":  message.NextCursor,
 	}
 }
 
@@ -268,8 +268,8 @@ func isTerminalTaskStatus(status string) bool {
 	}
 }
 
-// isTerminalSession 判断会话状态是否已关闭、拒绝、过期或中断。
-func isTerminalSession(status string) bool {
+// isTerminalSessionStatus 判断会话状态是否已关闭、拒绝、过期或中断。
+func isTerminalSessionStatus(status string) bool {
 	switch status {
 	case protocol.StatusClosed, protocol.StatusRejected, protocol.StatusExpired, protocol.StatusInterrupted:
 		return true
