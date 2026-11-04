@@ -331,6 +331,65 @@ func TestExpiredDevicePasswordCanRecoverWithSameDeviceID(t *testing.T) {
 	}
 }
 
+// 设备码是公开标识：密码不匹配时服务端重新分配设备码，并在响应里回传新值。
+func TestConflictingDeviceIDGetsAssignedNewCode(t *testing.T) {
+	address, _ := startServer(t, nil)
+
+	owner := dialClient(t, address)
+	owner.auth(testPlayerPassword)
+	if registered := owner.register("111222333", testDevicePassword, protocol.ModeApproval); registered.DeviceID != "111222333" {
+		t.Fatalf("owner device id = %q, want the requested id", registered.DeviceID)
+	}
+
+	other := dialClient(t, address)
+	other.auth(testPlayerPassword)
+	assigned := other.register("111222333", "fedcba9876543210fedcba9876543210", protocol.ModeApproval)
+	if assigned.DeviceID == "111222333" {
+		t.Fatal("a mismatched password must not take over an existing device id")
+	}
+	if len(assigned.DeviceID) != 9 {
+		t.Fatalf("assigned device id = %q, want 9 digits", assigned.DeviceID)
+	}
+
+	operator := dialClient(t, address)
+	operator.auth(testPlayerPassword)
+	operator.send(protocol.Message{Type: protocol.TypeListDevices})
+	devices := operator.recv(protocol.TypeDeviceList)
+	if len(devices.Devices) != 2 {
+		t.Fatalf("device count = %d, want 2", len(devices.Devices))
+	}
+}
+
+// 注册发生在认证之后，auth 的限流帮不上忙；验证按 IP 的注册限流生效，
+// 并且超出后返回可重试的 RATE_LIMITED（非致命错误，连接不断）。
+func TestRegistrationRateLimitedPerIP(t *testing.T) {
+	address, _ := startServer(t, func(cfg *config.Config) {
+		cfg.RegisterRatePerMin = 2
+	})
+
+	for attempt := 0; attempt < 2; attempt++ {
+		client := dialClient(t, address)
+		client.auth(testPlayerPassword)
+		registered := client.register("device-1", testDevicePassword, protocol.ModeApproval)
+		if registered.DeviceID != "device-1" {
+			t.Fatalf("attempt %d device id = %q, want device-1", attempt, registered.DeviceID)
+		}
+		// 断开以释放在线占用，让下一次注册走正常路径。
+		_ = client.conn.Close()
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	limited := dialClient(t, address)
+	limited.auth(testPlayerPassword)
+	limited.send(protocol.Message{
+		Type: protocol.TypeRegisterDevice, DeviceID: "device-1", DeviceName: "test-device",
+		Platform: "windows", Mode: protocol.ModeApproval, TemporaryPassword: testDevicePassword,
+	})
+	if errMsg := limited.recv(protocol.TypeError); errMsg.Code != "RATE_LIMITED" {
+		t.Fatalf("code = %s, want RATE_LIMITED", errMsg.Code)
+	}
+}
+
 func TestWrongPlayerPasswordAndAuthRequired(t *testing.T) {
 	address, _ := startServer(t, nil)
 

@@ -36,35 +36,25 @@ void MainWindow::startLocalBridge() {
 }
 
 
-QString MainWindow::platformConfigPath() const {
-    return yiukConfigPath("platform.json");
-}
-
-
 void MainWindow::loadPlatformConfig() {
     PlatformClient::Config platformConfig;
-    platformConfig.deviceId = deviceId();
+    const QJsonObject identity = loadYiukIdentity();
+    const QString storedDeviceID = identity.value("device_id").toString();
+    platformConfig.deviceId = storedDeviceID.size() == 9 ? storedDeviceID : deviceId();
     platformConfig.deviceName = QSysInfo::machineHostName();
-    platformConfig.mode = "approval";
-    platformConfig.ttlSeconds = 24 * 60 * 60;
+    platformConfig.mode = identity.value("mode").toString("approval");
+    platformConfig.ttlSeconds = identity.value("ttl_seconds").toInt(24 * 60 * 60);
     platformConfig.enabled = true;
     platformConfig.allowInsecure = false;
     platformConfig.temporaryPassword = generateTemporaryPassword(32);
-    QFile file(existingOrDefaultConfigPath("platform.json"));
-    if (file.open(QIODevice::ReadOnly)) {
-        const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
-        platformConfig.enabled = true;
-        platformConfig.address = object.value("address").toString();
-        platformConfig.tls = object.value("tls").toBool(true);
-        platformConfig.allowInsecure = false;
-        platformConfig.caFile = object.value("ca_file").toString();
-        platformConfig.pinnedFingerprint = object.value("certificate_fingerprint").toString();
-        platformConfig.mode = object.value("mode").toString("approval");
-        platformConfig.passwordVersion = object.value("password_version").toInt(1);
-        platformConfig.playerPassword = SecureStore::unprotect(object.value("player_password").toString());
-        const QString storedPassword = SecureStore::unprotect(object.value("temporary_password").toString());
-        if (!storedPassword.isEmpty()) platformConfig.temporaryPassword = storedPassword;
-    }
+    platformConfig.address = identity.value("address").toString();
+    platformConfig.tls = identity.value("tls").toBool(true);
+    platformConfig.caFile = identity.value("ca_file").toString();
+    platformConfig.pinnedFingerprint = identity.value("certificate_fingerprint").toString();
+    platformConfig.passwordVersion = identity.value("password_version").toInt(1);
+    platformConfig.playerPassword = SecureStore::unprotect(identity.value("player_password").toString());
+    const QString storedPassword = SecureStore::unprotect(identity.value("temporary_password").toString());
+    if (!storedPassword.isEmpty()) platformConfig.temporaryPassword = storedPassword;
     temporaryPassword = platformConfig.temporaryPassword;
     passwordVersion = platformConfig.passwordVersion;
     platform->setConfig(platformConfig);
@@ -92,22 +82,21 @@ void MainWindow::savePlatformConfig() {
     platformConfig.enabled = true;
     platformConfig.allowInsecure = false;
     platform->setConfig(platformConfig);
-    QDir().mkpath(QFileInfo(platformConfigPath()).absolutePath());
-    const QJsonObject object{
-        {"enabled", true},
-        {"address", platformConfig.address},
-        {"tls", platformConfig.tls},
-        {"allow_insecure", false},
-        {"ca_file", platformConfig.caFile},
-        {"certificate_fingerprint", platformConfig.pinnedFingerprint},
+    // 设备码、临时密码和 password_version 在同一个文件里一次提交，
+    // 服务端重新分配设备码时不会出现“新码配旧密码”。
+    saveYiukIdentity(QJsonObject{
+        {"device_id", deviceId()},
+        {"device_name", platformConfig.deviceName},
         {"mode", platformConfig.mode},
+        {"ttl_seconds", platformConfig.ttlSeconds},
         {"password_version", platformConfig.passwordVersion},
         {"player_password", SecureStore::protect(platformConfig.playerPassword)},
         {"temporary_password", SecureStore::protect(platformConfig.temporaryPassword)},
-    };
-    QFile file(platformConfigPath());
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        file.write(QJsonDocument(object).toJson(QJsonDocument::Compact));
+        {"address", platformConfig.address},
+        {"tls", platformConfig.tls},
+        {"ca_file", platformConfig.caFile},
+        {"certificate_fingerprint", platformConfig.pinnedFingerprint},
+    });
     writeMcpPlatformClientConfig(platformConfig);
 }
 
@@ -176,6 +165,7 @@ void MainWindow::initializePlatformClient() {
         savePlatformConfig();
     });
     connect(platform, &PlatformClient::deviceListReceived, this, &MainWindow::onDeviceListReceived);
+    connect(platform, &PlatformClient::deviceCodeAssigned, this, &MainWindow::onDeviceCodeAssigned);
     connect(platform, &PlatformClient::requestFailed, this, &MainWindow::onPlatformRequestFailed);
     connect(platform, &PlatformClient::sessionRequested, this, &MainWindow::onPlatformSessionRequested);
     connect(platform, &PlatformClient::sessionUpdated, this, &MainWindow::onPlatformSessionUpdated);

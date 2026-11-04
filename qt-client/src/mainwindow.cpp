@@ -1,7 +1,9 @@
 #include "mainwindow.h"
 #include "titlebar.h"
+#include "yiukdialog.h"
 
 #include <QCursor>
+#include <QDebug>
 #include <QEvent>
 #include <QScrollBar>
 
@@ -171,19 +173,22 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 
 
 QString MainWindow::loadOrCreateDeviceCode() {
-    const QString configRoot = yiukConfigRoot();
-    QDir().mkpath(configRoot);
-    const QString path = existingOrDefaultConfigPath("device.json");
-    QFile file(path);
-    if (file.open(QIODevice::ReadOnly)) {
-        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-        const QString id = doc.object().value("device_id").toString();
-        if (id.size() == 9) return formatDeviceCode(id);
-    }
+    const QJsonObject identity = loadYiukIdentity();
+    const QString stored = identity.value(QStringLiteral("device_id")).toString();
+    if (stored.size() == 9) return formatDeviceCode(stored);
     const QString id = generateRandomDigits(9);
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        file.write(QJsonDocument(QJsonObject{{"device_id", id}}).toJson(QJsonDocument::Compact));
+    if (!saveDeviceCode(id))
+        qWarning("Yiuk: cannot persist the device code to %s; the code will change on next launch",
+                 qPrintable(existingOrDefaultConfigPath(QStringLiteral("identity.json"))));
     return formatDeviceCode(id);
+}
+
+
+// 设备码写回 identity.json。saveYiukIdentity 做读-改-写，所以这里不会
+// 弄丢临时密码、password_version 等其它字段。
+bool MainWindow::saveDeviceCode(const QString &digits) {
+    if (digits.size() != 9) return false;
+    return saveYiukIdentity(QJsonObject{{"device_id", digits}});
 }
 
 
@@ -528,6 +533,29 @@ QString MainWindow::deviceId() const {
     QString id = deviceCode;
     id.remove(' ');
     return id;
+}
+
+
+// 服务端在“设备码与本机凭据不匹配”时会重新分配设备码（撞码、克隆的配置、
+// 本地凭据损坏都会走这条路），这里需要落盘并告知用户，否则心跳和后续
+// 会话会继续使用旧码。
+void MainWindow::onDeviceCodeAssigned(const QString &assignedId) {
+    QString digits;
+    for (const QChar ch : assignedId)
+        if (ch.isDigit()) digits += ch;
+    if (digits.size() != 9) return;
+    const QString formatted = formatDeviceCode(digits);
+    if (formatted == deviceCode) return;
+    const QString previous = deviceCode;
+    deviceCode = formatted;
+    saveDeviceCode(digits);
+    refreshDevicesPage();
+    QTimer::singleShot(0, this, [this, previous, formatted] {
+        showInfoMessage(this, QStringLiteral("设备码已更新"),
+                        QStringLiteral("平台上的设备码 %1 与本机凭据不匹配，已分配新设备码 %2。\n"
+                                       "请把新的设备码告知需要连接本机的人。")
+                            .arg(previous, formatted));
+    });
 }
 
 

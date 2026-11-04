@@ -24,6 +24,8 @@ constexpr int kProtocolVersion = 1;
 constexpr int kMaxMessageBytes = 256 * 1024;
 constexpr int kHeartbeatIntervalMs = 15000;
 constexpr int kMaxReconnectDelayMs = 30000;
+// 限流是 1 分钟窗口的临时状态：用比普通重连更长的固定退避，等窗口滑过去。
+constexpr int kRateLimitedRetryDelayMs = 60000;
 
 QString makeTemporaryPassword() {
     static constexpr char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -493,6 +495,13 @@ void PlatformClient::dispatchPlatformMessage(const QJsonObject &message) {
     }
     if (type == QLatin1String("device_registered")) {
         registered_ = true;
+        // 服务端在“请求的设备码已被占用且密码不匹配”时会重新分配设备码。
+        // 必须采纳回传值，否则心跳、会话和后续重连都会继续用旧码。
+        const QString assignedDeviceId = message.value(QStringLiteral("device_id")).toString();
+        if (!assignedDeviceId.isEmpty() && assignedDeviceId != config_.deviceId) {
+            config_.deviceId = assignedDeviceId;
+            emit deviceCodeAssigned(assignedDeviceId);
+        }
         const QString serverPassword = message.value(QStringLiteral("temporary_password")).toString();
         const int previousPasswordVersion = config_.passwordVersion;
         if (!serverPassword.isEmpty())
@@ -634,9 +643,21 @@ void PlatformClient::dispatchPlatformMessage(const QJsonObject &message) {
                 scheduleReconnect();
             return;
         }
+        if (code == QLatin1String("RATE_LIMITED")) {
+            // 限流是 1 分钟窗口的临时状态（认证或注册超出单 IP 配额），必须退避重试。
+            // 早先把 RATE_LIMITED 当成永久错误，服务端重启后同一出口 IP 的设备
+            // 一旦撞上配额就再也不会自己重连。
+            heartbeatTimer_.stop();
+            if (socket_) {
+                socket_->abort();
+            } else {
+                reconnectSuppressed_ = false;
+                reconnectTimer_.start(kRateLimitedRetryDelayMs);
+            }
+            return;
+        }
         if (code == QLatin1String("BAD_PASSWORD") || code == QLatin1String("BAD_IDENTITY") ||
             code == QLatin1String("BUSINESS_TYPE_NOT_SUPPORTED") || code == QLatin1String("BAD_VERSION") ||
-            code == QLatin1String("RATE_LIMITED") ||
             code == QLatin1String("BAD_TEMPORARY_PASSWORD") || code == QLatin1String("TEMPORARY_PASSWORD_EXPIRED") ||
             code == QLatin1String("TEMPORARY_PASSWORD_REVOKED") || code == QLatin1String("STALE_PASSWORD_VERSION") ||
             code == QLatin1String("DEVICE_NOT_FOUND") || code == QLatin1String("DEVICE_LIMIT")) {

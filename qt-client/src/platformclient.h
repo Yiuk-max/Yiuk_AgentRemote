@@ -82,6 +82,7 @@ public:
 signals:
     void stateChanged(const QString &state);
     void registered(const QJsonObject &device);
+    void deviceCodeAssigned(const QString &deviceId);
     void deviceListReceived(const QJsonArray &devices, const QString &correlationId);
     void requestFailed(const QString &correlationId, const QString &code, const QString &message);
     void sessionRequested(const QJsonObject &session);

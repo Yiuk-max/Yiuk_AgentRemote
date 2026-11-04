@@ -128,6 +128,12 @@ func (s *Server) handleRegisterDevice(clientConn *clientConnection, message prot
 	if err := s.validateID("device_id", message.DeviceID); err != nil {
 		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
+	// 注册发生在认证之后，auth 的按 IP 限流覆盖不到这一步，而“密码不匹配就
+	// 分配新码”会让一次注册就新建一个条目，所以这里单独限流。
+	if s.registrations != nil && !s.registrations.Allow(clientConn.remoteAddr) {
+		s.audit.Warn("device_registration_rate_limited", "remote", clientConn.remoteAddress(), "device", audit.RedactID(message.DeviceID))
+		return newProtocolError("RATE_LIMITED", "too many device registrations")
+	}
 	if len(message.DeviceName) > s.config.IdentifierMaxLen {
 		return newProtocolError("INVALID_ARGUMENT", "device_name is too long")
 	}
@@ -187,6 +193,12 @@ func (s *Server) handleRegisterDevice(clientConn *clientConnection, message prot
 	clientConn.role = roleDevice
 	clientConn.deviceID = info.ID
 	clientConn.displayName = info.Name
+	if info.ID != message.DeviceID {
+		// 密码与请求的设备码不匹配时服务端会重新分配设备码；审计里必须同时留下
+		// 请求值和实际值，否则一台设备“悄悄换了身份”事后无法追查。
+		s.audit.Event("device_id_reassigned", "requested", audit.RedactID(message.DeviceID),
+			"assigned", audit.RedactID(info.ID), "connection", audit.RedactID(clientConn.id))
+	}
 	s.audit.Event("device_registered", "device", audit.RedactID(info.ID), "connection", audit.RedactID(clientConn.id), "mode", string(info.Mode))
 
 	deviceInfo := protocolDeviceInfo(info)

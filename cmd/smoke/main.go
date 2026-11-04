@@ -92,11 +92,18 @@ func main() {
 	list := operator.recv(protocol.TypeDeviceList)
 	step("device listed", "count", len(list.Devices), "online", list.Devices[0].Online)
 
-	// 4. operator requests a session with the temporary password
-	operator.send(protocol.Message{
-		Type: protocol.TypeRequestSession, DeviceID: deviceID, TemporaryPassword: devicePassword,
+	// 4. operator requests a session
+	// 注意：服务端把“出示临时密码”本身当作直接授权（handler_session.go），
+	// 会让 approval 模式的设备也直接放行、拿不到 session_request。所以只在
+	// direct 模式下携带临时密码，approval 模式保持无密码以走设备审批。
+	sessionRequest := protocol.Message{
+		Type: protocol.TypeRequestSession, DeviceID: deviceID,
 		Purpose: "smoke test", Permissions: []string{"execute_command"},
-	})
+	}
+	if *mode == "direct" {
+		sessionRequest.TemporaryPassword = devicePassword
+	}
+	operator.send(sessionRequest)
 	created := operator.recv(protocol.TypeSessionCreated)
 	sessionID := created.SessionID
 	step("session created", "session", short(sessionID), "status", created.Status)

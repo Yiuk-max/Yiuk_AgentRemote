@@ -39,57 +39,61 @@ type Config struct {
 	MaxSessionsPerDevice int `yaml:"max_sessions_per_device"` // 每个设备最大会话数
 	MaxTasksPerSession   int `yaml:"max_tasks_per_session"`   // 每个会话最大任务数
 
-	SessionTimeoutSec     int    `yaml:"session_timeout_sec"`        // 会话超时秒数
-	ApprovalTimeoutSec    int    `yaml:"approval_timeout_sec"`       // 会话审批超时秒数
-	TempPasswordTTLSec    int    `yaml:"temp_password_ttl_sec"`      // 临时密码生存时间（秒）
-	HeartbeatTimeoutSec   int    `yaml:"heartbeat_timeout_sec"`      // 心跳超时秒数
-	HandshakeTimeoutSec   int    `yaml:"handshake_timeout_sec"`      // 握手超时秒数
-	MaxOutputBytes        int    `yaml:"max_output_bytes"`           // 最大输出字节数
-	MaxDownloadBytes      int    `yaml:"max_download_bytes"`         // 最大下载字节数
-	MaxUploadBytes        int    `yaml:"max_upload_bytes"`           // 最大上传字节数
-	MaxFrameBytes         int    `yaml:"max_frame_bytes"`            // 单条 WebSocket JSON 消息最大字节数
-	AuthRatePerMin        int    `yaml:"auth_rate_per_min"`          // 认证频率（每分钟），ip限流用
-	TemporaryPasswordMin  int    `yaml:"temporary_password_min_sec"` // 临时密码最小生存时间（秒）
-	TemporaryPasswordMax  int    `yaml:"temporary_password_max_sec"` // 临时密码最大生存时间（秒）
-	OfflineDeviceKeepSec  int    `yaml:"offline_device_keep_sec"`    // 离线设备保留时间（秒）
-	CloseReasonMaxLen     int    `yaml:"close_reason_max_len"`       // 关闭原因最大长度
-	PurposeMaxLen         int    `yaml:"purpose_max_len"`            // 目的最大长度，客户端信息面板的标语
-	CommandMaxLen         int    `yaml:"command_max_len"`            // 命令最大长度
-	WorkingDirMaxLen      int    `yaml:"working_directory_max_len"`  // 工作目录最大长度
-	IdentifierMaxLen      int    `yaml:"identifier_max_len"`         // 标识符最大长度，用于唯一标识设备或用户
-	ObserverSlowClientBuf int    `yaml:"slow_client_buffer"`         // 慢客户端缓冲区大小
-	LogFile               string `yaml:"log_file"`                   // 日志文件路径
+	SessionTimeoutSec      int    `yaml:"session_timeout_sec"`        // 会话超时秒数
+	ApprovalTimeoutSec     int    `yaml:"approval_timeout_sec"`       // 会话审批超时秒数
+	TempPasswordTTLSec     int    `yaml:"temp_password_ttl_sec"`      // 临时密码生存时间（秒）
+	HeartbeatTimeoutSec    int    `yaml:"heartbeat_timeout_sec"`      // 心跳超时秒数
+	HandshakeTimeoutSec    int    `yaml:"handshake_timeout_sec"`      // 握手超时秒数
+	MaxOutputBytes         int    `yaml:"max_output_bytes"`           // 最大输出字节数
+	MaxDownloadBytes       int    `yaml:"max_download_bytes"`         // 最大下载字节数
+	MaxUploadBytes         int    `yaml:"max_upload_bytes"`           // 最大上传字节数
+	MaxFrameBytes          int    `yaml:"max_frame_bytes"`            // 单条 WebSocket JSON 消息最大字节数
+	AuthRatePerMin         int    `yaml:"auth_rate_per_min"`          // 认证频率（每分钟），ip限流用
+	RegisterRatePerMin     int    `yaml:"register_rate_per_min"`      // 设备注册频率（每分钟），ip限流用
+	UnusedDeviceReleaseSec int    `yaml:"unused_device_release_sec"`  // 从未建立过会话的设备离线多久后释放（秒），0 表示不启用
+	TemporaryPasswordMin   int    `yaml:"temporary_password_min_sec"` // 临时密码最小生存时间（秒）
+	TemporaryPasswordMax   int    `yaml:"temporary_password_max_sec"` // 临时密码最大生存时间（秒）
+	OfflineDeviceKeepSec   int    `yaml:"offline_device_keep_sec"`    // 离线设备保留时间（秒）
+	CloseReasonMaxLen      int    `yaml:"close_reason_max_len"`       // 关闭原因最大长度
+	PurposeMaxLen          int    `yaml:"purpose_max_len"`            // 目的最大长度，客户端信息面板的标语
+	CommandMaxLen          int    `yaml:"command_max_len"`            // 命令最大长度
+	WorkingDirMaxLen       int    `yaml:"working_directory_max_len"`  // 工作目录最大长度
+	IdentifierMaxLen       int    `yaml:"identifier_max_len"`         // 标识符最大长度，用于唯一标识设备或用户
+	ObserverSlowClientBuf  int    `yaml:"slow_client_buffer"`         // 慢客户端缓冲区大小
+	LogFile                string `yaml:"log_file"`                   // 日志文件路径
 }
 
 // 硬编码的配置默认值
 func Default() Config {
 	return Config{
-		Listen:                ":25664",
-		MaxConnections:        1024,
-		MaxDevices:            1024,
-		MaxSessions:           2048,
-		MaxSessionsPerDevice:  8,
-		MaxTasksPerSession:    2,
-		SessionTimeoutSec:     600,
-		ApprovalTimeoutSec:    120,
-		TempPasswordTTLSec:    600,
-		HeartbeatTimeoutSec:   45,
-		HandshakeTimeoutSec:   10,
-		MaxOutputBytes:        2 << 20,  //2 MiB
-		MaxDownloadBytes:      32 << 20, //32 MiB
-		MaxUploadBytes:        32 << 20,
-		MaxFrameBytes:         256 << 10, //256 KiB
-		AuthRatePerMin:        30,
-		TemporaryPasswordMin:  60,
-		TemporaryPasswordMax:  24 * 3600, //24h
-		OfflineDeviceKeepSec:  24 * 3600,
-		CloseReasonMaxLen:     256,
-		PurposeMaxLen:         512,
-		CommandMaxLen:         32768, //32 KiB
-		WorkingDirMaxLen:      4096,  //4 KiB
-		IdentifierMaxLen:      128,
-		ObserverSlowClientBuf: 64,
-		LogFile:               "platform.log",
+		Listen:                 ":25664",
+		MaxConnections:         1024,
+		MaxDevices:             1024,
+		MaxSessions:            2048,
+		MaxSessionsPerDevice:   8,
+		MaxTasksPerSession:     2,
+		SessionTimeoutSec:      600,
+		ApprovalTimeoutSec:     120,
+		TempPasswordTTLSec:     600,
+		HeartbeatTimeoutSec:    45,
+		HandshakeTimeoutSec:    10,
+		MaxOutputBytes:         2 << 20,  //2 MiB
+		MaxDownloadBytes:       32 << 20, //32 MiB
+		MaxUploadBytes:         32 << 20,
+		MaxFrameBytes:          256 << 10, //256 KiB
+		AuthRatePerMin:         30,
+		RegisterRatePerMin:     30,
+		UnusedDeviceReleaseSec: 600,
+		TemporaryPasswordMin:   60,
+		TemporaryPasswordMax:   24 * 3600, //24h
+		OfflineDeviceKeepSec:   24 * 3600,
+		CloseReasonMaxLen:      256,
+		PurposeMaxLen:          512,
+		CommandMaxLen:          32768, //32 KiB
+		WorkingDirMaxLen:       4096,  //4 KiB
+		IdentifierMaxLen:       128,
+		ObserverSlowClientBuf:  64,
+		LogFile:                "platform.log",
 	}
 }
 
@@ -143,6 +147,12 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.AuthRatePerMin == 0 {
 		c.AuthRatePerMin = d.AuthRatePerMin
+	}
+	if c.RegisterRatePerMin == 0 {
+		c.RegisterRatePerMin = d.RegisterRatePerMin
+	}
+	if c.UnusedDeviceReleaseSec == 0 {
+		c.UnusedDeviceReleaseSec = d.UnusedDeviceReleaseSec
 	}
 	if c.TemporaryPasswordMin == 0 {
 		c.TemporaryPasswordMin = d.TemporaryPasswordMin
@@ -261,6 +271,12 @@ func (c Config) Validate() error {
 	}
 	if c.AuthRatePerMin < 1 {
 		return errors.New("auth_rate_per_min must be positive")
+	}
+	if c.RegisterRatePerMin < 1 {
+		return errors.New("register_rate_per_min must be positive")
+	}
+	if c.UnusedDeviceReleaseSec < 0 {
+		return errors.New("unused_device_release_sec must not be negative")
 	}
 	if c.OfflineDeviceKeepSec < 60 {
 		return errors.New("offline_device_keep_sec must be at least 60")

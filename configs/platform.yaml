@@ -31,6 +31,12 @@ platform:
   max_upload_bytes: 33554432
   max_frame_bytes: 262144
   auth_rate_per_min: 30
+  # 设备注册频率（每分钟，按来源 IP）。注册发生在认证之后，auth_rate_per_min 覆盖不到；
+  # 密码不匹配时服务端会分配新设备码，因此每次注册都可能新建条目。
+  register_rate_per_min: 30
   offline_device_keep_sec: 86400
+  # 从未建立过会话的设备离线多久后释放（秒），0 表示不启用。
+  # 释放只把码挪进墓碑，原设备仍可凭旧密码 reclaim 自己的码。
+  unused_device_release_sec: 600
 
   log_file: "platform.log"

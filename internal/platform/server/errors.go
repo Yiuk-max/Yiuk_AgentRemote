@@ -39,6 +39,9 @@ func (s *Server) deviceProtocolError(err error) error {
 		return newProtocolError("STALE_PASSWORD_VERSION", "password version is stale")
 	case errors.Is(err, device.ErrInvalidMode):
 		return newProtocolError("INVALID_ARGUMENT", "invalid authorization mode")
+	case errors.Is(err, device.ErrDeviceIDExhausted):
+		// 9 位十进制空间耗尽：对客户端而言就是资源耗尽。
+		return newProtocolError("DEVICE_LIMIT", "no free device id available")
 	default:
 		return newProtocolError("INVALID_ARGUMENT", "device request failed")
 	}
@@ -147,6 +150,8 @@ func auditErrorCode(err error) string {
 		return "TEMPORARY_PASSWORD_EXPIRED"
 	case errors.Is(err, device.ErrPasswordRevoke):
 		return "TEMPORARY_PASSWORD_REVOKED"
+	case errors.Is(err, device.ErrDeviceIDExhausted):
+		return "DEVICE_LIMIT"
 	default:
 		return "INTERNAL"
 	}

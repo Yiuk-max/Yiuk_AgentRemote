@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QLabel>
 #include <QPushButton>
 #include <QString>
@@ -21,6 +22,13 @@ QString yiukConfigRoot();
 QString legacyYiukConfigRoot();
 QString yiukConfigPath(const QString &name);
 QString existingOrDefaultConfigPath(const QString &name);
+
+// identity.json 是本机身份的唯一来源：设备码 + 临时密码 + password_version +
+// 平台连接参数。它们必须一起提交，否则会出现“新码配旧密码”。
+// loadYiukIdentity 会在 identity.json 不存在时一次性迁移旧的 device.json +
+// platform.json；saveYiukIdentity 做读-改-写合并，不会弄丢未在 patch 里出现的字段。
+QJsonObject loadYiukIdentity();
+bool saveYiukIdentity(const QJsonObject &patch);
 
 QString defaultCommandWorkingDirectory();
 

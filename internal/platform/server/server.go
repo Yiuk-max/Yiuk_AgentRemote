@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	baseauth "agentremote/internal/auth"
 	"agentremote/internal/platform/audit"
 	"agentremote/internal/platform/auth"
 	"agentremote/internal/platform/config"
@@ -41,7 +42,10 @@ type Server struct {
 	downloads *transfer.Manager // 下载传输状态；不保存文件内容
 	uploads   *transfer.Manager // 上传管理器
 	auth      *auth.Authenticator
-	audit     *audit.Logger //用于记录事件和警告的审计日志记录器
+	// registrations 对设备注册做按 IP 限流。注册发生在认证之后，
+	// auth 的限流覆盖不到；而“密码不匹配就新建条目”使得刷设备槽的成本很低。
+	registrations *baseauth.Limiter
+	audit         *audit.Logger //用于记录事件和警告的审计日志记录器
 
 	connectionsMu sync.Mutex
 	connections   map[string]*clientConnection // 连接映射，键是连接ID，值是连接对象，关闭时从这里清理连接
@@ -66,19 +70,20 @@ func NewWithListener(serverConfig config.Config, logger *slog.Logger, listener *
 		logger = slog.Default()
 	}
 	return &Server{
-		config:      serverConfig,
-		logger:      logger,
-		codec:       protocol.NewCodec(serverConfig.MaxFrameBytes),
-		listener:    listener,
-		devices:     device.NewManager(serverConfig.MaxDevices, serverConfig.TempPasswordTTL()),
-		sessions:    session.NewManager(serverConfig.MaxSessions, serverConfig.MaxSessionsPerDevice, serverConfig.SessionTimeout(), serverConfig.ApprovalTimeout()),
-		tasks:       task.NewManager(serverConfig.MaxOutputBytes, serverConfig.MaxTasksPerSession),
-		downloads:   transfer.NewManager(serverConfig.MaxTasksPerSession),
-		uploads:     transfer.NewManager(serverConfig.MaxTasksPerSession),
-		auth:        auth.New(serverConfig.PlayerPassword, serverConfig.AuthRatePerMin),
-		audit:       audit.New(logger),
-		connections: make(map[string]*clientConnection),
-		shutdown:    make(chan struct{}),
+		config:        serverConfig,
+		logger:        logger,
+		codec:         protocol.NewCodec(serverConfig.MaxFrameBytes),
+		listener:      listener,
+		devices:       device.NewManager(serverConfig.MaxDevices, serverConfig.TempPasswordTTL()),
+		sessions:      session.NewManager(serverConfig.MaxSessions, serverConfig.MaxSessionsPerDevice, serverConfig.SessionTimeout(), serverConfig.ApprovalTimeout()),
+		tasks:         task.NewManager(serverConfig.MaxOutputBytes, serverConfig.MaxTasksPerSession),
+		downloads:     transfer.NewManager(serverConfig.MaxTasksPerSession),
+		uploads:       transfer.NewManager(serverConfig.MaxTasksPerSession),
+		auth:          auth.New(serverConfig.PlayerPassword, serverConfig.AuthRatePerMin),
+		registrations: baseauth.NewLimiter(serverConfig.RegisterRatePerMin, time.Minute),
+		audit:         audit.New(logger),
+		connections:   make(map[string]*clientConnection),
+		shutdown:      make(chan struct{}),
 	}
 }
 

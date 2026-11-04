@@ -162,9 +162,10 @@ private:
     static QJsonObject localToolSuccessResult(const QJsonValue &data = {});
     static QJsonObject localToolErrorResult(const QString &code, const QString &message);
     QString deviceId() const;
+    static bool saveDeviceCode(const QString &digits);
+    void onDeviceCodeAssigned(const QString &deviceId);
     QJsonObject deviceRecord() const;
     void startLocalBridge();
-    QString platformConfigPath() const;
     void loadPlatformConfig();
     void savePlatformConfig();
     QString mcpExecutablePath() const;

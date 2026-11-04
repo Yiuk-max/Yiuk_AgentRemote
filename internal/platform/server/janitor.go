@@ -91,4 +91,9 @@ func (s *Server) expireOperationsAndPruneDevices() {
 	if removed := s.devices.RemoveExpiredOfflineDevices(time.Duration(s.config.OfflineDeviceKeepSec) * time.Second); removed > 0 {
 		s.audit.Event("offline_devices_cleaned", "count", removed)
 	}
+	// 从未建立过会话的设备只是占着设备槽：长时间离线就释放成墓碑，
+	// 原持有者仍然可以凭旧密码 reclaim 自己的码。
+	if released := s.devices.ReleaseUnusedDevices(time.Duration(s.config.UnusedDeviceReleaseSec) * time.Second); released > 0 {
+		s.audit.Event("unused_devices_released", "count", released)
+	}
 }
