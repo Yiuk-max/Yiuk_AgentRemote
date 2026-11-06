@@ -117,7 +117,7 @@ go run ./cmd/device-sim -addr 127.0.0.1:25664 -password '<player-password>' `
 
 ### 5.3 活动面板（不连平台也能看效果）
 
-面板只读 stdin，一行一条协议（格式见[架构与实现](architecture.md#9-活动面板子进程)）。feed 用 UTF-8 保存，例如 `feed.log`：
+面板只读 stdin，一行一条协议（格式见本节下方示例）。feed 用 UTF-8 保存，例如 `feed.log`：
 
 ```text
 H|远程协助活动|Agent · 453 313 764|active|远程协助进行中

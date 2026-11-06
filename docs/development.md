@@ -1,6 +1,6 @@
 # 开发与构建
 
-产品见 [README](../README.md)，模块与协议见[架构与实现](architecture.md)，本机专属路径与已知坑见[本机开发环境](local-dev.md)。
+产品见 [README](../README.md)，设计决策与不变式见[关键技术架构](key-architecture.md)，运行时细节见[运行时架构](runtime-architecture.md)，本机专属路径与已知坑见[本机开发环境](local-dev.md)。
 
 ## 1. 环境要求
 

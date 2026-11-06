@@ -609,7 +609,7 @@ pi 依据工具描述自己编排成 §6 的那串调用（先 `list_devices` �
 
 ## 9. 现状与坑
 
-- **README 里有三个悬空链接**：`docs/architecture.md`、`docs/product-requirements.md`、`docs/remote-deploy-session-2026-10-23.md` 在当前工作区已被删除（`git status` 为 ` D`）但未提交，README 仍指向它们。运行时细节以 `docs/runtime-architecture.md`、`docs/go-backend-guide.md` 和本文档为准。
+- **设计决策看 `docs/key-architecture.md`**：选型理由、不变式、资源上限与尚未修复的薄弱点都在那里；运行时细节以 `docs/runtime-architecture.md`、`docs/go-backend-guide.md` 和本文档为准。
 - **平台服务完全内存化**：重启后设备密码、会话、任务全部失效，设备需重新注册（客户端会自动重连注册）。
 - **两个同名的"客户端"**：`internal/platformclient`（Go，operator，跑在服务器）与 `qt-client/src/platformclient.{h,cpp}`（C++，device，跑在设备）。同名不同物。
 - **服务器上别指望 `localbridge`**：它是给"本机设备"用的，服务器上没有 Qt 客户端，`platform-client.json` 是唯一 backend 来源。

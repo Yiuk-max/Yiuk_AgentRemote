@@ -2,7 +2,7 @@
 
 状态：与当前代码一致（`agentremote` module）。本文只讲**后端运行时、协议转发、MCP 工具契约和客户端非界面逻辑**，不涉及 Qt 界面实现。
 
-关联文档：[架构与实现](architecture.md)（选型与授权模型）、[Go 后端技术说明](go-backend-guide.md)（Go 入门与幂等/SHA-256 详解）、[开发与构建](development.md)。
+关联文档：[关键技术架构](key-architecture.md)（决策、不变式与资源上限）、[Go 后端技术说明](go-backend-guide.md)（Go 入门与幂等/SHA-256 详解）、[开发与构建](development.md)。
 
 目录：
 
