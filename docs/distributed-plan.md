@@ -11,8 +11,8 @@
 | | 内容 |
 | --- | --- |
 | ✅ 做 | 网关可多开（session/task/device **仍在一个进程里**）；RabbitMQ 承担**跨网关送帧**；新增**用户登录系统**作为**独立微服务** |
-| ❌ 不做 | 拆 session-svc / task-svc / device-svc；平台本体持久化；会话跨重启恢复 |
-| 触发条件 | 只有当**单个网关撑不住**，或"网关重启会杀掉所有会话"成为真实痛点时才开工 |
+| ❌ 不做 | 拆 session-svc / task-svc / device-svc；平台本体持久化；旧会话断线续接或跨重启恢复 |
+| 触发条件 | 只有当**单个网关撑不住**，或需要将单节点故障、发布的影响限制在部分连接时才开工；不以无缝恢复会话为目标 |
 
 **为什么先不拆核心业务**：`session` / `task` / `device` 三个模块的每次状态变更都与连接生命周期强绑定（断线要 `InterruptByDevice`、过期要发 `close_session`），拆出去后每个状态变更都要跨网络，代价远大于收益。而**"用户"是全新领域**，没有历史包袱——它才是最适合先长成微服务的边界。
 
@@ -42,27 +42,9 @@
 
 每个阶段都能独立上线、独立回滚，且都有可验收的收益。
 
-### P0　会话可恢复（不引入任何新组件）
+**连接生命周期沿用现有语义**：断线后旧会话中断，不保活、不换绑、不补传旧任务输出；任务按现有失败收敛规则处理，命令不自动重放（见 [关键技术架构](key-architecture.md) D5、D6）。Agent 需要继续操作时，自行重新调用 `request_connection` **创建新会话**；设备在线且当前临时密码有效、未撤销时，持密码直接连接，无需再次审批。滚动发布可能中断受影响节点上的会话，本计划不承诺无缝恢复。
 
-**问题**：现在会话绑 `OperatorConnectionID`，操作者一断线，`InterruptByOperator` 就把该连接名下所有会话标成 `interrupted`。多网关之后，一次滚动发布 = 该节点上所有会话全死，**可用性反而比单进程更差**。
-
-**做法**：
-
-```go
-// session.Session 增加两个字段
-OperatorPrincipal string  // "user:<id>"（P4 之后）或 "player:<connID>"（兼容期）
-ResumeToken       string  // 重连时凭它续期，不打断任务
-```
-
-- `Authorize()` 从"比对 connectionID"改成"比对 principal"；
-- 操作者重连后带 `resume_session{session_id, resume_token}`，把会话的 `OperatorConnectionID` 改成新连接；
-- 设备断线仍然中断（设备侧进程真的断了，无法确认结果）。
-
-**验收**：拔网线 3 秒再插回，会话仍是 `active`，正在跑的命令继续、结果正常回传。
-
-**这一步收益最大、成本最低，且不依赖 P2/P3。**
-
----
+**产品设计补充（尚未实现）**：审批连接成功后，将临时密码返回给 Agent，供后续新建会话使用；当前代码已支持持密码直连，但审批成功的响应尚未返回密码。密码过期、轮换或撤销后不能继续使用旧密码；返回密码意味着授予其有效期内再次直连的能力，需让所有者明确知晓，且密码不得写入服务端日志。
 
 ### P1　审计出口抽象（只留缝，不接线）
 
@@ -76,7 +58,7 @@ type Publisher interface {
     Publish(ctx context.Context, event string, attrs map[string]any) error
 }
 // 现在：SlogPublisher（默认，行为与今天完全一致）
-// 以后：AMQPPublisher（P3/P5 才启用）
+// 以后：AMQPPublisher（有审计消费者时才启用，见 §5）
 ```
 
 **不接线的原因**：MQ 没有消费者时，事件会在 broker 里堆积，只会白白吃内存。**等有 Postgres 消费者了再打开**（见 §5）。
@@ -209,17 +191,13 @@ payload:  {"device_id":"123456789","online":false,"node":"gw-1","ver":8}
 - 它和"设备 / 会话 / 命令 / 文件"**零耦合**，只回答"这个请求是谁发的"；
 - 它是**唯一需要强持久化**的东西（用户数据不能因为平台重启就没了），因此也是独立数据库的天然候选。
 
-### 4.2 它顺手解决了 P0 的身份问题
+### 4.2 用户身份与设备会话授权分开
 
-现在"操作者身份"就是一条连接（`OperatorConnectionID`），连接断了身份就没了。引入用户系统后：
+用户系统提供稳定的操作者身份（如 `user:42`），用于平台登录、访问控制与审计归属，**不是恢复旧会话的前置条件**。
 
-```text
-operator 身份：user:42（稳定）  ← 由 user-svc 签发
-                 ↓
-session.OperatorPrincipal = "user:42"   → 重连后凭 token 恢复会话
-```
-
-**用户系统不是"额外加个登录功能"，它是会话可恢复的使能条件。** 这一步做完，P0 的 `OperatorPrincipal` 才有真正的值可填。
+- 会话仍绑定 `OperatorConnectionID`，断线后不恢复旧会话；
+- 用户 token 只证明“你是谁”，不替代设备临时密码或所有者审批；
+- Agent 重新连接平台并完成认证后，仍通过 `request_connection` 创建新会话：持有效设备密码直连，否则请求所有者审批。
 
 ### 4.3 职责边界（越界就是设计失败）
 
@@ -249,7 +227,7 @@ message Identity {
 ```
 
 - **选 gRPC 而不是 MQ**：登录校验必须立刻拿到答案，不能"扔进队列等回信"。
-- **网关侧只在两处调用**：`authenticate_player`（换身份）和 `resume_session`（校验续期）。
+- **网关侧在平台认证时调用**：`authenticate_player` 的用户身份路径通过 `Introspect` 校验 token；不新增 `resume_session`。
 - **缓存**：`Introspect` 结果在网关内存缓存 30~60 秒，避免每条消息都打一次 user-svc。
 
 ### 4.5 与现有 `player_password` 的兼容
@@ -306,9 +284,8 @@ identity_type = "user"    → 新路径：token → user-svc.Introspect → 得�
 
 | 阶段 | 验收 |
 | --- | --- |
-| P0 | 拔网线 3 秒重连，会话仍 `active`，命令继续并正常回传 |
 | P1 | `go test ./...` 全绿，行为零变化（纯抽象） |
-| P2 | 单网关时行为与今天一致；进程重启后设备码/会话由心跳自愈；`max_sessions` 不再变终身配额 |
+| P2 | 单网关时行为与今天一致；进程重启后设备重新注册、心跳刷新路由，旧会话不恢复；`max_sessions` 不再变终身配额 |
 | P3 | 跨网关跑通命令，时延 +<20ms；`sequence` 严格连续；拔掉 gateway-2 后其队列自动删除 |
 | P4 | 手机/服务器两种身份都能认证；token 过期后 `SESSION_NOT_FOUND`；用户表重启不丢 |
 

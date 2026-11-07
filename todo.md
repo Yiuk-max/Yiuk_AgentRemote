@@ -34,6 +34,8 @@
 
 19  | 任务/传输终态记录永不回收 | `internal/platform/task/manager.go`、`transfer/manager.go` | 每条大输出命令最多留 2 MiB 常驻；长时间运行会 OOM
 
+20 审批通过后把密码返还给agent方便重连
+
 22 新增用户系统（计划微服务）与数据库持久化，尝试引入邮件验证码
 
 23 客户端版本更新，数据库存储setup安装包，客户端拉取并完成更新
