@@ -99,7 +99,6 @@ func (c *Client) handleRunCommand(ctx context.Context, arguments json.RawMessage
 	session, err := c.requestSession(runCtx, sessionRequestOptions{
 		DeviceID:          input.DeviceID,
 		Purpose:           input.Purpose,
-		Permissions:       []string{"execute_command"},
 		TemporaryPassword: input.TemporaryPassword,
 		WaitForApproval:   time.Duration(input.WaitForApprovalSeconds) * time.Second,
 	})

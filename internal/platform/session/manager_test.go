@@ -12,6 +12,41 @@ func newTestManager(now *time.Time) *Manager {
 	return newManager(4, 2, 10*time.Minute, 2*time.Minute, func() time.Time { return *now })
 }
 
+// 批准即全权：未指定权限的会话必须同时获得执行 / 读 / 写三项能力。
+// 设备端（Qt）会独立校验 read_file / write_file，所以这里不能只是“不拦”，而必须真的有。
+func TestSessionWithoutRequestedPermissionsGrantsAll(t *testing.T) {
+	now := time.Unix(1000, 0)
+	m := newTestManager(&now)
+
+	sessionRecord, err := m.Create("all", CreateRequest{
+		DeviceID: "d1", OperatorConnectionID: "op1", DeviceConnectionID: "dev1",
+		Purpose: "help", Mode: device.ModeDirect,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, permission := range []string{PermissionExecuteCommand, PermissionReadFile, PermissionWriteFile} {
+		if !sessionRecord.HasPermission(permission) {
+			t.Fatalf("session missing default permission %q: %v", permission, sessionRecord.PermissionList())
+		}
+		if _, err := m.Authorize("all", "op1", permission); err != nil {
+			t.Fatalf("authorize %q: %v", permission, err)
+		}
+	}
+
+	// 显式请求部分权限仍然被尊重（兼容旧客户端与旧会话）。
+	limited, err := m.Create("limited", CreateRequest{
+		DeviceID: "d1", OperatorConnectionID: "op1", DeviceConnectionID: "dev1",
+		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, Mode: device.ModeDirect,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limited.HasPermission(PermissionReadFile) {
+		t.Fatal("explicit permission list should not be widened")
+	}
+}
+
 func TestDirectAndApprovalSessionLifecycle(t *testing.T) {
 	now := time.Unix(1000, 0)
 	m := newTestManager(&now)

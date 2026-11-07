@@ -22,9 +22,6 @@ func (s *Server) handleRequestSession(clientConn *clientConnection, message prot
 	if strings.TrimSpace(message.Purpose) == "" || len(message.Purpose) > s.config.PurposeMaxLen {
 		return newProtocolError("INVALID_ARGUMENT", "purpose is required and bounded")
 	}
-	if len(message.Permissions) == 0 {
-		return newProtocolError("INVALID_ARGUMENT", "at least one permission is required")
-	}
 	var err error
 	info, ok := s.devices.Get(message.DeviceID)
 	if !ok {

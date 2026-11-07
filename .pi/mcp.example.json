@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "yiuk": {
+      "command": "<绝对路径>/yiuk-mcp.exe",
+      "args": [],
+      "exposure": "direct",
+      "description": "AgentRemote: list approved devices, request a session (owner approves; approval grants PowerShell execution plus file read/write), run commands, and transfer files."
+    }
+  }
+}

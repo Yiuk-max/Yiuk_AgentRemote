@@ -210,14 +210,14 @@ pi 通过 stdio 与 `yiuk-mcp` 交换**换行分隔**的 JSON-RPC：
 | --- | --- | --- | --- |
 | `list_devices` | 无 | 无（只读） | 无（平台侧查在线表） |
 | `get_device_status` | 无 | 无（只读） | 无（平台侧查在线表） |
-| `request_connection` | 创建会话 | 申请 `permissions` | 设备弹审批框 |
+| `request_connection` | 创建会话 | 临时密码（可选） | 设备弹审批框 |
 | `get_session_status` | 任意 | 无 | 无 |
-| `execute_command` | `approved`/`active` | `execute_command` | `PowerShellRunner` 起 `powershell.exe` |
-| `get_command_result` | 同上 | `execute_command` | 无（读平台/本地缓存） |
-| `cancel_command` | 同上 | `execute_command` | 杀 PowerShell 进程树 |
-| `download_file` | `approved`/`active` | `read_file` | 设备读文件→分块→`file_download_result` |
-| `upload_file` | `approved`/`active` | `write_file` | 设备写临时文件→校验大小+SHA256→原子改名 |
-| `run_command` | 以上四步的封装 | `execute_command` | 请求→等批→执行→等结果→关会话 |
+| `execute_command` | `approved`/`active` | 已批准会话 | `PowerShellRunner` 起 `powershell.exe` |
+| `get_command_result` | 同上 | 已批准会话 | 无（读平台/本地缓存） |
+| `cancel_command` | 同上 | 已批准会话 | 杀 PowerShell 进程树 |
+| `download_file` | `approved`/`active` | 已批准会话 | 设备读文件→分块→`file_download_result` |
+| `upload_file` | `approved`/`active` | 已批准会话 | 设备写临时文件→校验大小+SHA256→原子改名 |
+| `run_command` | 以上四步的封装 | 内部自建会话 | 请求→等批→执行→等结果→关会话 |
 | `close_session` | 任意 | 无 | 设备结束本地任务、清会话 |
 
 两个给服务器常驻 Agent 的实用点：
@@ -227,7 +227,7 @@ pi 通过 stdio 与 `yiuk-mcp` 交换**换行分隔**的 JSON-RPC：
 
 ### 4.4 参数校验分三层（都不可省）
 
-1. **`agenttools/tools.go`**：JSON Schema + `validateInput`（未知字段直接拒、长度上限、`permissions` 枚举与去重、`timeout_seconds ∈ [1,3600]`）。
+1. **`agenttools/tools.go`**：JSON Schema + `validateInput`（未知字段直接拒、长度上限、`timeout_seconds ∈ [1,3600]`）。
 2. **`platformclient`**：只看必要语义（如 `temporary_password` 为空就直接 `INVALID_ARGUMENT`）。
 3. **`internal/platform/server`**：自己的上限（`CommandMaxLen`、`IdentifierMaxLen`、密码长度 `WEAK_TEMPORARY_PASSWORD`）+ 状态机校验（会话必须 approved/active，设备必须仍在线且连接一致）。
 
@@ -324,7 +324,7 @@ get_command_result
 | 目标设备 | `903174411`（Windows 11，普通用户，非管理员） |
 | 授权模式 | `approval`（每次需要设备所有者点同意） |
 | 临时密码 | 设备端生成的 32 位（base32 字符集，去掉易混字符），所有者当面/电话告知 |
-| 要申请的权限 | `execute_command` + `read_file` + `write_file` |
+| 要申请的权限 | 无需申请：批准后即拥有执行 / 读 / 写三项能力 |
 | 任务 | ① 装 `dsh`；② 装 `dsh-pet` 插件；③ 在设备上放一个一键启动脚本；④ 冒烟验证 |
 
 > **`dsh` 的安装方式必须按实际情况替换**：Python 包就是 `pip install dsh`，Node 包就是 `npm i -g dsh`，独立 exe 就下载解压。下面按 Python 包写，Node 变体见注。
@@ -582,7 +582,7 @@ pi 所在用户读 `~/.config/Yiuk/DeviceAssist/platform-client.json`（Windows 
 
 > "设备码 903 174 411，临时密码 K7QM…，帮我装 dsh 和 dsh-pet，再放个一键启动脚本，最后自检一下。"
 
-pi 依据工具描述自己编排成 §6 的那串调用（先 `list_devices` 确认在线 → `request_connection` 申请三项权限 → 等批准 → `execute_command` 装 → `get_command_result` 读输出 → `upload_file` 上传脚本 → `execute_command -DryRun` 冒烟 → `close_session`）。人只需要在设备上点一次"批准"。
+pi 依据工具描述自己编排成 §6 的那串调用（先 `list_devices` 确认在线 → `request_connection` 等批准 → `execute_command` 装 → `get_command_result` 读输出 → `upload_file` 上传脚本 → `execute_command -DryRun` 冒烟 → `close_session`）。人只需要在设备上点一次"批准"。
 
 两种例外：
 

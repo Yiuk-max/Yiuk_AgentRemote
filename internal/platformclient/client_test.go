@@ -172,7 +172,7 @@ func TestPlatformClientDirectSessionFlow(t *testing.T) {
 	}
 
 	session := invoke(t, backend, agenttools.RequestConnection, map[string]any{
-		"device_id": "device-1", "purpose": "fix", "permissions": []string{"execute_command"},
+		"device_id": "device-1", "purpose": "fix",
 		"temporary_password": devicePassword,
 	}).(map[string]any)
 	sessionID, _ := session["session_id"].(string)
@@ -335,7 +335,7 @@ func TestPlatformClientRequestWithoutPasswordCreatesApprovalSession(t *testing.T
 	defer backend.Close()
 
 	session := invoke(t, backend, agenttools.RequestConnection, map[string]any{
-		"device_id": "device-2", "purpose": "x", "permissions": []string{"execute_command"},
+		"device_id": "device-2", "purpose": "x",
 	}).(map[string]any)
 	sessionID, _ := session["session_id"].(string)
 	if sessionID == "" || session["status"] != protocol.StatusPendingApproval {
@@ -425,7 +425,7 @@ func TestPlatformClientDownloadsFileWithReadFilePermission(t *testing.T) {
 	defer backend.Close()
 
 	session := invoke(t, backend, agenttools.RequestConnection, map[string]any{
-		"device_id": "device-files", "purpose": "read a log", "permissions": []string{"read_file"},
+		"device_id": "device-files", "purpose": "read a log",
 		"temporary_password": devicePassword,
 	}).(map[string]any)
 	sessionID, _ := session["session_id"].(string)
@@ -522,7 +522,7 @@ func runUploadTool(t *testing.T, contents []byte) {
 	defer backend.Close()
 
 	session := invoke(t, backend, agenttools.RequestConnection, map[string]any{
-		"device_id": "device-upload", "purpose": "send a file", "permissions": []string{"write_file"},
+		"device_id": "device-upload", "purpose": "send a file",
 		"temporary_password": devicePassword,
 	}).(map[string]any)
 	sessionID, _ := session["session_id"].(string)

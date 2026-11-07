@@ -261,7 +261,7 @@ if s.DeviceConnectionID != deviceConnectionID {
 }
 ```
 
-`direct` 模式下创建即 `approved`，但仍需临时密码校验、会话有效期和权限集，只是跳过人工批准。
+`direct` 模式下创建即 `approved`，且**批准即授予执行 / 读 / 写三项能力**，只是跳过人工批准。
 
 **重要推论：设备重连后拿到的 connID 变了，旧会话不会自动迁移到新连接。** 后续所有操作都会因 `onlineID != ses.DeviceConnectionID` 而被拒绝，必须重新走一次申请/批准。
 
@@ -634,13 +634,13 @@ return &mcp.CallToolResult{
 | --- | --- | --- | --- | --- |
 | `list_devices` | — | — | 仅 player 认证 | readOnly, idempotent |
 | `get_device_status` | `device_id` | — | 仅 player 认证 | readOnly, idempotent |
-| `request_connection` | `device_id`、`purpose`、`permissions`、`temporary_password` | `wait_for_approval_seconds` | 临时密码 | destructive=false |
-| `run_command` | `device_id`、`temporary_password`、`command` | `purpose`、`working_directory`、`timeout_seconds`、`wait_for_approval_seconds`、`keep_session_open` | 内部申请 `execute_command` | destructive=true |
+| `request_connection` | `device_id`、`purpose` | `temporary_password`、`wait_for_approval_seconds` | 临时密码（可选） | destructive=false |
+| `run_command` | `device_id`、`temporary_password`、`command` | `purpose`、`working_directory`、`timeout_seconds`、`wait_for_approval_seconds`、`keep_session_open` | 内部自建会话 | destructive=true |
 | `get_session_status` | `session_id` | — | 会话归属 | readOnly, idempotent |
-| `execute_command` | `session_id`、`command` | `working_directory`、`timeout_seconds` | `execute_command` | destructive=true |
+| `execute_command` | `session_id`、`command` | `working_directory`、`timeout_seconds` | 已批准会话 | destructive=true |
 | `get_command_result` | `session_id`、`request_id` | `cursor` | 会话归属 | readOnly, idempotent |
-| `download_file` | `session_id`、`remote_path` | `destination_path` | `read_file` | destructive=false |
-| `upload_file` | `session_id`、`local_path` | `remote_path`、`overwrite` | `write_file` | destructive=true |
+| `download_file` | `session_id`、`remote_path` | `destination_path` | 已批准会话 | destructive=false |
+| `upload_file` | `session_id`、`local_path` | `remote_path`、`overwrite` | 已批准会话 | destructive=true |
 | `cancel_command` | `session_id`、`request_id` | — | 会话归属 | destructive=true |
 | `close_session` | `session_id` | — | 会话归属 | destructive=true, idempotent |
 
@@ -649,7 +649,7 @@ return &mcp.CallToolResult{
 ### 11.1 参数语义要点
 
 - `temporary_password`：32～256 字符，由设备所有者给出；**平台只存盐 + SHA-256**，不回显。
-- `permissions`：`execute_command` / `read_file` / `write_file` 三者独立，不允许重复，至少一个。下载不会自动获得命令执行权。
+- `permissions`：**已从 MCP 工具契约中移除**。会话批准后即拥有执行 / 读 / 写三项能力；协议层字段保留并仍被尊重（显式传部分权限不会被放宽），主要供 Qt 客户端与旧调用方使用。MCP 调用若仍带 `permissions` 会被当作未知字段拒绝（`INVALID_ARGUMENT`），避免调用方误以为细粒度授权仍生效。
 - `wait_for_approval_seconds`：0～300，仅影响客户端是否轮询等待，不改变服务端 `approval_timeout_sec`。
 - `keep_session_open`：`run_command` 默认执行完就关会话；置 true 可复用会话继续操作。
 - `cursor`：`get_command_result` 的**块索引**，返回 `next_cursor`。

@@ -82,7 +82,7 @@ func TestCallRejectsInvalidInputBeforeBackend(t *testing.T) {
 	}
 }
 
-func TestRequestConnectionAcceptsReadFilePermission(t *testing.T) {
+func TestRequestConnectionNeedsNoPermissions(t *testing.T) {
 	core := NewCore(backendFunc(func(_ context.Context, req Request) (any, error) {
 		if req.Name != RequestConnection {
 			t.Fatalf("unexpected tool %q", req.Name)
@@ -90,9 +90,16 @@ func TestRequestConnectionAcceptsReadFilePermission(t *testing.T) {
 		return map[string]any{"session_id": "s1", "status": "approved"}, nil
 	}))
 	response := core.Call(context.Background(), RequestConnection, json.RawMessage(
-		`{"device_id":"device-1","purpose":"read logs","permissions":["read_file"],"temporary_password":"0123456789abcdef0123456789abcdef"}`))
+		`{"device_id":"device-1","purpose":"read logs","temporary_password":"0123456789abcdef0123456789abcdef"}`))
 	if !response.OK || response.Code != "OK" {
-		t.Fatalf("got %#v, want read_file request to be accepted", response)
+		t.Fatalf("got %#v, want a request without permissions to be accepted", response)
+	}
+	// 批准即全权，permissions 已从工具契约中移除；旧调用方带上它必须被明确拒绝，
+	// 而不是静默忽略，否则调用方会以为细粒度授权仍然生效。
+	stale := core.Call(context.Background(), RequestConnection, json.RawMessage(
+		`{"device_id":"device-1","purpose":"read logs","permissions":["read_file"]}`))
+	if stale.OK || stale.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("got %#v, want permissions to be rejected as an unknown field", stale)
 	}
 }
 

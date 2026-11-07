@@ -11,10 +11,10 @@ import (
 )
 
 // sessionRequestOptions 聚合请求远程会话所需的参数，供独立请求和一次性命令流程共用。
+// 不再携带 permissions：会话批准后即拥有全部三项能力。
 type sessionRequestOptions struct {
 	DeviceID          string
 	Purpose           string
-	Permissions       []string
 	TemporaryPassword string
 	WaitForApproval   time.Duration
 }
@@ -22,11 +22,10 @@ type sessionRequestOptions struct {
 // handleRequestConnection 解析工具参数，并按指定等待时长请求远程会话。
 func (c *Client) handleRequestConnection(ctx context.Context, arguments json.RawMessage) (any, error) {
 	var input struct {
-		DeviceID               string   `json:"device_id"`
-		Purpose                string   `json:"purpose"`
-		Permissions            []string `json:"permissions"`
-		TemporaryPassword      string   `json:"temporary_password"`
-		WaitForApprovalSeconds int      `json:"wait_for_approval_seconds"`
+		DeviceID               string `json:"device_id"`
+		Purpose                string `json:"purpose"`
+		TemporaryPassword      string `json:"temporary_password"`
+		WaitForApprovalSeconds int    `json:"wait_for_approval_seconds"`
 	}
 	if err := json.Unmarshal(arguments, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
@@ -34,7 +33,6 @@ func (c *Client) handleRequestConnection(ctx context.Context, arguments json.Raw
 	return c.requestSession(ctx, sessionRequestOptions{
 		DeviceID:          input.DeviceID,
 		Purpose:           input.Purpose,
-		Permissions:       input.Permissions,
 		TemporaryPassword: input.TemporaryPassword,
 		WaitForApproval:   time.Duration(input.WaitForApprovalSeconds) * time.Second,
 	})
@@ -47,7 +45,7 @@ func (c *Client) requestSession(ctx context.Context, input sessionRequestOptions
 	// 提供当前临时密码则直接进入 direct 会话。两种流程都由服务端决定，这里不再本地拦截。
 	response, err := c.sendRequest(ctx, protocol.Message{
 		Type: protocol.TypeRequestSession, DeviceID: input.DeviceID, Purpose: input.Purpose,
-		Permissions: input.Permissions, TemporaryPassword: input.TemporaryPassword,
+		TemporaryPassword: input.TemporaryPassword,
 	}, func(message protocol.Message) bool {
 		return message.Type == protocol.TypeSessionCreated
 	})

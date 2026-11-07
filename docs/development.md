@@ -263,7 +263,7 @@ docker compose down        # 加 -v 一并删除卷（配置、证书、日志�
 }
 ```
 
-远端文件：先取得带 `read_file` 权限的已批准会话，再 `download_file(session_id, remote_path, destination_path?)`。未指定路径时写入 `Yiuk/DeviceAssist/downloads`；显式路径须为绝对路径且不覆盖已有文件。分块 64 KiB，上限 32 MiB，SHA-256 校验。
+远端文件：先取得一个已批准的会话（批准即带读 / 写能力），再 `download_file(session_id, remote_path, destination_path?)`。未指定路径时写入 `Yiuk/DeviceAssist/downloads`；显式路径须为绝对路径且不覆盖已有文件。分块 64 KiB，上限 32 MiB，SHA-256 校验。
 
 ## 9. 配置与安全约定
 

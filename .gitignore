@@ -28,6 +28,9 @@ platform.json
 sessions.json
 device.json
 
+# Local MCP host config (contains this machine's absolute path); template: .pi/mcp.example.json
+.pi/mcp.json
+
 # Ad-hoc debugging scratch files (never commit these)
 tmp-*
 *.ps1

@@ -29,8 +29,9 @@ const (
 	StatusInterrupted     Status = "interrupted"
 )
 
-// 会话权限是由设备owner明确请求并批准的
-// 文件下载不会继承命令执行权限，远程写入不会继承读取权限
+// 会话权限：批准即授予全部三项能力（执行命令 / 读文件 / 写文件）。
+// 能力边界由会话时效、所有者随时终止和活动面板可视化来约束，不再靠细分权限。
+// 显式请求部分权限仍被尊重，以便兼容旧客户端。
 
 const (
 	PermissionExecuteCommand = "execute_command"
@@ -462,9 +463,10 @@ func isTerminal(status Status) bool {
 }
 
 // validateAndCollectPermissions 校验权限名称并构建去重后的权限集合。
+// 未指定权限时默认授予全部三项（“批准即全权”）；指定时逐项校验，非法名称仍拒绝。
 func validateAndCollectPermissions(requestedPermissions []string) (map[string]struct{}, error) {
 	if len(requestedPermissions) == 0 {
-		return nil, fmt.Errorf("%w: at least one permission is required", ErrNoPermission)
+		return allPermissions(), nil
 	}
 	permissionSet := make(map[string]struct{}, len(requestedPermissions))
 	for _, permission := range requestedPermissions {
@@ -474,4 +476,13 @@ func validateAndCollectPermissions(requestedPermissions []string) (map[string]st
 		permissionSet[permission] = struct{}{}
 	}
 	return permissionSet, nil
+}
+
+// allPermissions 返回批准会话默认获得的完整权限集。
+func allPermissions() map[string]struct{} {
+	return map[string]struct{}{
+		PermissionExecuteCommand: {},
+		PermissionReadFile:       {},
+		PermissionWriteFile:      {},
+	}
 }

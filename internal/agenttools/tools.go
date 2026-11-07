@@ -115,13 +115,13 @@ func tool(name, description, input string, annotations ToolAnnotations) ToolSpec
 var toolSpecs = []ToolSpec{
 	tool(ListDevices, "List devices available to the current operator.", `{"type":"object","properties":{},"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
 	tool(GetDeviceStatus, "Get online and session status for a device.", `{"type":"object","properties":{"device_id":{"type":"string","minLength":1,"maxLength":128}},"required":["device_id"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
-	tool(RequestConnection, "Request a remote session to one target device. Without temporary_password the device owner must approve; with the owner's current temporary password, the session connects directly without changing the target's mode setting. Pass wait_for_approval_seconds to wait for an owner decision when requesting approval. A pending session is not authorization to execute commands. Request only the permissions needed: execute_command runs PowerShell; read_file downloads one remote file; write_file uploads one local file to the device.", `{"type":"object","properties":{"device_id":{"type":"string","minLength":1,"maxLength":128},"purpose":{"type":"string","minLength":1,"maxLength":512},"permissions":{"type":"array","items":{"type":"string","enum":["execute_command","read_file","write_file"]},"minItems":1,"uniqueItems":true},"temporary_password":{"type":"string","minLength":32,"maxLength":256},"wait_for_approval_seconds":{"type":"integer","minimum":0,"maximum":300}},"required":["device_id","purpose","permissions"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(false), OpenWorld: boolPtr(false)}),
+	tool(RequestConnection, "Request a remote session to one target device. Without temporary_password the device owner must approve; with the owner's current temporary password, the session connects directly without changing the target's mode setting. Pass wait_for_approval_seconds to wait for an owner decision when requesting approval. Approval grants the full set of session actions: run PowerShell, download remote files and upload local files. A pending session is not authorization to execute commands.", `{"type":"object","properties":{"device_id":{"type":"string","minLength":1,"maxLength":128},"purpose":{"type":"string","minLength":1,"maxLength":512},"temporary_password":{"type":"string","minLength":32,"maxLength":256},"wait_for_approval_seconds":{"type":"integer","minimum":0,"maximum":300}},"required":["device_id","purpose"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(false), OpenWorld: boolPtr(false)}),
 	tool(RunCommand, "One-shot remote task for a server-hosted agent: ask the human for the target device code (device_id) and its 32-character temporary password, request a session, optionally wait for owner approval, execute one PowerShell command, wait for the result, then close the session unless keep_session_open is true. Returns aggregated stdout, stderr, exit code, status and truncation flag.", `{"type":"object","properties":{"device_id":{"type":"string","minLength":1,"maxLength":128},"temporary_password":{"type":"string","minLength":32,"maxLength":256},"command":{"type":"string","minLength":1,"maxLength":32768},"purpose":{"type":"string","maxLength":512},"working_directory":{"type":"string","maxLength":4096},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600},"wait_for_approval_seconds":{"type":"integer","minimum":0,"maximum":300},"keep_session_open":{"type":"boolean"}},"required":["device_id","temporary_password","command"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
 	tool(GetSessionStatus, "Get the current status of a connection request or session.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128}},"required":["session_id"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
-	tool(ExecuteCommand, "Execute one PowerShell command in an approved session with execute_command permission.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"command":{"type":"string","minLength":1,"maxLength":32768},"working_directory":{"type":"string","maxLength":4096},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}},"required":["session_id","command"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
+	tool(ExecuteCommand, "Execute one PowerShell command in an approved session.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"command":{"type":"string","minLength":1,"maxLength":32768},"working_directory":{"type":"string","maxLength":4096},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}},"required":["session_id","command"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
 	tool(GetCommandResult, "Read output and final status for a command task.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"request_id":{"type":"string","minLength":1,"maxLength":128},"cursor":{"type":"integer","minimum":0}},"required":["session_id","request_id"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
-	tool(DownloadFile, "Download one remote file from an approved session with read_file permission. The device owner must have approved this permission. The file is written locally and the result returns its local_path; files larger than the configured limit are rejected.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"remote_path":{"type":"string","minLength":1,"maxLength":4096},"destination_path":{"type":"string","maxLength":4096}},"required":["session_id","remote_path"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(false), OpenWorld: boolPtr(false)}),
-	tool(UploadFile, "Upload one local file to the target device in an approved session with write_file permission. The device owner must have approved this permission. Files are limited to 32 MiB; the device refuses to replace an existing file unless overwrite is true. remote_path may be a full path, or empty to let the device store the file in its uploads directory; the result returns the final remote_path, size and SHA-256.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"local_path":{"type":"string","minLength":1,"maxLength":4096},"remote_path":{"type":"string","maxLength":4096},"overwrite":{"type":"boolean"}},"required":["session_id","local_path"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
+	tool(DownloadFile, "Download one remote file from an approved session. The file is written locally and the result returns its local_path; files larger than the configured limit are rejected.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"remote_path":{"type":"string","minLength":1,"maxLength":4096},"destination_path":{"type":"string","maxLength":4096}},"required":["session_id","remote_path"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(false), OpenWorld: boolPtr(false)}),
+	tool(UploadFile, "Upload one local file to the target device in an approved session. Files are limited to 32 MiB; the device refuses to replace an existing file unless overwrite is true. remote_path may be a full path, or empty to let the device store the file in its uploads directory; the result returns the final remote_path, size and SHA-256.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"local_path":{"type":"string","minLength":1,"maxLength":4096},"remote_path":{"type":"string","maxLength":4096},"overwrite":{"type":"boolean"}},"required":["session_id","local_path"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
 	tool(CancelCommand, "Cancel a running command in an approved session.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"request_id":{"type":"string","minLength":1,"maxLength":128}},"required":["session_id","request_id"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
 	tool(CloseSession, "Close a remote session and revoke its authorization.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128}},"required":["session_id"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), Idempotent: true, OpenWorld: boolPtr(false)}),
 }
@@ -151,7 +151,8 @@ func validateInput(raw json.RawMessage, name string) error {
 		required = []string{"device_id"}
 	case RequestConnection:
 		// 不提供 temporary_password 时走审批流：由设备所有者在客户端批准，因此它不是必填项。
-		required = []string{"device_id", "purpose", "permissions"}
+		// 也不再要求 permissions：批准即授予全部会话能力。
+		required = []string{"device_id", "purpose"}
 	case RunCommand:
 		required = []string{"device_id", "temporary_password", "command"}
 	case GetSessionStatus, CloseSession:
@@ -173,7 +174,6 @@ func validateInput(raw json.RawMessage, name string) error {
 	var input struct {
 		DeviceID         string   `json:"device_id"`
 		Purpose          string   `json:"purpose"`
-		Permissions      []string `json:"permissions"`
 		TemporaryPass    string   `json:"temporary_password"`
 		SessionID        string   `json:"session_id"`
 		RequestID        string   `json:"request_id"`
@@ -225,18 +225,6 @@ func validateInput(raw json.RawMessage, name string) error {
 	if input.TemporaryPass != "" && (len(input.TemporaryPass) < 32 || len(input.TemporaryPass) > 256) {
 		return fmt.Errorf("temporary_password must be between 32 and 256 characters")
 	}
-	if name == RequestConnection {
-		if len(input.Permissions) == 0 {
-			return fmt.Errorf("permissions must contain at least one permission")
-		}
-		seen := make(map[string]bool)
-		for _, permission := range input.Permissions {
-			if (permission != "execute_command" && permission != "read_file" && permission != "write_file") || seen[permission] {
-				return fmt.Errorf("unsupported or duplicate permission %q", permission)
-			}
-			seen[permission] = true
-		}
-	}
 	if input.TimeoutSeconds != nil && (*input.TimeoutSeconds < 1 || *input.TimeoutSeconds > 3600) {
 		return fmt.Errorf("timeout_seconds must be between 1 and 3600")
 	}
@@ -253,7 +241,7 @@ func validateInput(raw json.RawMessage, name string) error {
 var schemaFields = map[string]map[string]struct{}{
 	ListDevices:       fieldSet(),
 	GetDeviceStatus:   fieldSet("device_id"),
-	RequestConnection: fieldSet("device_id", "purpose", "permissions", "temporary_password", "wait_for_approval_seconds"),
+	RequestConnection: fieldSet("device_id", "purpose", "temporary_password", "wait_for_approval_seconds"),
 	RunCommand:        fieldSet("device_id", "temporary_password", "command", "purpose", "working_directory", "timeout_seconds", "wait_for_approval_seconds", "keep_session_open"),
 	GetSessionStatus:  fieldSet("session_id"),
 	ExecuteCommand:    fieldSet("session_id", "command", "working_directory", "timeout_seconds"),
