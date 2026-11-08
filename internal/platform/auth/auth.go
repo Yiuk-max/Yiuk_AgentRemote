@@ -10,7 +10,6 @@ package auth
 import (
 	"crypto/subtle"
 	"errors"
-	"net"
 	"time"
 
 	baseauth "agentremote/internal/auth"
@@ -38,12 +37,12 @@ func New(password string, attemptsPerMinute int) *Authenticator {
 
 // Authenticate verifies a candidate password. The rate limiter is consulted
 // before the comparison so repeated failures cannot be used to probe the
-// secret cheaply.
-func (a *Authenticator) Authenticate(remote net.Addr, candidate string) error {
+// secret cheaply. remote 是接入层看到的对端地址，仅用于按 IP 限流。
+func (a *Authenticator) Authenticate(remote string, candidate string) error {
 	if a == nil {
 		return ErrBadPassword
 	}
-	if remote != nil && a.limiter != nil && !a.limiter.Allow(remote) {
+	if remote != "" && a.limiter != nil && !a.limiter.Allow(remote) {
 		return ErrRateLimited
 	}
 	if subtle.ConstantTimeCompare([]byte(candidate), a.password) != 1 {

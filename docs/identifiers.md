@@ -17,7 +17,7 @@ password_version                                     ①②的 ID）
    └── 一台机器               └── 一条 socket           └── 一次授权           └── 一次任务/传输
 ```
 
-**最容易懵的一点**：`session_id` 本身不存 `device_id`，它存的是 **`connection_id`**（`DeviceConnectionID` / `OperatorConnectionID`）。所以"连接断了 = 会话用不了了"，这也正是演进计划 P0 要改的地方。
+**最容易懵的一点**：`session_id` 是会话记录的编号；对应的 `Session` 同时存有 `DeviceID`、`DeviceConnectionID` 和 `OperatorConnectionID`。会话绑定了两端连接，所以断线后旧会话中断。分布式计划沿用这一策略：重新申请新会话，不恢复旧会话。
 
 ---
 
@@ -81,9 +81,9 @@ get_command_result{session_id, request_id}
 ### ② `connection_id` 被当成"身份"用了
 `Session.OperatorConnectionID` 存的是连接 ID，而连接 ID **生命周期 = 一条 socket**。所以：
 - 网络抖一下 → 新连接 → 新 connID → 旧会话全部 `interrupted`；
-- 这也是多网关改造的第一个障碍（socket 不可迁移）。
+- 多网关需要登记 socket 所在节点，但不需要恢复旧 socket 或换绑旧会话。
 
-演进计划 P0 就是把这里换成稳定的 `OperatorPrincipal` + `resume_token`。
+[分布式演进计划](distributed-plan.md)保留此边界：Agent 重新连接并申请新会话，已持有效设备临时密码时可直连，否则仍需审批；旧命令不自动重放。
 
 ### ③ `request_id` ≠ `correlation_id`
 | | `request_id` | `correlation_id` |

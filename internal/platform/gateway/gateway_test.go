@@ -1,4 +1,4 @@
-package server_test
+package gateway_test
 
 import (
 	"context"
@@ -11,7 +11,8 @@ import (
 
 	"agentremote/internal/platform/config"
 	"agentremote/internal/platform/protocol"
-	"agentremote/internal/platform/server"
+	"agentremote/internal/platform/core"
+	"agentremote/internal/platform/gateway"
 	"agentremote/internal/platform/transport"
 
 	"github.com/gorilla/websocket"
@@ -26,7 +27,7 @@ type testClient struct {
 	pending []protocol.Message
 }
 
-func startServer(t *testing.T, mutate func(*config.Config)) (string, *server.Server) {
+func startServer(t *testing.T, mutate func(*config.Config)) (string, *gateway.Server) {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Listen = "127.0.0.1:0"
@@ -47,19 +48,23 @@ func startServer(t *testing.T, mutate func(*config.Config)) (string, *server.Ser
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ln := transport.ServeWebSocketListener(rawListener, cfg.MaxFrameBytes)
-	srv := server.NewWithListener(cfg, logger, ln)
+	// 单进程装配：网关持有连接表，业务层通过 Link 回调网关投递。
+	gw := gateway.NewWithListener(cfg, logger, ln)
+	coreSvc := core.New(cfg, logger, gw)
+	gw.Bind(coreSvc)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = srv.Run(ctx)
+		_ = gw.Run(ctx)
 	}()
+	go func() { _ = coreSvc.Run(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		srv.Close()
+		gw.Close()
 		<-done
 	})
-	return "ws://" + ln.Addr().String(), srv
+	return "ws://" + ln.Addr().String(), gw
 }
 
 func dialClient(t *testing.T, address string) *testClient {

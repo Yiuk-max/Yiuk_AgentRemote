@@ -19,7 +19,8 @@ import (
 	"agentremote/internal/agenttools"
 	"agentremote/internal/platform/config"
 	"agentremote/internal/platform/protocol"
-	"agentremote/internal/platform/server"
+	"agentremote/internal/platform/core"
+	"agentremote/internal/platform/gateway"
 	"agentremote/internal/platformclient"
 
 	"agentremote/internal/platform/transport"
@@ -51,11 +52,15 @@ func startPlatform(t *testing.T) string {
 		t.Fatal(err)
 	}
 	wsListener := transport.ServeWebSocketListener(ln, cfg.MaxFrameBytes)
-	srv := server.NewWithListener(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), wsListener)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := gateway.NewWithListener(cfg, logger, wsListener)
+	coreSvc := core.New(cfg, logger, gw)
+	gw.Bind(coreSvc)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { defer close(done); _ = srv.Run(ctx) }()
-	t.Cleanup(func() { cancel(); srv.Close(); <-done })
+	go func() { defer close(done); _ = gw.Run(ctx) }()
+	go func() { _ = coreSvc.Run(ctx) }()
+	t.Cleanup(func() { cancel(); gw.Close(); <-done })
 	return "ws://" + ln.Addr().String()
 }
 

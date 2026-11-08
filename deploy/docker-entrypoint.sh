@@ -22,6 +22,10 @@
 #   YIUK_TLS_HOST            CN/SAN for that cert, default "yiuk-platform"
 #   YIUK_TLS_SELF_SIGNED_DAYS  validity in days, default 825
 #   YIUK_LOG_FILE            log file path, default "$DATA_DIR/platform.log"
+#   YIUK_BINARY              yiuk-platform (default) | yiuk-platform-core | yiuk-platform-gateway
+#   YIUK_CORE_GRPC_LISTEN / YIUK_CORE_GRPC_ADDR
+#   YIUK_GATEWAY_GRPC_LISTEN / YIUK_GATEWAY_GRPC_ADDR
+#                            in-cluster gRPC addresses used only by the split core/gateway roles
 #
 # All other platform limits (sessions, tasks, output caps, TTLs, ...) fall back
 # to the built-in defaults; mount a full platform.yaml to change them.
@@ -59,6 +63,11 @@ render_config() {
     cert=${YIUK_TLS_CERT:-$DATA_DIR/certs/server.crt}
     key=${YIUK_TLS_KEY:-$DATA_DIR/certs/server.key}
     log_file=${YIUK_LOG_FILE:-$DATA_DIR/platform.log}
+    # 拆分成 core / gateway 两个进程时的内网 gRPC 地址。
+    core_grpc_listen=${YIUK_CORE_GRPC_LISTEN:-:25670}
+    core_grpc_addr=${YIUK_CORE_GRPC_ADDR:-127.0.0.1:25670}
+    gateway_grpc_listen=${YIUK_GATEWAY_GRPC_LISTEN:-:25671}
+    gateway_grpc_addr=${YIUK_GATEWAY_GRPC_ADDR:-127.0.0.1:25671}
 
     insecure=false
     case "${YIUK_ALLOW_INSECURE:-false}" in
@@ -103,6 +112,10 @@ render_config() {
         echo "  allow_insecure: $insecure"
         echo "  player_password: $(yaml "$password")"
         echo "  log_file: $(yaml "$log_file")"
+        echo "  core_grpc_listen: $(yaml "$core_grpc_listen")"
+        echo "  core_grpc_addr: $(yaml "$core_grpc_addr")"
+        echo "  gateway_grpc_listen: $(yaml "$gateway_grpc_listen")"
+        echo "  gateway_grpc_addr: $(yaml "$gateway_grpc_addr")"
     } >"$CONFIG.tmp" || die "cannot write $CONFIG.tmp (read-only volume?)"
     chmod 600 "$CONFIG.tmp"
     mv "$CONFIG.tmp" "$CONFIG"
@@ -116,4 +129,5 @@ else
     render_config
 fi
 
-exec /usr/local/bin/yiuk-platform -config "$CONFIG" "$@"
+# 跑哪个角色：yiuk-platform（默认，单进程）/ yiuk-platform-core / yiuk-platform-gateway。
+exec "/usr/local/bin/${YIUK_BINARY:-yiuk-platform}" -config "$CONFIG" "$@"

@@ -22,10 +22,12 @@ func NewLimiter(limit int, window time.Duration) *Limiter {
 	return &Limiter{byIP: make(map[string]bucket), limit: limit, window: window}
 }
 
-func (l *Limiter) Allow(addr net.Addr) bool {
-	ip, _, err := net.SplitHostPort(addr.String())
+// Allow 按来源地址计数。remote 是接入层看到对端地址字符串
+// （host:port 或纯 host），只用于分桶，不参与鉴权。
+func (l *Limiter) Allow(remote string) bool {
+	ip, _, err := net.SplitHostPort(remote)
 	if err != nil {
-		ip = addr.String()
+		ip = remote
 	}
 	now := time.Now()
 	l.mu.Lock()

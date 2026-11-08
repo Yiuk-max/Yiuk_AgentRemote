@@ -1,4 +1,4 @@
-package server
+package core
 
 // 文件上传：操作者把本地文件推送到目标设备。平台只校验权限、分块序号与累计
 // 字节数，不保存文件内容；分块按操作者 → 平台 → 设备的顺序转发。
@@ -13,7 +13,7 @@ import (
 )
 
 // 处理文件上传请求
-func (s *Server) handleUploadFile(clientConn *clientConnection, message protocol.Message) error {
+func (s *Service) handleUploadFile(caller *Caller, message protocol.Message) error {
 	if err := s.validateID("session_id", message.SessionID); err != nil {
 		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
@@ -29,12 +29,14 @@ func (s *Server) handleUploadFile(clientConn *clientConnection, message protocol
 	if message.FileSize < 0 || message.FileSize > int64(s.config.MaxUploadBytes) {
 		return newProtocolError("FILE_TOO_LARGE", "file upload exceeds the configured size limit")
 	}
-	sessionRecord, err := s.sessions.Authorize(message.SessionID, clientConn.id, session.PermissionWriteFile)
+	sessionRecord, err := s.sessions.Authorize(message.SessionID, caller.ConnectionID, session.PermissionWriteFile)
 	if err != nil {
 		return s.sessionProtocolError(err)
 	}
+	// 连接是否还活着不再在这里查：投递失败就是“设备不可用”，
+	// 下面 send 失败的既有分支会把任务/传输收敛成终态。
 	deviceConnectionID, ok := s.devices.OnlineConnection(sessionRecord.DeviceID)
-	if !ok || deviceConnectionID != sessionRecord.DeviceConnectionID || s.connectionByID(deviceConnectionID) == nil {
+	if !ok || deviceConnectionID != sessionRecord.DeviceConnectionID {
 		return newProtocolError("DEVICE_OFFLINE", "device is no longer online")
 	}
 	maxBytes := int64(s.config.MaxUploadBytes)
@@ -48,11 +50,11 @@ func (s *Server) handleUploadFile(clientConn *clientConnection, message protocol
 	if !created {
 		return newProtocolError("TRANSFER_IN_PROGRESS", "an upload with this request id is already in progress")
 	}
-	if _, err := s.sessions.Activate(sessionRecord.ID, clientConn.id); err != nil {
+	if _, err := s.sessions.Activate(sessionRecord.ID, caller.ConnectionID); err != nil {
 		s.uploads.Finish(sessionRecord.ID, fileTransfer.RequestID, transfer.StatusFailed, "", 0, true)
 		return s.sessionProtocolError(err)
 	}
-	if !s.sendToConnection(sessionRecord.DeviceConnectionID, protocol.Message{
+	if !s.send(sessionRecord.DeviceConnectionID, protocol.Message{
 		Type:       protocol.TypeUploadFile,
 		SessionID:  sessionRecord.ID,
 		RequestID:  fileTransfer.RequestID,
@@ -70,7 +72,7 @@ func (s *Server) handleUploadFile(clientConn *clientConnection, message protocol
 }
 
 // 处理文件上传分片（操作者 → 设备）
-func (s *Server) handleFileUploadChunk(clientConn *clientConnection, message protocol.Message) error {
+func (s *Service) handleFileUploadChunk(caller *Caller, message protocol.Message) error {
 	if err := s.validateID("session_id", message.SessionID); err != nil {
 		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
@@ -78,21 +80,21 @@ func (s *Server) handleFileUploadChunk(clientConn *clientConnection, message pro
 		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
 	sessionRecord, ok := s.sessions.Get(message.SessionID)
-	if !ok || sessionRecord.OperatorConnectionID != clientConn.id {
+	if !ok || sessionRecord.OperatorConnectionID != caller.ConnectionID {
 		return newProtocolError("SESSION_NOT_FOUND", "session not found")
 	}
 	fileTransfer, err := s.uploads.RecordChunk(sessionRecord.ID, message.RequestID, message.Sequence, message.Data)
 	if err != nil {
 		if errors.Is(err, transfer.ErrSizeLimit) || errors.Is(err, transfer.ErrChunkLimit) {
-			s.sendToConnection(sessionRecord.OperatorConnectionID, uploadResultMessage(fileTransfer))
-			s.sendToConnection(sessionRecord.DeviceConnectionID, protocol.Message{
+			s.send(sessionRecord.OperatorConnectionID, uploadResultMessage(fileTransfer))
+			s.send(sessionRecord.DeviceConnectionID, protocol.Message{
 				Type: protocol.TypeCancelFileUpload, SessionID: sessionRecord.ID, RequestID: message.RequestID,
 			})
 			s.audit.Warn("file_upload_limit_exceeded", "session", audit.RedactID(sessionRecord.ID), "request", audit.RedactID(message.RequestID))
 		}
 		return s.transferProtocolError(err)
 	}
-	s.sendToConnection(sessionRecord.DeviceConnectionID, protocol.Message{
+	s.send(sessionRecord.DeviceConnectionID, protocol.Message{
 		Type:      protocol.TypeFileUploadChunk,
 		SessionID: sessionRecord.ID,
 		RequestID: message.RequestID,
@@ -104,7 +106,7 @@ func (s *Server) handleFileUploadChunk(clientConn *clientConnection, message pro
 }
 
 // 处理文件上传结果（设备 → 操作者）
-func (s *Server) handleFileUploadResult(clientConn *clientConnection, message protocol.Message) error {
+func (s *Service) handleFileUploadResult(caller *Caller, message protocol.Message) error {
 	if err := s.validateID("session_id", message.SessionID); err != nil {
 		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
@@ -112,7 +114,7 @@ func (s *Server) handleFileUploadResult(clientConn *clientConnection, message pr
 		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
 	sessionRecord, ok := s.sessions.Get(message.SessionID)
-	if !ok || sessionRecord.DeviceConnectionID != clientConn.id {
+	if !ok || sessionRecord.DeviceConnectionID != caller.ConnectionID {
 		return newProtocolError("SESSION_NOT_FOUND", "session not found")
 	}
 	status, err := parseTerminalTransferStatus(message.Status)
@@ -129,13 +131,13 @@ func (s *Server) handleFileUploadResult(clientConn *clientConnection, message pr
 	resultMessage := uploadResultMessage(fileTransfer)
 	resultMessage.FileSHA256 = message.FileSHA256
 	resultMessage.RemotePath = message.RemotePath
-	s.sendToConnection(sessionRecord.OperatorConnectionID, resultMessage)
+	s.send(sessionRecord.OperatorConnectionID, resultMessage)
 	s.audit.Event("file_upload_finished", "session", audit.RedactID(sessionRecord.ID), "request", audit.RedactID(fileTransfer.RequestID), "status", string(fileTransfer.Status), "bytes", fileTransfer.TransferredBytes)
 	return nil
 }
 
 // 处理上传取消（操作者主动取消）
-func (s *Server) handleCancelFileUpload(clientConn *clientConnection, message protocol.Message) error {
+func (s *Service) handleCancelFileUpload(caller *Caller, message protocol.Message) error {
 	if err := s.validateID("session_id", message.SessionID); err != nil {
 		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
@@ -143,18 +145,18 @@ func (s *Server) handleCancelFileUpload(clientConn *clientConnection, message pr
 		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
 	sessionRecord, ok := s.sessions.Get(message.SessionID)
-	if !ok || sessionRecord.OperatorConnectionID != clientConn.id {
+	if !ok || sessionRecord.OperatorConnectionID != caller.ConnectionID {
 		return newProtocolError("SESSION_NOT_FOUND", "session not found")
 	}
 	fileTransfer, err := s.uploads.Finish(sessionRecord.ID, message.RequestID, transfer.StatusCancelled, "", 0, true)
 	if err != nil {
 		return s.transferProtocolError(err)
 	}
-	s.sendToConnection(sessionRecord.DeviceConnectionID, protocol.Message{
+	s.send(sessionRecord.DeviceConnectionID, protocol.Message{
 		Type: protocol.TypeCancelFileUpload, SessionID: sessionRecord.ID, RequestID: message.RequestID,
 	})
 	s.audit.Event("file_upload_cancelled", "session", audit.RedactID(sessionRecord.ID), "request", audit.RedactID(fileTransfer.RequestID))
-	return s.sendResponse(clientConn, message, uploadResultMessage(fileTransfer))
+	return s.sendResponse(caller, message, uploadResultMessage(fileTransfer))
 }
 
 // uploadResultMessage 将上传传输记录转换为携带原请求关联 ID 的结果消息。
@@ -175,7 +177,7 @@ func uploadResultMessage(fileTransfer *transfer.Transfer) protocol.Message {
 }
 
 // finishSessionTransfers 结束会话中所有未完成的上传和下载，返回发给操作者的结果消息。
-func (s *Server) finishSessionTransfers(sessionID string, status transfer.Status) []protocol.Message {
+func (s *Service) finishSessionTransfers(sessionID string, status transfer.Status) []protocol.Message {
 	resultMessages := make([]protocol.Message, 0, 2)
 	for _, fileTransfer := range s.downloads.FinishSession(sessionID, status) {
 		resultMessages = append(resultMessages, downloadResultMessage(fileTransfer))

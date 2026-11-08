@@ -1,0 +1,71 @@
+// Edge 是 gateway 与 core 之间唯一的契约。
+//
+// 帧内容是客户端原始 JSON 字节，core 负责编解码；gateway 只做搬运，
+// 不理解任何业务语义。
+syntax = "proto3";
+
+package edge;
+
+option go_package = "agentremote/internal/platform/edge/edgepb";
+
+// Edge 由 core 提供，gateway 调用。
+service Edge {
+  // Handle 处理一条连接上的一帧。返回 fatal 时 gateway 先写出 fatal_frame（如果有）再关连接。
+  rpc Handle(HandleRequest) returns (HandleReply);
+  // Detach 在连接关闭后通知 core 收敛它名下的会话。
+  rpc Detach(DetachRequest) returns (DetachReply);
+}
+
+// Push 由 gateway 提供，core 调用。
+service Push {
+  // Deliver 把 core 编好码的一帧写进目标连接的发送队列。
+  rpc Deliver(DeliverRequest) returns (DeliverReply);
+  // Alive 回答这条连接是否还挂着。core 不自己维护连接表。
+  rpc Alive(AliveRequest) returns (AliveReply);
+}
+
+// Caller 是一条连接的身份，由 gateway 保管并随每次调用带上。
+message Caller {
+  string connection_id = 1;
+  string remote_addr = 2;
+  string role = 3;
+  string device_id = 4;
+  string display_name = 5;
+  string business_type = 6;
+}
+
+message HandleRequest {
+  Caller caller = 1;
+  bytes frame = 2;
+}
+
+message HandleReply {
+  // 处理过程中可能被更新的身份（认证后 role、注册后 device_id）。
+  Caller caller = 1;
+  bool fatal = 2;
+  bytes fatal_frame = 3;
+  string fatal_error = 4;
+}
+
+message DetachRequest {
+  Caller caller = 1;
+}
+
+message DetachReply {}
+
+message DeliverRequest {
+  string connection_id = 1;
+  bytes frame = 2;
+}
+
+message DeliverReply {
+  bool delivered = 1;
+}
+
+message AliveRequest {
+  string connection_id = 1;
+}
+
+message AliveReply {
+  bool alive = 1;
+}

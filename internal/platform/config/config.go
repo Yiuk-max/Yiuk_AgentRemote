@@ -61,6 +61,13 @@ type Config struct {
 	IdentifierMaxLen       int    `yaml:"identifier_max_len"`         // 标识符最大长度，用于唯一标识设备或用户
 	ObserverSlowClientBuf  int    `yaml:"slow_client_buffer"`         // 慢客户端缓冲区大小
 	LogFile                string `yaml:"log_file"`                   // 日志文件路径
+
+	// 拆成两个进程后使用的内网 gRPC 地址（单进程模式不用）。
+	// 两个进程读同一份配置，各自只取自己那一侧的两项。
+	CoreGRPCListen    string `yaml:"core_grpc_listen"`    // core 进程：gRPC 监听，提供 Edge 服务
+	CoreGRPCAddr      string `yaml:"core_grpc_addr"`      // gateway 进程：连 core 的地址
+	GatewayGRPCListen string `yaml:"gateway_grpc_listen"` // gateway 进程：gRPC 监听，提供 Push 服务
+	GatewayGRPCAddr   string `yaml:"gateway_grpc_addr"`   // core 进程：连 gateway 的地址
 }
 
 // 硬编码的配置默认值
@@ -94,6 +101,10 @@ func Default() Config {
 		IdentifierMaxLen:       128,
 		ObserverSlowClientBuf:  64,
 		LogFile:                "platform.log",
+		CoreGRPCListen:         ":25670",
+		CoreGRPCAddr:           "127.0.0.1:25670",
+		GatewayGRPCListen:      ":25671",
+		GatewayGRPCAddr:        "127.0.0.1:25671",
 	}
 }
 
@@ -180,6 +191,18 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.ObserverSlowClientBuf == 0 {
 		c.ObserverSlowClientBuf = d.ObserverSlowClientBuf
+	}
+	if c.CoreGRPCListen == "" {
+		c.CoreGRPCListen = d.CoreGRPCListen
+	}
+	if c.CoreGRPCAddr == "" {
+		c.CoreGRPCAddr = d.CoreGRPCAddr
+	}
+	if c.GatewayGRPCListen == "" {
+		c.GatewayGRPCListen = d.GatewayGRPCListen
+	}
+	if c.GatewayGRPCAddr == "" {
+		c.GatewayGRPCAddr = d.GatewayGRPCAddr
 	}
 	if c.LogFile == "" {
 		c.LogFile = d.LogFile

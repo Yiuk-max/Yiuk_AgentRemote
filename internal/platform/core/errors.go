@@ -1,4 +1,4 @@
-package server
+package core
 
 import (
 	"errors"
@@ -11,7 +11,7 @@ import (
 	"agentremote/internal/platform/transfer"
 )
 
-func (s *Server) validateID(field, value string) error {
+func (s *Service) validateID(field, value string) error {
 	if strings.TrimSpace(value) == "" {
 		return errors.New(field + " is required")
 	}
@@ -21,7 +21,7 @@ func (s *Server) validateID(field, value string) error {
 	return nil
 }
 
-func (s *Server) deviceProtocolError(err error) error {
+func (s *Service) deviceProtocolError(err error) error {
 	switch {
 	case errors.Is(err, device.ErrDeviceNotFound):
 		return newProtocolError("DEVICE_NOT_FOUND", "device not found") // 设备未找到
@@ -47,7 +47,7 @@ func (s *Server) deviceProtocolError(err error) error {
 	}
 }
 
-func (s *Server) sessionProtocolError(err error) error {
+func (s *Service) sessionProtocolError(err error) error {
 	switch {
 	case errors.Is(err, session.ErrNotFound):
 		return newProtocolError("SESSION_NOT_FOUND", "session not found")
@@ -68,7 +68,7 @@ func (s *Server) sessionProtocolError(err error) error {
 	}
 }
 
-func (s *Server) transferProtocolError(err error) error {
+func (s *Service) transferProtocolError(err error) error {
 	switch {
 	case errors.Is(err, transfer.ErrNotFound):
 		return newProtocolError("TRANSFER_NOT_FOUND", "file transfer not found")
@@ -106,7 +106,7 @@ func parseTerminalTransferStatus(status string) (transfer.Status, error) {
 	}
 }
 
-func (s *Server) taskProtocolError(err error) error {
+func (s *Service) taskProtocolError(err error) error {
 	switch {
 	case errors.Is(err, task.ErrNotFound):
 		return newProtocolError("TASK_NOT_FOUND", "task not found")

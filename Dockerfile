@@ -11,7 +11,7 @@
 #
 # The image only contains the server binary and a small entrypoint that renders
 # platform.yaml from YIUK_* environment variables when no config file is
-# mounted. See docs/development.md §6.1 for the full variable list.
+# mounted. See docs/development.md §6.2 for the full variable list.
 
 ARG GO_VERSION=1.27.3
 
@@ -28,7 +28,10 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 
-RUN go build -trimpath -ldflags='-s -w' -o /out/yiuk-platform ./cmd/platform
+# 单进程入口 + 拆分后的两个角色，同一个镜像可以跑任意一个。
+RUN go build -trimpath -ldflags='-s -w' -o /out/yiuk-platform ./cmd/platform \
+ && go build -trimpath -ldflags='-s -w' -o /out/yiuk-platform-core ./cmd/platform-core \
+ && go build -trimpath -ldflags='-s -w' -o /out/yiuk-platform-gateway ./cmd/platform-gateway
 
 # ---- runtime ----
 FROM alpine:3.22
@@ -42,8 +45,11 @@ RUN apk add --no-cache ca-certificates openssl netcat-openbsd \
     && chown -R yiuk:yiuk /var/lib/yiuk-platform
 
 COPY --from=build /out/yiuk-platform /usr/local/bin/yiuk-platform
+COPY --from=build /out/yiuk-platform-core /usr/local/bin/yiuk-platform-core
+COPY --from=build /out/yiuk-platform-gateway /usr/local/bin/yiuk-platform-gateway
 COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod 0755 /usr/local/bin/yiuk-platform /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/yiuk-platform /usr/local/bin/yiuk-platform-core \
+    /usr/local/bin/yiuk-platform-gateway /usr/local/bin/docker-entrypoint.sh
 
 LABEL org.opencontainers.image.title="yiuk-platform" \
       org.opencontainers.image.description="AgentRemote remote-assist platform server (TLS relay, sessions, command tasks)" \

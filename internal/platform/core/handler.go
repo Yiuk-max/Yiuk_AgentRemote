@@ -1,4 +1,4 @@
-package server
+package core
 
 //handler负责消息分发，只负责处理重要的事务，其它分发给具体的handler去处理
 import (
@@ -17,76 +17,76 @@ const (
 	fileTransferTimeout     = 5 * time.Minute
 )
 
-func (s *Server) dispatchMessage(clientConn *clientConnection, message protocol.Message) error {
+func (s *Service) dispatch(caller *Caller, message protocol.Message) error {
 	if message.Version != protocol.Version { //网络协议版本比对
 		return newFatalProtocolError("BAD_VERSION", "unsupported protocol version")
 	}
 	switch message.Type {
 	case protocol.TypeAuthenticatePlayer: //连接服务器使用服务
-		return s.handleAuthenticatePlayer(clientConn, message)
+		return s.handleAuthenticatePlayer(caller, message)
 	case protocol.TypePing: //发心跳检测
-		if clientConn.role == roleAnonymous {
+		if caller.Role == RoleAnonymous {
 			return newFatalProtocolError("AUTH_REQUIRED", "authenticate before sending other messages")
 		}
-		return s.sendResponse(clientConn, message, protocol.Message{Type: protocol.TypePong, Sequence: message.Sequence, ServerTime: time.Now().Unix()})
+		return s.sendResponse(caller, message, protocol.Message{Type: protocol.TypePong, Sequence: message.Sequence, ServerTime: time.Now().Unix()})
 	case protocol.TypePong: //收到心跳检测，不用管
 		return nil
 	}
-	if clientConn.role == roleAnonymous { //匿名状态不能使用，返回报错
+	if caller.Role == RoleAnonymous { //匿名状态不能使用，返回报错
 		return newFatalProtocolError("AUTH_REQUIRED", "authenticate before sending other messages")
 	}
 	switch message.Type {
 	case protocol.TypeRegisterDevice:
-		return s.handleRegisterDevice(clientConn, message)
+		return s.handleRegisterDevice(caller, message)
 	case protocol.TypeDeviceHeartbeat:
-		return s.handleDeviceHeartbeat(clientConn, message)
+		return s.handleDeviceHeartbeat(caller, message)
 	case protocol.TypeUpdateTemporaryPassword:
-		return s.handleUpdateTemporaryPassword(clientConn, message)
+		return s.handleUpdateTemporaryPassword(caller, message)
 	case protocol.TypeRequestSession:
-		return s.handleRequestSession(clientConn, message)
+		return s.handleRequestSession(caller, message)
 	case protocol.TypeApproveSession:
-		return s.handleApproveSession(clientConn, message)
+		return s.handleApproveSession(caller, message)
 	case protocol.TypeRejectSession:
-		return s.handleRejectSession(clientConn, message)
+		return s.handleRejectSession(caller, message)
 	case protocol.TypeGetCommandResult:
-		return s.handleGetCommandResult(clientConn, message)
+		return s.handleGetCommandResult(caller, message)
 	case protocol.TypeDownloadFile:
-		return s.handleDownloadFile(clientConn, message)
+		return s.handleDownloadFile(caller, message)
 	case protocol.TypeFileChunk:
-		return s.handleFileDownloadChunk(clientConn, message)
+		return s.handleFileDownloadChunk(caller, message)
 	case protocol.TypeFileDownloadResult:
-		return s.handleFileDownloadResult(clientConn, message)
+		return s.handleFileDownloadResult(caller, message)
 	case protocol.TypeUploadFile:
-		return s.handleUploadFile(clientConn, message)
+		return s.handleUploadFile(caller, message)
 	case protocol.TypeFileUploadChunk:
-		return s.handleFileUploadChunk(clientConn, message)
+		return s.handleFileUploadChunk(caller, message)
 	case protocol.TypeFileUploadResult:
-		return s.handleFileUploadResult(clientConn, message)
+		return s.handleFileUploadResult(caller, message)
 	case protocol.TypeCancelFileUpload:
-		return s.handleCancelFileUpload(clientConn, message)
+		return s.handleCancelFileUpload(caller, message)
 	case protocol.TypeSessionStatus:
-		return s.handleGetSessionStatus(clientConn, message)
+		return s.handleGetSessionStatus(caller, message)
 	case protocol.TypeOpenSessionChannel:
-		return s.handleOpenSessionChannel(clientConn, message)
+		return s.handleOpenSessionChannel(caller, message)
 	case protocol.TypeExecuteCommand:
-		return s.handleExecuteCommand(clientConn, message)
+		return s.handleExecuteCommand(caller, message)
 	case protocol.TypeCommandOutput:
-		return s.handleCommandOutput(clientConn, message)
+		return s.handleCommandOutput(caller, message)
 	case protocol.TypeCommandResult:
-		return s.handleCommandResult(clientConn, message)
+		return s.handleCommandResult(caller, message)
 	case protocol.TypeCancelCommand:
-		return s.handleCancelCommand(clientConn, message)
+		return s.handleCancelCommand(caller, message)
 	case protocol.TypeCloseSession:
-		return s.handleCloseSession(clientConn, message)
+		return s.handleCloseSession(caller, message)
 	case protocol.TypeListDevices:
-		return s.handleListDevices(clientConn, message)
+		return s.handleListDevices(caller, message)
 	default:
 		return newProtocolError("UNKNOWN_MESSAGE", "unsupported message type")
 	}
 }
 
-func (s *Server) handleAuthenticatePlayer(clientConn *clientConnection, message protocol.Message) error {
-	if clientConn.role != roleAnonymous {
+func (s *Service) handleAuthenticatePlayer(caller *Caller, message protocol.Message) error {
+	if caller.Role != RoleAnonymous {
 		return newFatalProtocolError("ALREADY_AUTHENTICATED", "connection is already authenticated")
 	}
 	businessType := message.BusinessType
@@ -99,28 +99,28 @@ func (s *Server) handleAuthenticatePlayer(clientConn *clientConnection, message 
 	if message.IdentityType != "player" {
 		return newFatalProtocolError("BAD_IDENTITY", "identity_type must be player")
 	}
-	if err := s.auth.Authenticate(clientConn.remoteAddr, message.PlayerPassword); err != nil {
-		s.audit.Warn("player_auth_failed", "remote", clientConn.remoteAddress(), "code", auditErrorCode(err))
+	if err := s.auth.Authenticate(caller.RemoteAddr, message.PlayerPassword); err != nil {
+		s.audit.Warn("player_auth_failed", "remote", caller.RemoteAddr, "code", auditErrorCode(err))
 		if errors.Is(err, auth.ErrRateLimited) {
 			return newFatalProtocolError("RATE_LIMITED", "too many authentication attempts")
 		}
 		return newFatalProtocolError("BAD_PASSWORD", "player password is incorrect")
 	}
-	clientConn.role = rolePlayer
-	clientConn.businessType = businessType
-	s.audit.Event("player_authenticated", "connection", audit.RedactID(clientConn.id), "remote", clientConn.remoteAddress())
-	return s.sendResponse(clientConn, message, protocol.Message{
+	caller.Role = RolePlayer
+	caller.BusinessType = businessType
+	s.audit.Event("player_authenticated", "connection", audit.RedactID(caller.ConnectionID), "remote", caller.RemoteAddr)
+	return s.sendResponse(caller, message, protocol.Message{
 		Type:         protocol.TypeAuthenticated,
-		ConnectionID: clientConn.id,
+		ConnectionID: caller.ConnectionID,
 		BusinessType: businessType,
 		ServerTime:   time.Now().Unix(),
 	})
 }
 
 // 处理注册设备
-func (s *Server) handleRegisterDevice(clientConn *clientConnection, message protocol.Message) error {
-	if clientConn.role != rolePlayer {
-		if clientConn.role == roleDevice {
+func (s *Service) handleRegisterDevice(caller *Caller, message protocol.Message) error {
+	if caller.Role != RolePlayer {
+		if caller.Role == RoleDevice {
 			return newProtocolError("ALREADY_REGISTERED", "connection already owns a device")
 		}
 		return newFatalProtocolError("AUTH_REQUIRED", "authenticate before registering a device")
@@ -130,8 +130,8 @@ func (s *Server) handleRegisterDevice(clientConn *clientConnection, message prot
 	}
 	// 注册发生在认证之后，auth 的按 IP 限流覆盖不到这一步，而“密码不匹配就
 	// 分配新码”会让一次注册就新建一个条目，所以这里单独限流。
-	if s.registrations != nil && !s.registrations.Allow(clientConn.remoteAddr) {
-		s.audit.Warn("device_registration_rate_limited", "remote", clientConn.remoteAddress(), "device", audit.RedactID(message.DeviceID))
+	if s.registrations != nil && !s.registrations.Allow(caller.RemoteAddr) {
+		s.audit.Warn("device_registration_rate_limited", "remote", caller.RemoteAddr, "device", audit.RedactID(message.DeviceID))
 		return newProtocolError("RATE_LIMITED", "too many device registrations")
 	}
 	if len(message.DeviceName) > s.config.IdentifierMaxLen {
@@ -157,7 +157,7 @@ func (s *Server) handleRegisterDevice(clientConn *clientConnection, message prot
 	// A stale online entry can survive a crash before the read loop notices
 	// the disconnect. Clear it only when the owning connection is gone; the
 	// device manager still requires the current temporary password below.
-	if deviceConnectionID, ok := s.devices.OnlineConnection(message.DeviceID); ok && s.connectionByID(deviceConnectionID) == nil {
+	if deviceConnectionID, ok := s.devices.OnlineConnection(message.DeviceID); ok && !s.link.Alive(deviceConnectionID) {
 		s.devices.ForceOffline(message.DeviceID)
 	}
 
@@ -186,23 +186,23 @@ func (s *Server) handleRegisterDevice(clientConn *clientConnection, message prot
 		s.audit.Warn("device_registration_failed", "device", audit.RedactID(message.DeviceID), "code", auditErrorCode(err))
 		return s.deviceProtocolError(err)
 	}
-	if _, err := s.devices.SetOnline(info.ID, clientConn.id); err != nil {
+	if _, err := s.devices.SetOnline(info.ID, caller.ConnectionID); err != nil {
 		s.audit.Warn("device_registration_failed", "device", audit.RedactID(info.ID), "code", auditErrorCode(err))
 		return s.deviceProtocolError(err)
 	}
-	clientConn.role = roleDevice
-	clientConn.deviceID = info.ID
-	clientConn.displayName = info.Name
+	caller.Role = RoleDevice
+	caller.DeviceID = info.ID
+	caller.DisplayName = info.Name
 	if info.ID != message.DeviceID {
 		// 密码与请求的设备码不匹配时服务端会重新分配设备码；审计里必须同时留下
 		// 请求值和实际值，否则一台设备“悄悄换了身份”事后无法追查。
 		s.audit.Event("device_id_reassigned", "requested", audit.RedactID(message.DeviceID),
-			"assigned", audit.RedactID(info.ID), "connection", audit.RedactID(clientConn.id))
+			"assigned", audit.RedactID(info.ID), "connection", audit.RedactID(caller.ConnectionID))
 	}
-	s.audit.Event("device_registered", "device", audit.RedactID(info.ID), "connection", audit.RedactID(clientConn.id), "mode", string(info.Mode))
+	s.audit.Event("device_registered", "device", audit.RedactID(info.ID), "connection", audit.RedactID(caller.ConnectionID), "mode", string(info.Mode))
 
 	deviceInfo := protocolDeviceInfo(info)
-	return s.sendResponse(clientConn, message, protocol.Message{
+	return s.sendResponse(caller, message, protocol.Message{
 		Type:              protocol.TypeDeviceRegistered,
 		DeviceID:          info.ID,
 		DeviceName:        info.Name,
@@ -216,15 +216,15 @@ func (s *Server) handleRegisterDevice(clientConn *clientConnection, message prot
 }
 
 // 处理心跳包
-func (s *Server) handleDeviceHeartbeat(clientConn *clientConnection, message protocol.Message) error {
-	if clientConn.role != roleDevice {
+func (s *Service) handleDeviceHeartbeat(caller *Caller, message protocol.Message) error {
+	if caller.Role != RoleDevice {
 		return newProtocolError("NOT_DEVICE", "only a registered device can send heartbeats")
 	}
-	info, err := s.devices.Heartbeat(clientConn.deviceID, clientConn.id)
+	info, err := s.devices.Heartbeat(caller.DeviceID, caller.ConnectionID)
 	if err != nil {
 		return s.deviceProtocolError(err)
 	}
-	return s.sendResponse(clientConn, message, protocol.Message{
+	return s.sendResponse(caller, message, protocol.Message{
 		Type:           protocol.TypeHeartbeatAck,
 		DeviceID:       info.ID,
 		ActiveSessions: s.sessions.CountOpenByDevice(info.ID),
@@ -233,8 +233,8 @@ func (s *Server) handleDeviceHeartbeat(clientConn *clientConnection, message pro
 }
 
 // 处理更新密码
-func (s *Server) handleUpdateTemporaryPassword(clientConn *clientConnection, message protocol.Message) error {
-	if clientConn.role != roleDevice {
+func (s *Service) handleUpdateTemporaryPassword(caller *Caller, message protocol.Message) error {
+	if caller.Role != RoleDevice {
 		return newProtocolError("NOT_DEVICE", "only a registered device can rotate its temporary password")
 	}
 	mode := device.Mode(message.Mode)
@@ -261,7 +261,7 @@ func (s *Server) handleUpdateTemporaryPassword(clientConn *clientConnection, mes
 		}
 		passwordTTL = requestedPasswordTTL
 	}
-	info, generatedPassword, err := s.devices.UpdatePassword(clientConn.deviceID, message.TemporaryPassword, message.PasswordVersion, mode, passwordTTL)
+	info, generatedPassword, err := s.devices.UpdatePassword(caller.DeviceID, message.TemporaryPassword, message.PasswordVersion, mode, passwordTTL)
 	if err != nil {
 		return s.deviceProtocolError(err)
 	}
@@ -269,7 +269,7 @@ func (s *Server) handleUpdateTemporaryPassword(clientConn *clientConnection, mes
 	s.audit.Event("temporary_password_updated", "device", audit.RedactID(info.ID), "version", info.PasswordVersion)
 
 	deviceInfo := protocolDeviceInfo(info)
-	return s.sendResponse(clientConn, message, protocol.Message{
+	return s.sendResponse(caller, message, protocol.Message{
 		Type:              protocol.TypeTemporaryPasswordUpdated,
 		DeviceID:          info.ID,
 		Mode:              string(info.Mode),
@@ -282,12 +282,12 @@ func (s *Server) handleUpdateTemporaryPassword(clientConn *clientConnection, mes
 }
 
 // 获取设备列表
-func (s *Server) handleListDevices(clientConn *clientConnection, message protocol.Message) error {
+func (s *Service) handleListDevices(caller *Caller, message protocol.Message) error {
 	infos := s.devices.List()
 	sort.Slice(infos, func(i, j int) bool { return infos[i].ID < infos[j].ID })
 	devices := make([]protocol.DeviceInfo, 0, len(infos))
 	for _, info := range infos {
 		devices = append(devices, protocolDeviceInfo(info))
 	}
-	return s.sendResponse(clientConn, message, protocol.Message{Type: protocol.TypeDeviceList, Devices: devices})
+	return s.sendResponse(caller, message, protocol.Message{Type: protocol.TypeDeviceList, Devices: devices})
 }

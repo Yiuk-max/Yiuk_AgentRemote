@@ -189,6 +189,7 @@ Agent: get_command_result(session_id, request_id) → 拼成人话告诉我
 | 能力 | 状态 |
 | --- | --- |
 | Go 平台服务（认证、设备、会话、任务、TLS 中转、路由） | 已完成 |
+| 接入与业务拆分（gateway + core，gRPC 帧透传） | 已完成（P1，`cmd/platform` 单进程模式仍可用） |
 | Agent 工具核心与 MCP 适配器 | 已完成 |
 | Agent 平台 backend（`platformclient`） | 已完成 |
 | Windows Qt 客户端平台对接 | 已完成 |
@@ -228,7 +229,7 @@ Agent: get_command_result(session_id, request_id) → 拼成人话告诉我
 ## 文档
 
 - [关键技术架构：决策、不变式与边界](docs/key-architecture.md)：九个关键决策（为什么中继、为什么单写者队列、三层授权、`result_unknown`、资源上限）及其代价，服务端必须保证的不变式，以及尚未修复的薄弱点清单。
-- [分布式演进计划](docs/distributed-plan.md)：网关多实例、Redis 状态外置、RabbitMQ 跨网关送帧与审计、用户登录微服务；含分阶段验收标准与「明确不做什么」。
+- [分布式演进计划](docs/distributed-plan.md)：Gateway 多实例、原有业务整体迁到 Core Service、Redis 路由与共享状态、RabbitMQ 跨网关送帧与用户服务请求/响应；P1（接入/业务分离）已落地，P2 起仍是计划。
 - [标识符与凭据速查](docs/identifiers.md)：6 个 ID（`device_id` / `connection_id` / `session_id` / `request_id` / `correlation_id` / `password_version`）+ 3 个凭据，分别是谁生成、标识什么、泄露了会怎样。
 - [运行时架构：消息转发、MCP 工具与客户端](docs/runtime-architecture.md)：连接拓扑、读写循环、设备/操作者连接绑定、命令去程与结果回程、失败收敛、MCP 工具清单与错误码。
 - [Go 后端技术说明与入门指南](docs/go-backend-guide.md)：面向 C++ 后端开发者的 Go 入门、架构、幂等、SHA-256、文件原子落盘和 Docker 说明。

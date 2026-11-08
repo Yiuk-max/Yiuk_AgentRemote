@@ -23,7 +23,8 @@ import (
 
 	"agentremote/internal/platform/config"
 	"agentremote/internal/platform/protocol"
-	"agentremote/internal/platform/server"
+	"agentremote/internal/platform/core"
+	"agentremote/internal/platform/gateway"
 	"agentremote/internal/platform/transport"
 )
 
@@ -60,16 +61,20 @@ func main() {
 		fail("listen: %v", err)
 	}
 	listener := transport.ServeWebSocketListener(raw, cfg.MaxFrameBytes)
-	srv := server.NewWithListener(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), listener)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := gateway.NewWithListener(cfg, logger, listener)
+	coreSvc := core.New(cfg, logger, gw)
+	gw.Bind(coreSvc)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = srv.Run(ctx)
+		_ = gw.Run(ctx)
 	}()
+	go func() { _ = coreSvc.Run(ctx) }()
 	defer func() {
 		cancel()
-		srv.Close()
+		gw.Close()
 		<-done
 	}()
 	addr := "ws://" + listener.Addr().String()

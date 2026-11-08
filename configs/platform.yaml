@@ -40,3 +40,14 @@ platform:
   unused_device_release_sec: 600
 
   log_file: "platform.log"
+
+  # —— 拆成两个进程时使用的内网 gRPC 地址（单进程 cmd/platform 模式不用）——
+  # 两个进程读同一份配置，各自只取自己那一侧的两项。
+  # core 进程：gRPC 监听，提供 Edge 服务（gateway 把帧送上来）
+  core_grpc_listen: ":25670"
+  # gateway 进程：连 core 的地址
+  core_grpc_addr: "127.0.0.1:25670"
+  # gateway 进程：gRPC 监听，提供 Push 服务（core 把出站帧送回来）
+  gateway_grpc_listen: ":25671"
+  # core 进程：连 gateway 的地址
+  gateway_grpc_addr: "127.0.0.1:25671"

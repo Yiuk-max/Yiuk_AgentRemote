@@ -27,12 +27,19 @@ govulncheck ./...                 # go install golang.org/x/vuln/cmd/govulncheck
 ## 2. 源码结构
 
 ```text
-cmd/platform/ cmd/yiuk-mcp/ cmd/smoke/ cmd/device-sim/
+cmd/platform/                单进程：core + gateway 装在一个进程里
+cmd/platform-core/           业务进程：只处理业务，不碰客户端 socket
+cmd/platform-gateway/        接入进程：只管 socket，把帧原样转给 core
+cmd/yiuk-mcp/ cmd/smoke/ cmd/device-sim/
 
+internal/platform/core/       业务：service.go caller.go link.go delivery.go janitor.go
+                              handler.go handler_session.go handler_command.go
+                              handler_download.go handler_upload.go errors.go convert.go
+internal/platform/gateway/    接入：server.go（监听、连接表、投递） conn.go（读写、队列、超时）
+internal/platform/edge/       core ↔ gateway 的 gRPC 契约与两端适配（edgepb/ 为生成代码）
+                              edge.go 身份转换；core_for_gateway_use.go / gateway_for_core_use.go
+                              按“跑在哪个进程里”分文件，各含自己的服务端与客户端
 internal/platform/            auth config device session task transfer protocol transport audit
-internal/platform/server/     server.go conn.go routing.go janitor.go handler.go
-                              handler_session.go handler_command.go handler_download.go
-                              errors.go convert.go
 internal/platformclient/      client.go config.go transport.go cache.go
                               tools_device.go tools_session.go tools_command.go tools_file.go
 internal/agenttools/          工具契约
@@ -41,6 +48,22 @@ internal/mcpadapter/          MCP stdio
 configs/                      平台配置模板
 deploy/                       服务器安装脚本与 systemd 单元
 ```
+
+### 业务与接入的分界
+
+`core` 不认识 socket，`gateway` 不认识业务。两边只靠一个接口说话：
+
+```go
+// core 唯一出口，由接入层实现（单进程直接调，两进程走 gRPC Push）
+type Link interface {
+    Deliver(connectionID string, frame []byte) error
+    Alive(connectionID string) bool
+}
+```
+
+- 连接表只在 `gateway` 里；`connection_id`、`role`、`device_id` 存在连接对象上，每次处理一帧时随 `core.Caller` 带进业务层、处理完再带回来。
+- 帧内容是客户端原始 JSON 字节：`core` 编解码，`gateway` 只搬运。
+- 同一连接一次只处理一帧（读一帧 → 等 core 返回 → 读下一帧），单连接顺序不乱。
 
 Qt 客户端（`qt-client/src`）：
 
@@ -65,7 +88,19 @@ platformclient localbridge securestore   协议客户端、本机 bridge、DPAPI
 ## 3. 构建
 
 ```sh
+# 单进程（本机调试、现有部署继续用）
 go build -o platform ./cmd/platform
+
+# 拆成两个进程
+go build -o platform-core ./cmd/platform-core
+go build -o platform-gateway ./cmd/platform-gateway
+```
+
+改过 `internal/platform/edge/edgepb/edge.proto` 之后重新生成（`buf`、`protoc-gen-go`、`protoc-gen-go-grpc` 需在 `PATH`，不需要装 `protoc`）：
+
+```sh
+cd internal/platform/edge/edgepb
+buf generate --template buf.gen.yaml .
 ```
 
 ```sh
@@ -188,9 +223,37 @@ systemctl restart yiuk-platform
 
 日志只记录脱敏 ID、状态与错误码。
 
-### 6.1 容器部署（Docker / Compose）
+### 6.1 两进程部署（core + gateway）
 
-镜像里只有 `cmd/platform` 的静态二进制与一个入口脚本，非 root（uid `10001`）运行，工作目录 `/var/lib/yiuk-platform`，暴露 `29564`。
+拆分后两个进程读**同一份** `platform.yaml`，各自只取自己那一侧的两项：
+
+```yaml
+platform:
+  listen: ":29564"              # 客户端连这里（仅 gateway）
+  tls_cert / tls_key            # 仅 gateway
+  player_password: "..."        # 仅 core 使用
+  core_grpc_listen: "127.0.0.1:25670"     # core 监听，提供 Edge 服务
+  gateway_grpc_listen: "127.0.0.1:25671"  # gateway 监听，提供 Push 服务
+  core_grpc_addr: "127.0.0.1:25670"       # gateway 连 core
+  gateway_grpc_addr: "127.0.0.1:25671"    # core 连 gateway
+```
+
+```sh
+./platform-core    -config platform.yaml   # 只有业务，没有对外端口
+./platform-gateway -config platform.yaml   # 对外 WSS，把帧原样转给 core
+```
+
+要点：
+
+- 两个 gRPC 地址都是**内网明文**，只监听回环或容器内网，不要对外暴露。
+- 连接表只在 gateway；core 判断“设备连接还在不在”时通过 gRPC 问 gateway（`Alive`）。
+- gateway 重启会中断它名下的连接；它正常退出时会给 core 发 `Detach`，core 按现有规则收敛会话。
+- gateway 被强杀（收不到 `Detach`）时，它名下的会话靠 core 的过期清理收敛，最长一个 `session_timeout_sec`。
+- `cmd/platform` 仍然可用：单进程把两者拼在一起，不走 gRPC，适合本机调试和不需要扩容的部署。
+
+### 6.2 容器部署（Docker / Compose）
+
+镜像里有三个静态二进制：`yiuk-platform`（单进程，默认）、`yiuk-platform-core`、`yiuk-platform-gateway`，用 `YIUK_BINARY` 选一个；非 root（uid `10001`）运行，工作目录 `/var/lib/yiuk-platform`。
 
 ```sh
 docker build -t yiuk-platform:local .

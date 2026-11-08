@@ -49,12 +49,14 @@
 ### D2　一连接两 goroutine：同步读 + 单写者 + 有界队列
 
 - **问题**：多 goroutine 直接写同一 socket 会字节交错；读侧阻塞会让慢对端拖垮整台服务端。
-- **选择**（`internal/platform/server/server.go`、`conn.go`、`routing.go`）：
-  - 每条连接固定两个 goroutine：`readAndDispatchMessages`（读 + **同步**分发）与 `writeQueuedMessages`（唯一写者）；
-  - `outgoingMessages` 容量 `observer_slow_client_buf`（默认 64）；
+- **选择**（`internal/platform/gateway/server.go`、`conn.go`）：
+  - 每条连接固定两个 goroutine：`readAndDispatchFrames`（读 + **同步**交给业务）与 `writeQueuedFrames`（唯一写者）；
+  - `outgoingFrames` 容量 `observer_slow_client_buf`（默认 64）；
   - 队列满**不阻塞调用者、不涨内存**，直接判定对端处理不过来并断开。
-- **理由**：读侧同步分发保证**同连接消息严格有序** —— 这是文件分块 `sequence` 连续校验、任务状态单向推进能成立的前提；单写者让帧不会交错。
+- **理由**：读侧同步交付保证**同连接消息严格有序** —— 这是文件分块 `sequence` 连续校验、任务状态单向推进能成立的前提；单写者让帧不会交错。
 - **代价**：`writeMu` 仍然必须存在，因为**致命错误路径会绕过队列同步写**（先让对端看到错误码再断开），此时两个 goroutine 并发写同一 socket。另外"慢"等于"被踢"，所以必须靠幂等 + `result_unknown` 兜底（D5、D6）。
+
+拆分后这条不变式的依赖点从"一个进程内的读协程"变成"gateway 对同一连接串行调用 core"：gateway 一次只发一个 `Handle`，收到回复再读下一帧。**归约到 core 一侧就变成：core 不要自己起并发处理同一条连接。**
 
 ### D3　三层身份，且“设备码不是凭据”
 
@@ -149,8 +151,9 @@
 5. **批准即全权**：会话创建后即拥有执行 / 读 / 写三项能力；任何新增的“会话级断言”（如按路径白名单）必须是**收紧**而不是依赖调用方声明。
 6. **`request_id` 不可跨会话复用**；同一会话内重复提交返回原结果，不重复执行。
 7. **断线不自动重放**；不确定就 `result_unknown`。
-8. **单连接消息严格有序**（依赖 D2 的同步分发）。
+8. **单连接消息严格有序**（依赖 D2 的同步分发；拆分后依赖 gateway 对同一连接串行调用 core）。
 9. **临时密码、命令正文、完整输出不写服务端日志**（`internal/platform/audit` 只记 `RedactID` 摘要）。
+10. **连接表只有一份在 gateway**。core 不维护连接状态，也不缓存“这条连接在线”；需要时调 `Alive`，投递失败就当设备不可用。
 
 ---
 
@@ -195,10 +198,10 @@
 | 2 | 任务/传输终态记录永不回收 | `internal/platform/task/manager.go`、`transfer/manager.go` | 每条大输出命令最多留 2 MiB 常驻；长时间运行会 OOM | 终态记录 TTL / LRU 回收 |
 | 3 | 结果分页没有字节预算 | `task.Manager.ResultFromCursor` 返回 cursor 之后**全部**分块；`max_output_bytes`(2 MiB) ≫ `max_frame_bytes`(256 KiB) | 一条输出超过约 256 KiB 的命令，`get_command_result` 编码失败 → 写循环退出 → **操作者连接被关 → 会话中断** | 按字节切页 + `Encode` 失败降级为错误帧而不是退出写循环 |
 | 4 | 会话无滑动续期，`LastActivity` 是死字段 | `session/manager.go`（`Activate`/`Authorize` 只写不读） | `timeout_seconds` 最大 3600 但会话 600s 就被 janitor 杀掉，长命令必然中断 | 有活动即续期，或区分 idle / max lifetime |
-| 5 | 上传无流控 | `internal/platformclient/tools_upload.go` 一次性发完所有分块；`internal/platform/server/handler_upload.go` 忽略 `sendToConnection` 返回值 | 32 MiB = 512 帧灌进深度 64 的队列；设备稍慢就被判 `slow_client` 断开；设备重连后分块静默丢弃 | 窗口/ack 流控，队列满时反压操作者而不是断设备 |
-| 6 | 设备的 `mode` 字段不参与授权 | `internal/platform/server/handler_session.go`（`handleRequestSession` 只看"有没有带临时密码"） | 所有者设 `approval` 想每次弹窗，但持有密码者直接进 `direct`，弹窗不出现 | 明确这是产品决定还是缺陷；若要生效，`direct` 需设备侧显式开启 |
+| 5 | 上传无流控 | `internal/platformclient/tools_upload.go` 一次性发完所有分块；`internal/platform/core/handler_upload.go` 忽略 `send` 返回值 | 32 MiB = 512 帧灌进深度 64 的队列；设备稍慢就被判 `slow_client` 断开；设备重连后分块静默丢弃 | 窗口/ack 流控，队列满时反压操作者而不是断设备 |
+| 6 | 设备的 `mode` 字段不参与授权 | `internal/platform/core/handler_session.go`（`handleRequestSession` 只看"有没有带临时密码"） | 所有者设 `approval` 想每次弹窗，但持有密码者直接进 `direct`，弹窗不出现 | 明确这是产品决定还是缺陷；若要生效，`direct` 需设备侧显式开启 |
 | 7 | 设备连接可当 operator 发起会话 | `handleRequestSession` 只挡了"连自己" | 被攻破的设备客户端可以连别的设备 | 视产品意图决定是否要求 `role == rolePlayer` |
-| 8 | 输出截断后会重复发最后一帧 | `internal/platform/server/handler_command.go`（`handleCommandOutput`） | 靠客户端 `sequence` 去重才没出错；第三方客户端会重复渲染 | 截断后不再下发 data |
+| 8 | 输出截断后会重复发最后一帧 | `internal/platform/core/handler_command.go`（`handleCommandOutput`） | 靠客户端 `sequence` 去重才没出错；第三方客户端会重复渲染 | 截断后不再下发 data |
 | 9 | 操作者客户端单飞 | `internal/platformclient/client.go`（整个流式请求持 `requestMu`） | 并发工具调用互相阻塞到超时；长任务应改用会话式 `execute_command` + `get_command_result` | 改为 per-request pending map |
 | 10 | 无 CI | 仓库无 `.github/` | 只能靠本地 `go vet ./...` + `go test ./...` | 补流水线：vet + test + race |
 

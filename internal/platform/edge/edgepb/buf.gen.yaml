@@ -1,0 +1,13 @@
+# 生成 internal/platform/edge/edgepb 下的 Go 代码。
+#
+#   cd internal/platform/edge/edgepb && buf generate --template buf.gen.yaml .
+#
+# 只需要 buf 与 protoc-gen-go / protoc-gen-go-grpc，不需要单独安装 protoc。
+version: v2
+plugins:
+  - local: protoc-gen-go
+    out: .
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: .
+    opt: paths=source_relative
