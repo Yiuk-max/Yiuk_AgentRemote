@@ -206,6 +206,7 @@
 | 8 | 输出截断后会重复发最后一帧 | `internal/platform/core/handler_command.go`（`handleCommandOutput`） | 靠客户端 `sequence` 去重才没出错；第三方客户端会重复渲染 | 截断后不再下发 data |
 | 9 | 操作者客户端单飞 | `internal/platformclient/client.go`（整个流式请求持 `requestMu`） | 并发工具调用互相阻塞到超时；长任务应改用会话式 `execute_command` + `get_command_result` | 改为 per-request pending map |
 | 10 | 无 CI | 仓库无 `.github/` | 只能靠本地 `go vet ./...` + `go test ./...` | 补流水线：vet + test + race |
+| 11 | 分流没有健康检查 | 部署层（DNAT 轮询），见 [分布式计划 §6.1](distributed-plan.md) | 网关挂掉后新连接仍会被分过去，只能靠客户端重连；多网关时故障恢复慢一拍 | 需要时换 Nginx + PROXY protocol（gateway 要能解析 PROXY 头） |
 
 ---
 

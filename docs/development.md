@@ -252,7 +252,40 @@ platform:
 - gateway 被强杀（收不到 `Detach`）时，它名下的会话靠 core 的过期清理收敛，最长一个 `session_timeout_sec`。
 - 连接归属写在 Redis（§9），gateway 每 `route_ttl_sec / 3` 续期一次；它的 `gateway:<id>` 键过期后就没人会把帧投给它。
 
-### 6.2 容器部署（Docker，不用 compose）
+### 6.2 多网关（同一台机器，DNAT 分流）
+
+单机也能验证“接入层可水平扩容”。两个网关各用一份配置，只差四项：
+
+| 配置项 | gw-1 | gw-2 |
+| --- | --- | --- |
+| `gateway_id` | `gw-1` | `gw-2` |
+| `listen`（客户端 WSS） | `127.0.0.1:29565` | `127.0.0.1:29566` |
+| `gateway_grpc_listen` | `127.0.0.1:25671` | `127.0.0.1:25672` |
+| `gateway_grpc_addr`（core 用它投递） | `127.0.0.1:25671` | `127.0.0.1:25672` |
+
+`core`、Redis 不变，`core_grpc_addr` 仍指向同一个 core。
+
+```sh
+./platform-gateway -config gateway-1.yaml
+./platform-gateway -config gateway-2.yaml
+```
+
+分流用内核 DNAT 轮询，**不用 Nginx、不做健康检查**：
+
+```sh
+iptables -t nat -A PREROUTING -p tcp --dport 29564     -m statistic --mode nth --every 2 --packet 0 -j DNAT --to-destination 127.0.0.1:29565
+iptables -t nat -A PREROUTING -p tcp --dport 29564 -j DNAT --to-destination 127.0.0.1:29566
+iptables -t nat -A POSTROUTING -p tcp -s 127.0.0.1 --sport 29565:29566 -j MASQUERADE
+```
+
+- 源 IP 天然保留：按 IP 限流、审计 `remote`、会话里的“操作者设备”都不受影响。
+- 只影响新连接；已建立的长连接一直留在原网关。
+- 网关挂了，新连接仍可能被分过去；客户端连不上就重连（Qt 客户端指数退避，最长 30 秒）。不自动摘除节点。
+- 想看每条连接落在哪个网关：`go run ./cmd/dev-routes`。
+
+验证跨网关：`device-sim` 连 `127.0.0.1:29566`，另一个客户端连 `29565`，命令与文件双向跑通；停掉设备所在网关，操作者应在一次往返内收到会话中断。
+
+### 6.3 容器部署（Docker，不用 compose）
 
 一个镜像两个角色，用 `YIUK_BINARY` 选：`yiuk-platform-gateway`（默认，对外 WSS）与 `yiuk-platform-core`（只有业务）。两者都要能读到同一个 Redis，并且 gateway 要能连到 core 的 gRPC 地址。
 

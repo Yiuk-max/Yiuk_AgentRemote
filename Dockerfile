@@ -1,7 +1,7 @@
 # AgentRemote platform: core (business) + gateway (WSS ingress), one image.
 #
 # Build:  docker build -t yiuk-platform:local .
-# Run:    two containers from this image (see docs/development.md §6.2)
+# Run:    two containers from this image (see docs/development.md §6.3)
 #
 # 一个镜像两个角色，用 YIUK_BINARY 选：
 #   yiuk-platform-gateway  对外 WSS，把帧原样转给 core（默认）

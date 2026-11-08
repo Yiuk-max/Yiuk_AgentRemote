@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | **P1：接入/业务分离** | 已完成 | `internal/platform/core`（业务）+ `internal/platform/gateway`（接入）+ `internal/platform/edge`（gRPC 契约）；`cmd/platform-core`、`cmd/platform-gateway` 两个进程（单进程入口已删除） |
 | **P2：Redis 登记位置** | 已完成 | `internal/platform/registry`（Redis 路由表）+ `internal/platform/gateway/routes.go`（登记与续期）+ `internal/platform/edge/core_router.go`（按路由投递）；见 §5.1 |
-| **P3：多网关** | 未开始 | — |
+| **P3：多网关** | 代码完成，部署待做 | 跨网关投递（gRPC 直连）+ 双网关集成测试已完成；分流用 DNAT，不做健康检查；见 §6.1 |
 | **P4：用户微服务** | 未开始（暂不考虑） | — |
 
 与原始设计不同、以此为准的几项决定：
@@ -191,9 +191,71 @@ route:device:<device_id>   → "<conn_id> <gateway_id> <启动标识>"  为 P3 �
 
 Redis 里**只有路由**：不存 socket、不存设备与会话状态、不存授权。路由失效的后果是“找不到人”，不是“授权变宽”。
 
-## 6. RabbitMQ 用途一：跨网关送帧
+## 6. 跨网关送帧：用 gRPC 直连，暂不引入 MQ
 
-### 场景
+**P3 的决定：不引入 RabbitMQ。** Core 已经是唯一的业务中枢，所有帧本来就要经过它：
+操作者连 gw-1、设备连 gw-2 时，Core 查 `route:conn` 找到设备所在网关，直接用已有的
+`Push.Deliver` gRPC 调过去（客户端按网关缓存，网关重启自动换）。
+
+```text
+操作者 → gw-1 → core.Handle（校验会话、登记任务）
+                  core 查 route:conn(设备连接) → gw-2
+                  core → Push.Deliver@gw-2 → 设备
+设备输出 → gw-2 → core.Handle
+                  core 查 route:conn(操作者连接) → gw-1
+                  core → Push.Deliver@gw-1 → 操作者
+```
+
+**Gateway 之间从不直连**，永远经过 Core。这样只有一条投递路径，不存在“一部分直写、
+一部分绕 MQ”的乱序风险，而且投递失败当场可见（可以直接回 `DEVICE_UNAVAILABLE`，
+不用先报“已受理”再靠超时猜）。
+
+gRPC 直连的两个已知代价，落地时要盯住：
+
+- **投递超时必须短**（`edge.deliverTimeout`，默认 2 秒）。它位于“处理来源连接这一帧”的
+  路径上，慢网关会顶住来源连接；文件传 512 块时会累加，所以宁可报“没送到”。
+- **每帧两次 Redis 查询**（`route:conn` + `gateway`）。单机可忽略；网关变多或文件吞吐
+  上来后，可以在 `core_router.go` 加几秒的 `connID → 网关` 内存缓存。
+
+### 6.1 P3 的分流方式：DNAT，不做健康检查
+
+端口规划（单机）：
+
+```text
+公网 29564      → 内核 DNAT 轮询
+127.0.0.1:29565 → gw-1（gateway_id=gw-1，push grpc 127.0.0.1:25671）
+127.0.0.1:29566 → gw-2（gateway_id=gw-2，push grpc 127.0.0.1:25672）
+127.0.0.1:25670 → core
+127.0.0.1:6379  → Redis
+```
+
+```bash
+# 两条规则合起来：偶数连接去 gw-1，其余去 gw-2（只在新建连接时生效）
+iptables -t nat -A PREROUTING -p tcp --dport 29564 \
+    -m statistic --mode nth --every 2 --packet 0 \
+    -j DNAT --to-destination 127.0.0.1:29565
+iptables -t nat -A PREROUTING -p tcp --dport 29564 -j DNAT --to-destination 127.0.0.1:29566
+
+# 回程：网关发出的包源地址是回环，必须 SNAT 回公网地址，否则客户端会收到源地址不对的包
+iptables -t nat -A POSTROUTING -p tcp -s 127.0.0.1 --sport 29565:29566 -j MASQUERADE
+
+# 记住这两条规则（重启后恢复）
+apt install -y iptables-persistent && netfilter-persistent save
+```
+
+- **不用 Nginx**，所以不需要 PROXY protocol：网关看到的对端地址就是真实客户端地址，按 IP 限流、审计 `remote`、会话里的“操作者设备”全部照旧。网关只监听回环，外部只能从 29564 进来。
+- **不做健康检查**：某个网关挂了，新连接仍可能被分到它，客户端连不上就重连（Qt 客户端已有指数退避，最长 30 秒）。它名下的旧连接随进程消失，路由靠 TTL 失效，会话靠 `Detach` 或过期清理收敛。
+- L4 只影响**新连接**；已建立的长连接一直由原网关承接，不会中途换节点。
+- 需要健康检查、权重、慢启动时再换 Nginx + PROXY protocol（gateway 需支持解析 PROXY 头，属代码改动）。
+
+### 什么时候才值得换成 MQ
+
+只有这些情况值得重新考虑：网关多到要维护几十上百条 gRPC 连接且需要解耦收发速率；
+一个帧要同时给多个消费者（审计、指标）；跨机房直连打不通；或者 Core 真的要多实例。
+真到那天，接缝现成：把 `Push.Deliver` 换成“发到队列”、消费端再调 `gateway.Deliver`，
+Core 与 Gateway 都不用改。下面是当年的队列设计，留作备选，**当前未采用**。
+
+### 场景（MQ 方案，未采用）
 
 操作者连 Gateway-1，设备连 Gateway-2。Gateway-1 查不到设备 socket，因为它在另一台进程里。
 
@@ -292,11 +354,11 @@ Core / Gateway → RabbitMQ 审计队列 → 审计消费者 → 数据库
 | --- | --- | --- |
 | **P1：接入/业务分离** ✅ | 一个 Gateway + 一个 Core，用 gRPC 连接；原业务整体迁移 | 注册、审批、命令、上传下载、关闭会话全部回归通过；单 Core 统一清理过期状态 |
 | **P2：Redis 登记位置** ✅ | 节点存活、连接归属、设备路由 | 查得到连接归属；旧连接清理不误删新路由；节点退出后路由能失效 |
-| **P3：多网关** | 第二个 Gateway、Nginx、RabbitMQ 跨网关投递 | 两端刻意连接不同 Gateway，命令与文件双向跑通；断线、MQ 故障、慢设备能收敛 |
+| **P3：多网关** 🟡 | 第二个 Gateway、内核层分流（DNAT）、跨网关投递走 gRPC，不引入 MQ | 两端刻意连接不同 Gateway，命令与文件双向跑通；设备所在网关退出后会话能收敛 |
 | **P4：用户微服务** | User Service + PostgreSQL，通过 MQ 请求/响应 | 注册登录、邮箱验证、结果关联、超时及重复请求可测；旧 Agent 认证路径仍可用 |
 | **后续：按需补齐** | 审计落库、更多监控、性能优化 | 有真实需求再做，不计入当前必做项 |
 
-用 Docker Compose 统一编排，先在单机多进程验证，再搬到多台机器。Nginx 先选 L4 透传以保留现有 TLS 校验方式；各 Gateway 需提供客户端信任的证书。**L7 TLS 终止并非绝对不能做，只是需要同步设计证书信任与固定指纹迁移，本次不做。**
+先在单机多进程验证，再搬到多台机器。**分流用内核层 DNAT 轮询，不用 Nginx、不做健康检查**：源 IP 天然保留，按 IP 限流与审计来源都不受影响；代价是网关挂掉后新连接还会被分过去，靠客户端重连收敛。想加健康检查再上 Nginx + PROXY protocol——那需要 gateway 支持 PROXY 头，否则限流与日志来源会退化成代理地址。各 Gateway 需提供客户端信任的证书；L7 TLS 终止本次不做。
 
 ## 10. 第一版必须讲清楚的限制
 
@@ -305,6 +367,7 @@ Core / Gateway → RabbitMQ 审计队列 → 审计消费者 → 数据库
 - 原来的 `request_id` 幂等、`correlation_id` 配对应答、输出预算、传输校验继续保留。
 - session 创建并不等于批准。只有有效且已批准的会话才可操作，默认具备命令执行与文件读写能力。
 - 网关重启会中断本节点连接；Core 重启按统一策略中断旧会话，不能让 Redis 中的残留记录被误认为仍然授权有效。
+- 分流不做健康检查：被分到已死网关的新连接会直接失败，恢复靠客户端重连，不会自动摘除节点。
 - 不承诺“消息绝不丢”“全链路绝不重复”；超时和失联时如实报告，破坏性操作不盲重试。
 
 ---

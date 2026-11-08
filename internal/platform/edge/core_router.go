@@ -22,6 +22,13 @@ import (
 // lookupTimeout 是查一次路由的上限。路由查不到就当作不可投递，不无限等。
 const lookupTimeout = 2 * time.Second
 
+// deliverTimeout 是单次投递的上限。
+//
+// 投递发生在“处理来源连接这一帧”的路径上：多网关时它要跨到另一台网关，
+// 如果那里卡住，超时时间就是来源连接被堵住的时长（文件传 512 块会累加）。
+// 所以这里要比 rpcTimeout 短：宁可报“没送到”，也不能堵住对面。
+const deliverTimeout = 2 * time.Second
+
 // RouteResolver 查"连接在哪、网关在哪"，由 registry.Registry 实现。
 type RouteResolver interface {
 	ResolveConn(ctx context.Context, connectionID string) (registry.ConnRoute, error)
@@ -183,7 +190,7 @@ func (l *routerLink) Deliver(connectionID string, frame []byte) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), deliverTimeout)
 	defer cancel()
 	return client.deliver(ctx, connectionID, frame)
 }
