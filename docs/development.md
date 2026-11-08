@@ -27,7 +27,8 @@ govulncheck ./...                 # go install golang.org/x/vuln/cmd/govulncheck
 ## 2. 源码结构
 
 ```text
-cmd/platform/                单进程：core + gateway 装在一个进程里
+cmd/dev-redis/               本机假 Redis（miniredis），只为本地起服务
+cmd/dev-routes/              打印 Redis 里的路由表（agentremote:*）
 cmd/platform-core/           业务进程：只处理业务，不碰客户端 socket
 cmd/platform-gateway/        接入进程：只管 socket，把帧原样转给 core
 cmd/yiuk-mcp/ cmd/smoke/ cmd/device-sim/
@@ -36,6 +37,7 @@ internal/platform/core/       业务：service.go caller.go link.go delivery.go 
                               handler.go handler_session.go handler_command.go
                               handler_download.go handler_upload.go errors.go convert.go
 internal/platform/gateway/    接入：server.go（监听、连接表、投递） conn.go（读写、队列、超时）
+internal/platform/registry/   路由表：网关存活、连接归属、设备路由（Redis，带 TTL）
 internal/platform/edge/       core ↔ gateway 的 gRPC 契约与两端适配（edgepb/ 为生成代码）
                               edge.go 身份转换；core_for_gateway_use.go / gateway_for_core_use.go
                               按“跑在哪个进程里”分文件，各含自己的服务端与客户端
@@ -54,7 +56,7 @@ deploy/                       服务器安装脚本与 systemd 单元
 `core` 不认识 socket，`gateway` 不认识业务。两边只靠一个接口说话：
 
 ```go
-// core 唯一出口，由接入层实现（单进程直接调，两进程走 gRPC Push）
+// core 唯一出口：生产走 gRPC Push，测试里是进程内直连
 type Link interface {
     Deliver(connectionID string, frame []byte) error
     Alive(connectionID string) bool
@@ -63,6 +65,7 @@ type Link interface {
 
 - 连接表只在 `gateway` 里；`connection_id`、`role`、`device_id` 存在连接对象上，每次处理一帧时随 `core.Caller` 带进业务层、处理完再带回来。
 - 帧内容是客户端原始 JSON 字节：`core` 编解码，`gateway` 只搬运。
+- 连接归属写在 Redis（`internal/platform/registry`）：core 先查路由再投递，查不到时退回配置里的网关地址。
 - 同一连接一次只处理一帧（读一帧 → 等 core 返回 → 读下一帧），单连接顺序不乱。
 
 Qt 客户端（`qt-client/src`）：
@@ -88,13 +91,11 @@ platformclient localbridge securestore   协议客户端、本机 bridge、DPAPI
 ## 3. 构建
 
 ```sh
-# 单进程（本机调试、现有部署继续用）
-go build -o platform ./cmd/platform
-
-# 拆成两个进程
-go build -o platform-core ./cmd/platform-core
-go build -o platform-gateway ./cmd/platform-gateway
+go build -o platform-core ./cmd/platform-core       # 业务进程
+go build -o platform-gateway ./cmd/platform-gateway # 接入进程
 ```
+
+两个进程都要连 Redis，两个 gRPC 端口（`core_grpc_listen` / `gateway_grpc_listen`）只在回环或内网互通。
 
 改过 `internal/platform/edge/edgepb/edge.proto` 之后重新生成（`buf`、`protoc-gen-go`、`protoc-gen-go-grpc` 需在 `PATH`，不需要装 `protoc`）：
 
@@ -206,7 +207,7 @@ ISCC.exe /O"E:\缓存\setup" qt-client\installer\YiukDeviceAssist.iss
 sudo ./deploy/install-platform.sh /path/to/server.crt /path/to/server.key
 ```
 
-脚本：构建 `cmd/platform` 到 `/opt/yiuk-platform`；证书复制到 `certs`（私钥 `600`）；首次运行生成并打印 `player_password`；安装启动 `yiuk-platform.service`（`Restart=always`）。已存在 `platform.yaml` 时不覆盖。
+脚本：构建 `cmd/platform-core` 与 `cmd/platform-gateway` 到 `/opt/yiuk-platform`；证书复制到 `certs`（私钥 `600`）；首次运行生成并打印 `player_password`；安装并启动 `yiuk-platform-core.service` 与 `yiuk-platform-gateway.service`（`Restart=always`）。已存在 `platform.yaml` 时不覆盖。
 
 `player_password` 最少 8 字符，少于 16 字符启动告警。平台使用 WebSocket；WSS 监听 `:29564`，端口可按配置修改，不要求使用 443。需放行安全组；验证 TLS：
 
@@ -215,10 +216,10 @@ openssl s_client -connect <host>:29564 -CAfile <server.crt> </dev/null | head
 ```
 
 ```sh
-systemctl status yiuk-platform
-journalctl -u yiuk-platform -f
+systemctl status yiuk-platform-core yiuk-platform-gateway
+journalctl -u yiuk-platform-core -u yiuk-platform-gateway -f
 tail -f /opt/yiuk-platform/platform.log
-systemctl restart yiuk-platform
+systemctl restart yiuk-platform-core yiuk-platform-gateway
 ```
 
 日志只记录脱敏 ID、状态与错误码。
@@ -249,54 +250,60 @@ platform:
 - 连接表只在 gateway；core 判断“设备连接还在不在”时通过 gRPC 问 gateway（`Alive`）。
 - gateway 重启会中断它名下的连接；它正常退出时会给 core 发 `Detach`，core 按现有规则收敛会话。
 - gateway 被强杀（收不到 `Detach`）时，它名下的会话靠 core 的过期清理收敛，最长一个 `session_timeout_sec`。
-- `cmd/platform` 仍然可用：单进程把两者拼在一起，不走 gRPC，适合本机调试和不需要扩容的部署。
+- 连接归属写在 Redis（§9），gateway 每 `route_ttl_sec / 3` 续期一次；它的 `gateway:<id>` 键过期后就没人会把帧投给它。
 
-### 6.2 容器部署（Docker / Compose）
+### 6.2 容器部署（Docker，不用 compose）
 
-镜像里有三个静态二进制：`yiuk-platform`（单进程，默认）、`yiuk-platform-core`、`yiuk-platform-gateway`，用 `YIUK_BINARY` 选一个；非 root（uid `10001`）运行，工作目录 `/var/lib/yiuk-platform`。
+一个镜像两个角色，用 `YIUK_BINARY` 选：`yiuk-platform-gateway`（默认，对外 WSS）与 `yiuk-platform-core`（只有业务）。两者都要能读到同一个 Redis，并且 gateway 要能连到 core 的 gRPC 地址。
 
 ```sh
+docker network create yiuk || true
 docker build -t yiuk-platform:local .
-docker run -d --name yiuk-platform -p 29564:29564 \
-  -e YIUK_PLAYER_PASSWORD='<16 位以上随机串>' \
-  -e YIUK_TLS_SELF_SIGNED=true \
-  -v yiuk-platform-data:/var/lib/yiuk-platform \
-  yiuk-platform:local
-docker logs -f yiuk-platform
+
+# Redis：只放路由，丢了只是路由失效，不丢授权。不挂卷。
+docker run -d --name yiuk-redis --network yiuk --restart unless-stopped   redis:7-alpine redis-server --save "" --appendonly no --maxmemory 64mb --maxmemory-policy allkeys-lru
+
+# core：没有对外端口
+docker run -d --name yiuk-core --network yiuk --restart unless-stopped   -e YIUK_BINARY=yiuk-platform-core   -e YIUK_PLAYER_PASSWORD='<16 位以上随机串>'   -e YIUK_REDIS_ADDR=yiuk-redis:6379   -e YIUK_CORE_GRPC_LISTEN=:25670   -e YIUK_GATEWAY_GRPC_ADDR=yiuk-gateway:25671   yiuk-platform:local
+
+# gateway：对外 29564，需要证书
+docker run -d --name yiuk-gateway --network yiuk --restart unless-stopped   -e YIUK_BINARY=yiuk-platform-gateway   -e YIUK_PLAYER_PASSWORD='<同一个密码>'   -e YIUK_REDIS_ADDR=yiuk-redis:6379   -e YIUK_GATEWAY_ID=gw-1   -e YIUK_CORE_GRPC_ADDR=yiuk-core:25670   -e YIUK_GATEWAY_GRPC_LISTEN=:25671   -e YIUK_GATEWAY_GRPC_ADDR=yiuk-gateway:25671   -e YIUK_TLS_SELF_SIGNED=true   -p 29564:29564   -v yiuk-platform-data:/var/lib/yiuk-platform   yiuk-platform:local
 ```
 
-Compose（仓库根目录，推荐）：
-
-```sh
-cp .env.example .env      # 填 YIUK_PLAYER_PASSWORD
-docker compose up -d --build
-docker compose ps          # 健康检查为 nc -z 127.0.0.1 29564
-docker compose down        # 加 -v 一并删除卷（配置、证书、日志）
-```
+- 两个 gRPC 端口（25670 / 25671）只在 `yiuk` 网络内互通，不要 `-p` 暴露。
+- `YIUK_GATEWAY_GRPC_ADDR` 是 core 用来投递的地址，必须是 gateway 在容器网络里的名字。
+- 多网关时每个 gateway 用不同的 `YIUK_GATEWAY_ID` 和 `YIUK_GATEWAY_GRPC_ADDR`（P3）。
+- core 不监听客户端，入口脚本会跳过证书生成；给它挂载证书没有意义。
 
 配置有两种来源：
 
-1. **环境变量**（默认）：启动时把 `platform.yaml` 渲染到 `/var/lib/yiuk-platform/platform.yaml`，每次重启按当前变量重写。只写 `listen`、TLS、`player_password`、`log_file`，其余限制走内置默认值。
+1. **环境变量**（默认）：启动时把 `platform.yaml` 渲染到 `/var/lib/yiuk-platform/platform.yaml`，每次重启按当前变量重写。只写基础字段，其余限制走内置默认值。
 2. **挂载配置**（`-e YIUK_CONFIG=/etc/yiuk/platform.yaml -v <file>:/etc/yiuk/platform.yaml:ro`）：文件原样使用，入口脚本不写盘；路径不存在直接报错退出。要改 `max_*`、各类 TTL 等默认值就走这条路，模板见 `configs/platform.yaml`。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `YIUK_PLAYER_PASSWORD` | 无 | 玩家密码；缺失且无配置文件时拒绝启动，少于 8 字符由服务端拒绝 |
+| `YIUK_BINARY` | `yiuk-platform-gateway` | 跑哪个角色 |
+| `YIUK_PLAYER_PASSWORD` | 无 | 玩家密码；缺失且无配置文件时拒绝启动 |
 | `YIUK_PLAYER_PASSWORD_FILE` | 无 | 从文件读密码（docker secret），优先于上一项 |
-| `YIUK_LISTEN` | `:29564` | 监听地址 |
-| `YIUK_TLS_CERT` / `YIUK_TLS_KEY` | `/var/lib/yiuk-platform/certs/server.crt` / `.key` | 证书与私钥 |
+| `YIUK_LISTEN` | `:29564` | gateway 的 WSS 监听地址 |
+| `YIUK_TLS_CERT` / `YIUK_TLS_KEY` | `/var/lib/yiuk-platform/certs/server.crt` / `.key` | 证书与私钥（只 gateway 用） |
 | `YIUK_ALLOW_INSECURE` | `false` | 明文监听，仅限本地测试 |
-| `YIUK_TLS_SELF_SIGNED` | `false`（compose 里默认 `true`） | 证书缺失时生成一次性自签证书 |
+| `YIUK_TLS_SELF_SIGNED` | `false` | 证书缺失时生成一次性自签证书 |
 | `YIUK_TLS_HOST` | `yiuk-platform` | 自签证书的 CN 与 SAN（另含 `127.0.0.1`） |
 | `YIUK_TLS_SELF_SIGNED_DAYS` | `825` | 自签有效期（天） |
-| `YIUK_LOG_FILE` | `/var/lib/yiuk-platform/platform.log` | 日志文件；`slog` 的 JSON 同时写它 |
-| `YIUK_HEALTHCHECK_PORT` | `29564` | 只是镜像内置 `HEALTHCHECK` 探测的端口，改 `YIUK_LISTEN` 时同步改它 |
+| `YIUK_LOG_FILE` | `/var/lib/yiuk-platform/platform.log` | 日志文件 |
+| `YIUK_CORE_GRPC_LISTEN` / `YIUK_GATEWAY_GRPC_LISTEN` | `:25670` / `:25671` | 两个进程各自的内网 gRPC 监听 |
+| `YIUK_CORE_GRPC_ADDR` / `YIUK_GATEWAY_GRPC_ADDR` | `127.0.0.1:25670` / `127.0.0.1:25671` | 对方地址 |
+| `YIUK_GATEWAY_ID` | `gw-1` | 网关身份，写进 Redis 路由 |
+| `YIUK_REDIS_ADDR` | `127.0.0.1:6379` | Redis 地址 |
+| `YIUK_REDIS_PASSWORD` / `YIUK_REDIS_DB` | 空 / `0` | Redis 认证与库号 |
+| `YIUK_ROUTE_TTL_SEC` | `30` | 路由键 TTL，网关每 1/3 周期续期 |
+| `YIUK_HEALTHCHECK_PORT` | `29564` | 镜像内置 `HEALTHCHECK` 探测端口；core 容器把它设成 `25670` |
 
-- 生产用真实证书：把 `server.crt` / `server.key` 放进卷的 `certs/`（或按 compose 注释挂载），并设 `YIUK_TLS_SELF_SIGNED=false`；私钥在容器内为 `600`、归属 `10001`。
-- 卷用命名卷：bind mount 的主机目录属主必须是 `10001`，否则入口脚本写不了 `platform.yaml`（会带提示退出）。compose 的 `read_only: true` 只放开该卷与 `/tmp`。
-- 平台状态全在内存：容器重启即清空在线设备、临时密码、会话与任务，客户端需重连。
-- 自签证书要在客户端「设置」页按 SHA-256 指纹信任；换证书后客户端会提示「证书已变更」。客户端通过 WSS 连接，旧版 TCP 客户端不兼容，发布新版客户端后再切换服务端。
-- 本机 Docker Desktop 实测通过：自签 TLS + `cmd/smoke` 全链路（注册、申请、批准、执行、取结果、越权拒绝、关闭会话）、`YIUK_PLAYER_PASSWORD_FILE`、含 `# : ' \` 的密码渲染、明文模式与 `docker compose up` 健康检查。
+- 生产用真实证书：把 `server.crt` / `server.key` 挂进卷的 `certs/`，并设 `YIUK_TLS_SELF_SIGNED=false`；私钥在容器内为 `600`、归属 `10001`。
+- 卷用命名卷：bind mount 的主机目录属主必须是 `10001`，否则入口脚本写不了 `platform.yaml`。
+- 平台状态全在内存：core 重启即清空在线设备、临时密码、会话与任务，客户端需重连。
+- 自签证书要在客户端「设置」页按 SHA-256 指纹信任；换证书后客户端会提示「证书已变更」。
 
 ## 7. 客户端配置与证书
 

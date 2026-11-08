@@ -79,21 +79,34 @@ E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-device-assist.exe
 
 端口与配置：
 
-| 用途 | 位置 | 端口 |
-| --- | --- | --- |
-| 平台服务（本地开发） | `configs\platform.yaml` | `:25664` |
-| 服务器部署脚本默认 | `deploy\install-platform.sh` | `:29564` |
+| 用途 | 端口 |
+| --- | --- |
+| gateway：客户端 WSS（本地开发） | `:25664`（`configs\platform.yaml`） |
+| gateway：客户端 WSS（服务器默认） | `:29564`（`deploy\install-platform.sh`） |
+| core：gRPC（gateway 连它） | `:25670` |
+| gateway：gRPC（core 投递用） | `:25671` |
+| Redis | `:6379` |
 
-本机已有一份 TLS 联调用的自签证书与构建好的服务端：`tmp-tls\server.crt`、`tmp-tls\server.key`、`tmp-tls\platform.exe`（`tmp-*` 与证书都在 `.gitignore` 里，不会进仓库）。
+本机已有一份 TLS 联调用的自签证书：`tmp-tls\server.crt`、`tmp-tls\server.key`（`tmp-*` 与证书都在 `.gitignore` 里，不会进仓库）。
 
-起本地平台服务（注意 `platform.yaml` 里证书是相对路径，要在证书目录运行）：
+起本地平台服务要三个东西：Redis + core + gateway。注意 `platform.yaml` 里的证书是相对路径，要在证书目录运行。
 
 ```powershell
 cd E:\Yiuk_AgentRemote
-go build -o tmp-tls\platform.exe ./cmd/platform
+
+# 1) Redis：本机没有 Redis 时用仓库自带的假 Redis（miniredis，不持久化）
+go run ./cmd/dev-redis              # 挂在 127.0.0.1:6379；有真 Redis 就不用跑
+
+# 2) 同一份配置，两个进程各取自己那一侧（先把 player_password 换掉）
 Copy-Item configs\platform.yaml tmp-tls\platform.yaml
-.\tmp-tls\platform.exe -config tmp-tls\platform.yaml      # 先把 player_password 换掉
+go run ./cmd/platform-core    -config tmp-tls\platform.yaml
+go run ./cmd/platform-gateway -config tmp-tls\platform.yaml   # 另开一个窗口
+
+# 3) 看路由表：网关存活键 + 每条连接的归属 + 设备路由
+go run ./cmd/dev-routes
 ```
+
+Redis 里应该能看到 `agentremote:gateway:gw-1`；客户端连上后会多出 `agentremote:route:conn:*`，设备注册后再多出 `agentremote:route:device:*`。
 
 ## 5. 快速自测（单机即可）
 

@@ -53,7 +53,7 @@ func startPlatform(t *testing.T) string {
 	}
 	wsListener := transport.ServeWebSocketListener(ln, cfg.MaxFrameBytes)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	gw := gateway.NewWithListener(cfg, logger, wsListener)
+	gw := gateway.NewWithListener(cfg, logger, wsListener, nil)
 	coreSvc := core.New(cfg, logger, gw)
 	gw.Bind(coreSvc)
 	ctx, cancel := context.WithCancel(context.Background())

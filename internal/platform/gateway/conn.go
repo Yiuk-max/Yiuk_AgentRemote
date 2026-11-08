@@ -3,6 +3,7 @@ package gateway
 // 连接在认证前使用握手超时，认证后使用心跳超时。
 // 消息由接收协程交给业务层，发送队列与致命错误响应共用 writeMu 串行写入。
 import (
+	"context"
 	"errors"
 	"net"
 	"sync"
@@ -24,6 +25,9 @@ type clientConnection struct {
 	closed         chan struct{}
 	closeOnce      sync.Once // closeOnce 确保关闭逻辑只执行一次
 	writeMu        sync.Mutex
+
+	// publishedDeviceID 是已经写进路由表的设备 ID，用来判断是否需要更新。
+	publishedDeviceID string
 }
 
 // readAndDispatchFrames 读取客户端帧并交给业务层，业务层要求关闭时退出。
@@ -54,6 +58,8 @@ func (s *Server) readAndDispatchFrames(clientConn *clientConnection) {
 			}
 			return
 		}
+		// 设备注册成功后业务层会带回 device_id，这里把它登记成路由。
+		s.syncDeviceRoute(context.Background(), clientConn)
 		if awaitingAuthentication && clientConn.caller.Role != core.RoleAnonymous {
 			awaitingAuthentication = false
 			readTimeout = s.config.HeartbeatTimeout()

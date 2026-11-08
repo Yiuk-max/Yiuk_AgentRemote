@@ -22,10 +22,15 @@
 #   YIUK_TLS_HOST            CN/SAN for that cert, default "yiuk-platform"
 #   YIUK_TLS_SELF_SIGNED_DAYS  validity in days, default 825
 #   YIUK_LOG_FILE            log file path, default "$DATA_DIR/platform.log"
-#   YIUK_BINARY              yiuk-platform (default) | yiuk-platform-core | yiuk-platform-gateway
+#   YIUK_BINARY              yiuk-platform-gateway (default) | yiuk-platform-core
 #   YIUK_CORE_GRPC_LISTEN / YIUK_CORE_GRPC_ADDR
 #   YIUK_GATEWAY_GRPC_LISTEN / YIUK_GATEWAY_GRPC_ADDR
-#                            in-cluster gRPC addresses used only by the split core/gateway roles
+#                            in-cluster gRPC addresses: each role uses its two
+#   YIUK_GATEWAY_ID          gateway identity used in Redis routes, default "gw-1"
+#   YIUK_REDIS_ADDR          redis address for route registration, default "127.0.0.1:6379"
+#   YIUK_REDIS_PASSWORD      redis password, default empty
+#   YIUK_REDIS_DB            redis database number, default 0
+#   YIUK_ROUTE_TTL_SEC       route key TTL in seconds, default 30
 #
 # All other platform limits (sessions, tasks, output caps, TTLs, ...) fall back
 # to the built-in defaults; mount a full platform.yaml to change them.
@@ -34,6 +39,8 @@ set -eu
 DEFAULT_CONFIG=/var/lib/yiuk-platform/platform.yaml
 CONFIG=${YIUK_CONFIG:-$DEFAULT_CONFIG}
 DATA_DIR=$(dirname "$CONFIG")
+# core 不开对外 WSS 监听，TLS 配置对它没有意义；只有 gateway 需要证书。
+ROLE=${YIUK_BINARY:-yiuk-platform-gateway}
 
 log() { printf 'yiuk: %s\n' "$*" >&2; }
 die() { log "error: $*"; exit 1; }
@@ -68,6 +75,11 @@ render_config() {
     core_grpc_addr=${YIUK_CORE_GRPC_ADDR:-127.0.0.1:25670}
     gateway_grpc_listen=${YIUK_GATEWAY_GRPC_LISTEN:-:25671}
     gateway_grpc_addr=${YIUK_GATEWAY_GRPC_ADDR:-127.0.0.1:25671}
+    gateway_id=${YIUK_GATEWAY_ID:-gw-1}
+    redis_addr=${YIUK_REDIS_ADDR:-127.0.0.1:6379}
+    redis_password=${YIUK_REDIS_PASSWORD:-}
+    redis_db=${YIUK_REDIS_DB:-0}
+    route_ttl_sec=${YIUK_ROUTE_TTL_SEC:-30}
 
     insecure=false
     case "${YIUK_ALLOW_INSECURE:-false}" in
@@ -76,7 +88,11 @@ render_config() {
     esac
 
     tls_block=
-    if [ "$insecure" = true ]; then
+    if [ "$ROLE" = "yiuk-platform-core" ]; then
+        # core 不监听客户端连接，配置里的 listen/TLS 字段都不会被用到。
+        insecure=true
+        log "role=core: no client listener, TLS settings ignored"
+    elif [ "$insecure" = true ]; then
         log "warning: YIUK_ALLOW_INSECURE is on, the listener is plaintext; use this only for local tests"
     else
         if [ ! -f "$cert" ] || [ ! -f "$key" ]; then
@@ -116,6 +132,11 @@ render_config() {
         echo "  core_grpc_addr: $(yaml "$core_grpc_addr")"
         echo "  gateway_grpc_listen: $(yaml "$gateway_grpc_listen")"
         echo "  gateway_grpc_addr: $(yaml "$gateway_grpc_addr")"
+        echo "  gateway_id: $(yaml "$gateway_id")"
+        echo "  redis_addr: $(yaml "$redis_addr")"
+        echo "  redis_password: $(yaml "$redis_password")"
+        echo "  redis_db: $redis_db"
+        echo "  route_ttl_sec: $route_ttl_sec"
     } >"$CONFIG.tmp" || die "cannot write $CONFIG.tmp (read-only volume?)"
     chmod 600 "$CONFIG.tmp"
     mv "$CONFIG.tmp" "$CONFIG"
@@ -129,5 +150,5 @@ else
     render_config
 fi
 
-# 跑哪个角色：yiuk-platform（默认，单进程）/ yiuk-platform-core / yiuk-platform-gateway。
-exec "/usr/local/bin/${YIUK_BINARY:-yiuk-platform}" -config "$CONFIG" "$@"
+# 跑哪个角色：yiuk-platform-gateway（默认，对外）/ yiuk-platform-core（业务）。
+exec "/usr/local/bin/$ROLE" -config "$CONFIG" "$@"

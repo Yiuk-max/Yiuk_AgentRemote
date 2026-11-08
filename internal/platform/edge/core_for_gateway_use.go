@@ -2,21 +2,18 @@
 //
 //   - CoreServer：把 core.Service 暴露成 Edge 服务，给 gateway 调用
 //   - pushLink / NewPushClient：core 连 gateway 的 Push 服务，实现 core.Link
+//     （P2 起按路由选网关，实现放在 core_router.go）
 //
-// 只被 cmd/platform-core 使用；单进程模式（cmd/platform）两条路径都是函数直调，
-// 不经过这里。
+// 只被 cmd/platform-core 使用；进程内直连的两条路径（测试、本地调试）不走 gRPC。
 package edge
 
 import (
 	"context"
 	"errors"
-	"sync"
 	"time"
 
 	"agentremote/internal/platform/core"
 	"agentremote/internal/platform/edge/edgepb"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // rpcTimeout 是 core 与 gateway 之间单次调用的上限。
@@ -60,60 +57,4 @@ func (s *CoreServer) Handle(ctx context.Context, request *edgepb.HandleRequest) 
 func (s *CoreServer) Detach(ctx context.Context, request *edgepb.DetachRequest) (*edgepb.DetachReply, error) {
 	s.service.Detach(CallerFromProto(request.GetCaller())) // 交给业务层收敛
 	return &edgepb.DetachReply{}, nil
-}
-
-// pushLink 实现 core.Link：把core.Service的出站帧push到 gateway 的 Push 服务
-type pushLink struct {
-	client edgepb.PushClient
-
-	// 同一条连接的帧必须按顺序到达。core 的主要出站路径本身是串行的，
-	// 只有过期清理会并发推送，所以这里按连接分片加锁就够了。
-	shards [64]sync.Mutex //shards 是分片锁，按 connection_id 哈希分片，保证同一连接的帧按顺序投递
-}
-
-// NewPushClient 连上 gateway 的 Push 服务，返回 core 需要的出口。
-func NewPushClient(address string) (core.Link, error) {
-	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, err
-	}
-	return &pushLink{client: edgepb.NewPushClient(conn)}, nil
-}
-
-// 给对应连接的分片锁上锁，保证同一连接的帧按顺序投递，这个只把锁返回，调用方要自己加锁和解锁
-func (l *pushLink) lock(connectionID string) *sync.Mutex {
-	hash := uint32(0)
-	for i := 0; i < len(connectionID); i++ {
-		hash = hash*31 + uint32(connectionID[i])
-	}
-	return &l.shards[hash%uint32(len(l.shards))]
-}
-
-// Deliver 投递一帧；目标连接不在 gateway 上时返回 core.ErrNoRoute。
-func (l *pushLink) Deliver(connectionID string, frame []byte) error {
-	mu := l.lock(connectionID) // 给对应连接的分片锁上锁，保证同一连接的帧按顺序投递
-	mu.Lock()
-	defer mu.Unlock()
-
-	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-	defer cancel()
-	reply, err := l.client.Deliver(ctx, &edgepb.DeliverRequest{ConnectionId: connectionID, Frame: frame})
-	if err != nil {
-		return err
-	}
-	if !reply.GetDelivered() {
-		return core.ErrNoRoute
-	}
-	return nil
-}
-
-// Alive 问 gateway 这条连接是否还挂着；问不到就当作不在。
-func (l *pushLink) Alive(connectionID string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-	defer cancel()
-	reply, err := l.client.Alive(ctx, &edgepb.AliveRequest{ConnectionId: connectionID})
-	if err != nil {
-		return false
-	}
-	return reply.GetAlive()
 }

@@ -62,7 +62,7 @@ func main() {
 	}
 	listener := transport.ServeWebSocketListener(raw, cfg.MaxFrameBytes)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	gw := gateway.NewWithListener(cfg, logger, listener)
+	gw := gateway.NewWithListener(cfg, logger, listener, nil) // 进程内跑，不需要 Redis 路由
 	coreSvc := core.New(cfg, logger, gw)
 	gw.Bind(coreSvc)
 	ctx, cancel := context.WithCancel(context.Background())

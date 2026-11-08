@@ -34,6 +34,10 @@ type Server struct {
 	logger   *slog.Logger                 // 日志记录器
 	listener *transport.WebSocketListener // 监听器，接受新连接
 	edge     Edge                         //接口，需要实现的两个核心函数
+	routes   RouteStore                   // 路由登记，nil 表示不登记
+
+	gatewayID  string // 配置里的网关身份，写进 Redis 路由
+	instanceID string // 本次启动的随机标识，用来区分重启前后的同名网关
 
 	connectionsMu sync.Mutex
 	connections   map[string]*clientConnection // 键是连接 ID，关闭时从这里清理
@@ -43,16 +47,17 @@ type Server struct {
 }
 
 // New 创建网关并绑定配置中的监听地址。
-func New(serverConfig config.Config, logger *slog.Logger) (*Server, error) {
+func New(serverConfig config.Config, logger *slog.Logger, routes RouteStore) (*Server, error) {
 	listener, err := transport.ListenWebSocket(serverConfig.Listen, serverConfig.TLSCert, serverConfig.TLSKey, serverConfig.AllowInsecure, serverConfig.MaxFrameBytes)
 	if err != nil {
 		return nil, err
 	}
-	return NewWithListener(serverConfig, logger, listener), nil
+	return NewWithListener(serverConfig, logger, listener, routes), nil
 }
 
 // NewWithListener 使用已有监听器创建网关，供单进程加载与测试注入监听器。
-func NewWithListener(serverConfig config.Config, logger *slog.Logger, listener *transport.WebSocketListener) *Server {
+// （单进程入口已删除，现在只用于测试里的进程内装配。）
+func NewWithListener(serverConfig config.Config, logger *slog.Logger, listener *transport.WebSocketListener, routes RouteStore) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -60,6 +65,9 @@ func NewWithListener(serverConfig config.Config, logger *slog.Logger, listener *
 		config:      serverConfig,
 		logger:      logger,
 		listener:    listener,
+		routes:      routes,
+		gatewayID:   serverConfig.GatewayID,
+		instanceID:  newID(),
 		connections: make(map[string]*clientConnection),
 		shutdown:    make(chan struct{}),
 	}
@@ -84,6 +92,9 @@ func (s *Server) Run(ctx context.Context) error {
 		case <-runDone:
 		}
 	}()
+	// 登记自己并周期性续期：被别人当成"连接可能在这里"的前提是先登记。
+	s.publishGateway(ctx)
+	go s.runRouteKeepalive(ctx)
 
 	for {
 		transportConn, err := s.listener.Accept()
@@ -144,6 +155,7 @@ func (s *Server) serveConnection(transportConn transport.Conn) {
 		_ = transportConn.Close()
 		return
 	}
+	s.publishConnection(context.Background(), clientConn.caller.ConnectionID) // 登记“这条连接在本节点”
 	defer s.removeConnection(clientConn)
 	go clientConn.writeQueuedFrames()   // 启动写循环，负责把业务层发来的帧写回 socket
 	s.readAndDispatchFrames(clientConn) // 启动读循环。复杂把网关接受的消息发给业务层处理，业务层返回 *core.FatalError 时关闭连接
@@ -165,6 +177,7 @@ func (s *Server) removeConnection(clientConn *clientConnection) {
 	s.connectionsMu.Lock()
 	delete(s.connections, clientConn.caller.ConnectionID)
 	s.connectionsMu.Unlock()
+	s.forgetConnection(context.Background(), clientConn)
 	clientConn.close()
 	if s.edge != nil {
 		s.edge.Detach(&clientConn.caller)

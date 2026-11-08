@@ -1,6 +1,6 @@
 # 分布式演进计划：Gateway 集群 · Core Service · User Service
 
-状态：**P1 已实现，P2 起尚未实施**。P1 的落地形式见下面的“实施进度”与 §4.1，其余章节仍是设计计划。
+状态：**P1、P2 已实现，P3 起尚未实施**。落地的形式见下面的“实施进度”、§4.1 与 §5.1，其余章节仍是设计计划。
 
 目标是：**接入层可以多开，原有业务整体保留，新用户系统独立开发。每个组件都有明确用途，不为了拆服务而拆服务。**
 
@@ -8,15 +8,17 @@
 
 | 阶段 | 状态 | 落地形式 |
 | --- | --- | --- |
-| **P1：接入/业务分离** | 已完成 | `internal/platform/core`（业务）+ `internal/platform/gateway`（接入）+ `internal/platform/edge`（gRPC 契约）；`cmd/platform-core`、`cmd/platform-gateway` 两个进程，`cmd/platform` 保留单进程拼装 |
-| **P2：Redis 登记位置** | 未开始 | — |
+| **P1：接入/业务分离** | 已完成 | `internal/platform/core`（业务）+ `internal/platform/gateway`（接入）+ `internal/platform/edge`（gRPC 契约）；`cmd/platform-core`、`cmd/platform-gateway` 两个进程（单进程入口已删除） |
+| **P2：Redis 登记位置** | 已完成 | `internal/platform/registry`（Redis 路由表）+ `internal/platform/gateway/routes.go`（登记与续期）+ `internal/platform/edge/core_router.go`（按路由投递）；见 §5.1 |
 | **P3：多网关** | 未开始 | — |
 | **P4：用户微服务** | 未开始（暂不考虑） | — |
 
-P1 的两项简化，与原始设计不同，以此为准：
+与原始设计不同、以此为准的几项决定：
 
 1. **Core 不保存连接表**。连接表只在 Gateway；`connection_id` / `role` / `device_id` 存在连接对象上，随每次调用以 `Caller` 带进 Core、处理完带回去。Core 需要判断“某条连接还在不在”时就问 Gateway（`Alive`），自己不记账。
 2. **gRPC 明文、不开 TLS**，只监听回环或容器内网。
+3. **单进程入口已删除**：只有 `cmd/platform-core` 与 `cmd/platform-gateway` 两个进程。测试里仍然用进程内直连（同一对接口的另一种实现）。
+4. **P2 不做 `service:core` 键**：gateway 连 core 仍用配置里的 `core_grpc_addr`，因为 P2 要解决的唯一问题是“连接在哪”。等 P3 真的出现多个 core 或网关需要动态发现 core 时再补。
 
 ---
 
@@ -149,7 +151,7 @@ Frame 就是客户端原始 JSON 字节，两个进程都不需要为每种消�
 2. **Core 只有一个出口**：出站帧全部走 `Link.Deliver`，没有第二条写 socket 的路径；异步推送（过期清理）与直接响应走同一个出口。
 3. **不要 Core 自己记账**：连接表只在 Gateway，Core 判断连接死活时调 `Alive`。“投递失败”就等于“设备不可用”，不要先把帧记成已发送。
 
-`cmd/platform` 保留单进程模式：同一套 core + gateway，进程内直连，不走 gRPC。
+单进程入口已删除：`cmd/platform` 不再存在，部署形态就是 core + gateway 两个进程。测试里仍然用进程内直连（同一对接口的另一种实现），所以那两条路径都有人验证。
 
 ## 5. Redis：先登记位置，再按需要外置状态
 
@@ -170,6 +172,24 @@ Frame 就是客户端原始 JSON 字节，两个进程都不需要为每种消�
 Core 的设备、会话与任务元数据可以逐步接入 Redis；第一版不要求把所有 map 一次搬完。验证码、频率计数等短期数据也适合放 Redis。命令输出先留在 Core 的有界内存缓存，并给终态记录设置回收策略，不在这一版引入对象存储。
 
 **数据放进 Redis 不等于获得持久化或自动恢复能力。** TTL、Redis 重启策略、Core 重启时哪些记录失效需要明确；第一版仍不恢复旧会话。单 Core 也不意味着多条 Redis 命令天然原子，未来外置需要“先判断再写入”的逻辑时，再针对具体操作选择原子命令、事务或短脚本。
+
+### 5.1 P2 的实际形态（已实现）
+
+只做真正有人读的三类键（前綴 `agentremote:`）：
+
+```text
+gateway:<gateway_id>       → "<本次启动标识> <push 地址>"      core 用它找到能投递的网关
+route:conn:<conn_id>       → "<gateway_id> <本次启动标识>"     core 用它知道连接挂在哪个网关
+route:device:<device_id>   → "<conn_id> <gateway_id> <启动标识>"  为 P3 跨网关寻址预留
+```
+
+- **写**：gateway 在接受连接时写 `route:conn`，在业务层确认设备身份后写 `route:device`（设备 ID 由 `Handle` 返回的 `Caller` 带回来，不需要新接口）；每 `route_ttl_sec / 3` 续期自己名下的全部键。
+- **读**：core 的出口先查 `route:conn`，再查 `gateway:` 拿到 push 地址，然后投递。路由查不到 → `ErrNoRoute` → 调用方按“设备不可用”处理。
+- **删**：连接关闭时按“值仍属于自己”比较后删除（Lua 脚本），所以旧连接的迟到清理不会删掉新路由。
+- **兜底**：Redis 不可用或路由不存在时，退回配置里的 `gateway_grpc_addr`。单网关部署因此不会被 Redis 抖动打断；多网关时这条退路自然失效（连接 ID 是随机的，投错网关也投不到别人的连接上）。
+- **强杀收敛**：gateway 进程被 kill -9 时没人给它续期，`gateway:` 与 `route:` 键在一个 TTL 内失效；core 之后既查不到路由也不再投递。它名下的会话靠 core 的过期清理收尾。
+
+Redis 里**只有路由**：不存 socket、不存设备与会话状态、不存授权。路由失效的后果是“找不到人”，不是“授权变宽”。
 
 ## 6. RabbitMQ 用途一：跨网关送帧
 
@@ -271,7 +291,7 @@ Core / Gateway → RabbitMQ 审计队列 → 审计消费者 → 数据库
 | 阶段 | 做什么 | 验收 |
 | --- | --- | --- |
 | **P1：接入/业务分离** ✅ | 一个 Gateway + 一个 Core，用 gRPC 连接；原业务整体迁移 | 注册、审批、命令、上传下载、关闭会话全部回归通过；单 Core 统一清理过期状态 |
-| **P2：Redis 登记位置** | 服务地址、节点存活、连接归属；业务状态按需要逐步外置 | 查得到服务和连接；旧连接清理不误删新路由；节点退出后路由能失效 |
+| **P2：Redis 登记位置** ✅ | 节点存活、连接归属、设备路由 | 查得到连接归属；旧连接清理不误删新路由；节点退出后路由能失效 |
 | **P3：多网关** | 第二个 Gateway、Nginx、RabbitMQ 跨网关投递 | 两端刻意连接不同 Gateway，命令与文件双向跑通；断线、MQ 故障、慢设备能收敛 |
 | **P4：用户微服务** | User Service + PostgreSQL，通过 MQ 请求/响应 | 注册登录、邮箱验证、结果关联、超时及重复请求可测；旧 Agent 认证路径仍可用 |
 | **后续：按需补齐** | 审计落库、更多监控、性能优化 | 有真实需求再做，不计入当前必做项 |

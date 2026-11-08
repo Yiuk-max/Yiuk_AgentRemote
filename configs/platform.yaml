@@ -49,5 +49,15 @@ platform:
   core_grpc_addr: "127.0.0.1:25670"
   # gateway 进程：gRPC 监听，提供 Push 服务（core 把出站帧送回来）
   gateway_grpc_listen: ":25671"
-  # core 进程：连 gateway 的地址
+  # core 进程：连 gateway 的地址（也是路由查不到时的兜底投递地址）
   gateway_grpc_addr: "127.0.0.1:25671"
+
+  # —— Redis：只记录“谁在哪”，不存 socket、不存业务状态 ——
+  # 网关存活、连接归属、设备路由都写在这里，键都带 TTL，由网关定时续期。
+  redis_addr: "127.0.0.1:6379"
+  redis_password: ""
+  redis_db: 0
+  # 路由键 TTL（秒），网关按 1/3 周期续期；进程被强杀后最多这么久路由才失效。
+  # 多网关时每个 gateway 用不同的 gateway_id。
+  route_ttl_sec: 30
+  gateway_id: "gw-1"

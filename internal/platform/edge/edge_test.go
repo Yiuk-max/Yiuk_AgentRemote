@@ -98,7 +98,7 @@ func TestTwoProcessFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	wsListener := transport.ServeWebSocketListener(rawListener, cfg.MaxFrameBytes)
-	gw := gateway.NewWithListener(cfg, logger, wsListener)
+	gw := gateway.NewWithListener(cfg, logger, wsListener, nil) // 本测试用固定地址投递，不查 Redis
 
 	pushListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -2,6 +2,8 @@
 //
 // 客户端连到它，它把每一帧原样转给 core；core 要发的帧通过它的 Push 服务
 // 写回对应连接。连接表就在这个进程里，它也是“这条连接还活着吗”的唯一依据。
+//
+// 它还会把“这条连接挂在本节点”写进 Redis，core 靠这个路由决定往哪投递。
 package main
 
 import (
@@ -19,6 +21,7 @@ import (
 	"agentremote/internal/platform/edge/edgepb"
 	"agentremote/internal/platform/gateway"
 	"agentremote/internal/platform/logging"
+	"agentremote/internal/platform/registry"
 	"google.golang.org/grpc"
 )
 
@@ -26,12 +29,14 @@ func main() {
 	//读取共用的配置文件
 	configPath := flag.String("config", "platform.yaml", "path to the platform YAML configuration")
 	flag.Parse()
+
 	// 加载配置文件
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gateway config error:", err)
 		os.Exit(1)
 	}
+
 	// 设置日志记录器
 	closeLog, logger, err := logging.Setup(cfg.LogFile)
 	if err != nil {
@@ -41,8 +46,17 @@ func main() {
 	defer closeLog()
 	slog.SetDefault(logger)
 
+	// 路由表只记录“谁在哪”，掉了只是寻址失效，不影响已建立的授权判断。
+	routes := registry.Open(registry.Options{
+		Addr:     cfg.RedisAddr,
+		Password: cfg.RedisPassword,
+		DB:       cfg.RedisDB,
+		TTL:      cfg.RouteTTL(),
+	})
+	defer func() { _ = routes.Close() }()
+
 	// 创建网关实例
-	gw, err := gateway.New(cfg, logger)
+	gw, err := gateway.New(cfg, logger, routes)
 	if err != nil {
 		logger.Error("could not start gateway listener", "error", err)
 		os.Exit(1)
@@ -64,9 +78,10 @@ func main() {
 	edgepb.RegisterPushServer(grpcServer, edge.NewPushServer(gw))
 
 	logger.Info("gateway listening", "listen", cfg.Listen, "tls", cfg.TLSCert != "", "insecure", cfg.AllowInsecure,
-		"core", cfg.CoreGRPCAddr, "push", cfg.GatewayGRPCListen)
+		"core", cfg.CoreGRPCAddr, "push", cfg.GatewayGRPCListen, "advertised", cfg.GatewayGRPCAddr,
+		"gateway_id", cfg.GatewayID, "redis", cfg.RedisAddr)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM) //优雅退出，context程序退出
 	defer stop()
 
 	go func() { // 启动 gRPC 服务循环

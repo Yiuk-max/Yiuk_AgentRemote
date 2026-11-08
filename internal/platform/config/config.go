@@ -68,6 +68,15 @@ type Config struct {
 	CoreGRPCAddr      string `yaml:"core_grpc_addr"`      // gateway 进程：连 core 的地址
 	GatewayGRPCListen string `yaml:"gateway_grpc_listen"` // gateway 进程：gRPC 监听，提供 Push 服务
 	GatewayGRPCAddr   string `yaml:"gateway_grpc_addr"`   // core 进程：连 gateway 的地址
+
+	// Redis 只记录"谁在哪"：网关存活、连接归属、设备路由。
+	// 它不存 socket，也不存业务状态；键都带 TTL，重启 Redis 只会让路由失效，
+	// 不会让授权失效（授权仍由 core 判断）。
+	GatewayID     string `yaml:"gateway_id"`     // 网关身份，写进路由；同一套部署里不能重复
+	RedisAddr     string `yaml:"redis_addr"`     // Redis 地址
+	RedisPassword string `yaml:"redis_password"` // Redis 密码，空表示无密码
+	RedisDB       int    `yaml:"redis_db"`       // Redis 数据库编号
+	RouteTTLSec   int    `yaml:"route_ttl_sec"`  // 路由键 TTL（秒），网关按 1/3 周期续期
 }
 
 // 硬编码的配置默认值
@@ -105,6 +114,10 @@ func Default() Config {
 		CoreGRPCAddr:           "127.0.0.1:25670",
 		GatewayGRPCListen:      ":25671",
 		GatewayGRPCAddr:        "127.0.0.1:25671",
+		GatewayID:              "gw-1",
+		RedisAddr:              "127.0.0.1:6379",
+		RedisDB:                0,
+		RouteTTLSec:            30,
 	}
 }
 
@@ -203,6 +216,15 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.GatewayGRPCAddr == "" {
 		c.GatewayGRPCAddr = d.GatewayGRPCAddr
+	}
+	if c.GatewayID == "" {
+		c.GatewayID = d.GatewayID
+	}
+	if c.RedisAddr == "" {
+		c.RedisAddr = d.RedisAddr
+	}
+	if c.RouteTTLSec == 0 {
+		c.RouteTTLSec = d.RouteTTLSec
 	}
 	if c.LogFile == "" {
 		c.LogFile = d.LogFile
@@ -310,6 +332,18 @@ func (c Config) Validate() error {
 	if c.ObserverSlowClientBuf < 1 {
 		return errors.New("slow_client_buffer must be positive")
 	}
+	if strings.TrimSpace(c.GatewayID) == "" || len(c.GatewayID) > 64 {
+		return errors.New("gateway_id must be set and at most 64 characters")
+	}
+	if strings.TrimSpace(c.RedisAddr) == "" {
+		return errors.New("redis_addr must be set")
+	}
+	if c.RedisDB < 0 || c.RedisDB > 15 {
+		return errors.New("redis_db must be between 0 and 15")
+	}
+	if c.RouteTTLSec < 5 || c.RouteTTLSec > 300 {
+		return errors.New("route_ttl_sec must be between 5 and 300")
+	}
 	return nil
 }
 
@@ -342,6 +376,11 @@ func (c Config) HandshakeTimeout() time.Duration {
 // MinTempPasswordTTL returns the lower clamp for client requested TTLs.
 func (c Config) MinTempPasswordTTL() time.Duration {
 	return time.Duration(c.TemporaryPasswordMin) * time.Second
+}
+
+// RouteTTL returns how long a Redis route key stays valid without renewal.
+func (c Config) RouteTTL() time.Duration {
+	return time.Duration(c.RouteTTLSec) * time.Second
 }
 
 // MaxTempPasswordTTL returns the upper clamp for client requested TTLs.

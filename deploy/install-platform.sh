@@ -4,10 +4,12 @@
 # Usage:
 #   sudo ./deploy/install-platform.sh <tls-cert> <tls-key>
 #
-# The script builds the binary from the current checkout, installs it under
-# /opt/yiuk-platform, generates a random player password, and starts a systemd
-# service. It never overwrites an existing platform.yaml, so re-running keeps
-# the current password.
+# The script builds both binaries (core + gateway) from the current checkout,
+# installs them under /opt/yiuk-platform, generates a random player password, and
+# starts two systemd services. It never overwrites an existing platform.yaml, so
+# re-running keeps the current password.
+#
+# core 只处理业务，gateway 只处理客户端连接；两者通过内网 gRPC 通信。
 set -euo pipefail
 
 DEPLOY_DIR=/opt/yiuk-platform
@@ -29,7 +31,8 @@ REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 id "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
 
 mkdir -p "$DEPLOY_DIR/certs"
-go build -o "$DEPLOY_DIR/yiuk-platform" "$REPO_DIR/cmd/platform"
+go build -o "$DEPLOY_DIR/yiuk-platform-core" "$REPO_DIR/cmd/platform-core"
+go build -o "$DEPLOY_DIR/yiuk-platform-gateway" "$REPO_DIR/cmd/platform-gateway"
 cp "$CERT_SRC" "$DEPLOY_DIR/certs/server.crt"
 cp "$KEY_SRC" "$DEPLOY_DIR/certs/server.key"
 chmod 644 "$DEPLOY_DIR/certs/server.crt"
@@ -63,6 +66,10 @@ platform:
   auth_rate_per_min: 10
   offline_device_keep_sec: 86400
   log_file: "$DEPLOY_DIR/platform.log"
+  core_grpc_listen: "127.0.0.1:25670"
+  core_grpc_addr: "127.0.0.1:25670"
+  gateway_grpc_listen: "127.0.0.1:25671"
+  gateway_grpc_addr: "127.0.0.1:25671"
 EOF
     echo "generated player password (store it safely, it is not shown again by this script):"
     echo "  $PLAYER_PW"
@@ -71,7 +78,8 @@ fi
 chown -R "$SERVICE_USER:$SERVICE_USER" "$DEPLOY_DIR"
 chmod 600 "$DEPLOY_DIR/platform.yaml"
 
-install -m 644 "$REPO_DIR/deploy/systemd/yiuk-platform.service" /etc/systemd/system/yiuk-platform.service
+install -m 644 "$REPO_DIR/deploy/systemd/yiuk-platform-core.service" /etc/systemd/system/yiuk-platform-core.service
+install -m 644 "$REPO_DIR/deploy/systemd/yiuk-platform-gateway.service" /etc/systemd/system/yiuk-platform-gateway.service
 systemctl daemon-reload
-systemctl enable --now yiuk-platform.service
-systemctl --no-pager --lines=5 status yiuk-platform.service
+systemctl enable --now yiuk-platform-core.service yiuk-platform-gateway.service
+systemctl --no-pager --lines=5 status yiuk-platform-core.service yiuk-platform-gateway.service

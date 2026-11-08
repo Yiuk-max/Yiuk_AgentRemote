@@ -49,7 +49,7 @@ func startServer(t *testing.T, mutate func(*config.Config)) (string, *gateway.Se
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ln := transport.ServeWebSocketListener(rawListener, cfg.MaxFrameBytes)
 	// 单进程装配：网关持有连接表，业务层通过 Link 回调网关投递。
-	gw := gateway.NewWithListener(cfg, logger, ln)
+	gw := gateway.NewWithListener(cfg, logger, ln, nil)
 	coreSvc := core.New(cfg, logger, gw)
 	gw.Bind(coreSvc)
 	ctx, cancel := context.WithCancel(context.Background())
