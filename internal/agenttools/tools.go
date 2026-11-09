@@ -172,21 +172,21 @@ func validateInput(raw json.RawMessage, name string) error {
 		}
 	}
 	var input struct {
-		DeviceID         string   `json:"device_id"`
-		Purpose          string   `json:"purpose"`
-		TemporaryPass    string   `json:"temporary_password"`
-		SessionID        string   `json:"session_id"`
-		RequestID        string   `json:"request_id"`
-		Command          string   `json:"command"`
-		WorkingDirectory string   `json:"working_directory"`
-		TimeoutSeconds   *int     `json:"timeout_seconds"`
-		Cursor           *int     `json:"cursor"`
-		WaitForApproval  *int     `json:"wait_for_approval_seconds"`
-		KeepSessionOpen  *bool    `json:"keep_session_open"`
-		RemotePath       string   `json:"remote_path"`
-		DestinationPath  string   `json:"destination_path"`
-		LocalPath        string   `json:"local_path"`
-		Overwrite        *bool    `json:"overwrite"`
+		DeviceID         string `json:"device_id"`
+		Purpose          string `json:"purpose"`
+		TemporaryPass    string `json:"temporary_password"`
+		SessionID        string `json:"session_id"`
+		RequestID        string `json:"request_id"`
+		Command          string `json:"command"`
+		WorkingDirectory string `json:"working_directory"`
+		TimeoutSeconds   *int   `json:"timeout_seconds"`
+		Cursor           *int   `json:"cursor"`
+		WaitForApproval  *int   `json:"wait_for_approval_seconds"`
+		KeepSessionOpen  *bool  `json:"keep_session_open"`
+		RemotePath       string `json:"remote_path"`
+		DestinationPath  string `json:"destination_path"`
+		LocalPath        string `json:"local_path"`
+		Overwrite        *bool  `json:"overwrite"`
 	}
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return fmt.Errorf("invalid arguments: %w", err)
