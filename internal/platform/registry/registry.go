@@ -169,6 +169,28 @@ func (r *Registry) RenewConns(ctx context.Context, gatewayID, instanceID string,
 	return err
 }
 
+// RenewDevices 一次性续期本节点名下的设备路由（route:device:<device_id>）。
+//
+// 设备路由和连接路由一样带 TTL，必须跟着连接一起续期：只续 route:conn 的话，
+// 设备一直在线、TTL 一到 route:device 就消失，多网关部署下 core 按设备找网关
+// 会查不到（单网关侥幸被配置里的兜底地址掩住）。
+// connectionByDevice 是「设备 ID → 连接 ID」。
+func (r *Registry) RenewDevices(ctx context.Context, gatewayID, instanceID string, connectionByDevice map[string]string) error {
+	if r == nil || r.client == nil || len(connectionByDevice) == 0 {
+		return nil
+	}
+	prefix := gatewayID + " " + instanceID
+	pipe := r.client.Pipeline()
+	for deviceID, connectionID := range connectionByDevice {
+		if deviceID == "" || connectionID == "" {
+			continue
+		}
+		pipe.Set(ctx, r.deviceKey(deviceID), connectionID+" "+prefix, r.ttl)
+	}
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
 // ConnRoute 是一条连接的路由结果。
 type ConnRoute struct {
 	GatewayID  string

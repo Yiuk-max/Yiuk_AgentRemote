@@ -116,6 +116,39 @@ func TestDeviceRoute(t *testing.T) {
 	}
 }
 
+func TestRenewDevices(t *testing.T) {
+	routes, server := newRegistry(t, 30*time.Second)
+	ctx := context.Background()
+
+	if err := routes.PutConn(ctx, "conn-1", "gw-1", "boot-a"); err != nil {
+		t.Fatalf("put conn: %v", err)
+	}
+	if err := routes.PutDevice(ctx, "123456789", "conn-1", "gw-1", "boot-a"); err != nil {
+		t.Fatalf("put device: %v", err)
+	}
+	// 设备路由必须和连接路由一起续期：只续连接的话设备键会先过期。
+	server.FastForward(25 * time.Second)
+	if err := routes.RenewConns(ctx, "gw-1", "boot-a", []string{"conn-1"}); err != nil {
+		t.Fatalf("renew conns: %v", err)
+	}
+	if err := routes.RenewDevices(ctx, "gw-1", "boot-a", map[string]string{"123456789": "conn-1"}); err != nil {
+		t.Fatalf("renew devices: %v", err)
+	}
+	server.FastForward(25 * time.Second)
+	route, err := routes.ResolveDevice(ctx, "123456789")
+	if err != nil {
+		t.Fatalf("renewed device route expired early: %v", err)
+	}
+	if route.ConnectionID != "conn-1" || route.GatewayID != "gw-1" || route.InstanceID != "boot-a" {
+		t.Fatalf("renewed device route = %+v", route)
+	}
+	// 停止续期后，设备路由应当在 TTL 后自然过期。
+	server.FastForward(31 * time.Second)
+	if _, err := routes.ResolveDevice(ctx, "123456789"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("device route error after TTL = %v, want ErrNotFound", err)
+	}
+}
+
 func TestRenewConns(t *testing.T) {
 	routes, server := newRegistry(t, 30*time.Second)
 	ctx := context.Background()
