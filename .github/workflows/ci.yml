@@ -52,3 +52,38 @@ jobs:
           else
             echo "所有 Go 文件都通过 gofmt"
           fi
+
+  # 产出可直接部署的 linux/amd64 二进制，避免在 2C2G 的服务器上编译。
+  # 服务器上下载方式见 SERVER.md（用 GitHub API 取 run 的 artifact）。
+  build-artifacts:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binaries (linux/amd64)
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist
+          go build -trimpath -o dist/yiuk-platform-core ./cmd/platform-core
+          go build -trimpath -o dist/yiuk-platform-gateway ./cmd/platform-gateway
+          go build -trimpath -o dist/yiuk-mcp ./cmd/yiuk-mcp
+          cd dist && sha256sum yiuk-platform-core yiuk-platform-gateway yiuk-mcp > SHA256SUMS && cat SHA256SUMS
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentremote-linux-amd64
+          path: dist/
+          retention-days: 14
