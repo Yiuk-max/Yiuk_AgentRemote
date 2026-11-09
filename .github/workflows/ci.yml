@@ -1,0 +1,54 @@
+name: CI
+
+# 目的：把"能不能编译、测试过不过"从 2C2G 的服务器挪到 GitHub 的 runner 上。
+# 服务器上跑 go build 曾两次把内存吃光导致整机卡死，这里接手那道关卡。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支只保留最新一次运行，推送频繁时不浪费额度
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      # gofmt 只做提示不判失败：仓库里还有历史文件没格式化，
+      # 这条线先用来"看得见"，等清理干净了再去掉 if: always() 的告警语义。
+      - name: gofmt (advisory)
+        if: always()
+        run: |
+          unformatted=$(gofmt -l . | grep -v '^vendor/' || true)
+          if [ -n "$unformatted" ]; then
+            echo "::warning::以下文件未通过 gofmt"
+            echo "$unformatted"
+          else
+            echo "所有 Go 文件都通过 gofmt"
+          fi
