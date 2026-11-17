@@ -45,6 +45,8 @@ type Service struct {
 }
 
 // New 创建业务层。link 不能为空：core 自己不写 socket。
+//
+//	配置信息           日志              网关路由
 func New(serverConfig config.Config, logger *slog.Logger, link Link) *Service {
 	if logger == nil {
 		logger = slog.Default()
@@ -74,7 +76,7 @@ func (s *Service) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			s.expireOperationsAndPruneDevices()
+			s.expireOperationsAndPruneDevices() //janitor.go
 		}
 	}
 }
@@ -87,12 +89,12 @@ func (s *Service) Handle(caller *Caller, frame []byte) error {
 	if caller == nil {
 		return &FatalError{Err: errors.New("caller is required")}
 	}
-	message, err := s.codec.Decode(frame)
+	message, err := s.codec.Decode(frame) //解码协议帧
 	if err != nil {
 		s.logger.Debug("platform message decode failed", "connection", audit.RedactID(caller.ConnectionID), "error", err)
 		return &FatalError{Err: err}
 	}
-	if err := s.dispatch(caller, message); err != nil {
+	if err := s.dispatch(caller, message); err != nil { // dispatch 给handler 处理业务逻辑
 		var protocolErr *protocolError
 		if errors.As(err, &protocolErr) {
 			errorMessage := protocol.ErrorMessage(protocolErr.code, protocolErr.message)

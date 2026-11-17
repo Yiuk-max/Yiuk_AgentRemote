@@ -1,5 +1,6 @@
 // device 包负责内存中的设备注册、临时密码和在线状态。
 // 重启后数据失效
+// 主要使用了墓碑机制来释放设备码，避免码空间被占满。墓碑保留原持有者的密码凭据，允许原持有者 reclaim
 package device
 
 //临时密码哈希（盐 + SHA-256）、版本、TTL、撤销、在线连接、心跳、并发会话计数
@@ -25,6 +26,7 @@ const (
 	ModeApproval Mode = "approval"
 )
 
+// 错误码
 var (
 	ErrDeviceLimit    = errors.New("device limit reached")
 	ErrDeviceNotFound = errors.New("device not found")

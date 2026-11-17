@@ -12,6 +12,7 @@ import (
 
 // 处理命令执行请求
 func (s *Service) handleExecuteCommand(caller *Caller, message protocol.Message) error {
+	// 先进行参数、权限检查
 	if err := s.validateID("session_id", message.SessionID); err != nil {
 		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
@@ -31,7 +32,7 @@ func (s *Service) handleExecuteCommand(caller *Caller, message protocol.Message)
 	if timeoutSeconds < 1 || timeoutSeconds > 3600 {
 		return newProtocolError("INVALID_ARGUMENT", "timeout_seconds must be between 1 and 3600")
 	}
-
+	// 连接是否有权限执行命令
 	sessionRecord, err := s.sessions.Authorize(message.SessionID, caller.ConnectionID, session.PermissionExecuteCommand)
 	if err != nil {
 		return s.sessionProtocolError(err)
@@ -42,7 +43,7 @@ func (s *Service) handleExecuteCommand(caller *Caller, message protocol.Message)
 	if !ok || deviceConnectionID != sessionRecord.DeviceConnectionID {
 		return newProtocolError("DEVICE_OFFLINE", "device is no longer online")
 	}
-
+	// 开始创建命令
 	commandTask, created, err := s.tasks.Start(sessionRecord.ID, message.RequestID, time.Duration(timeoutSeconds)*time.Second)
 	if err != nil {
 		return s.taskProtocolError(err)
@@ -55,6 +56,7 @@ func (s *Service) handleExecuteCommand(caller *Caller, message protocol.Message)
 			Status:    string(commandTask.Status),
 		})
 	}
+	// 会话生命周期状态标记为活跃
 	if _, err := s.sessions.Activate(sessionRecord.ID, caller.ConnectionID); err != nil {
 		s.tasks.Finish(sessionRecord.ID, message.RequestID, task.StatusResultUnknown, nil, false)
 		return s.sessionProtocolError(err)
@@ -68,11 +70,13 @@ func (s *Service) handleExecuteCommand(caller *Caller, message protocol.Message)
 		WorkingDirectory: message.WorkingDirectory,
 		TimeoutSeconds:   timeoutSeconds,
 	}
+	// 发送给设备执行命令
 	if !s.send(sessionRecord.DeviceConnectionID, forward) {
 		s.tasks.Finish(sessionRecord.ID, message.RequestID, task.StatusResultUnknown, nil, false)
 		return newProtocolError("DEVICE_UNAVAILABLE", "could not deliver command to device")
 	}
 	s.audit.Event("command_submitted", "session", audit.RedactID(sessionRecord.ID), "request", audit.RedactID(commandTask.RequestID), "device", audit.RedactID(sessionRecord.DeviceID))
+	// 返回命令已接受
 	return s.sendResponse(caller, message, protocol.Message{
 		Type:      protocol.TypeCommandAccepted,
 		SessionID: sessionRecord.ID,
@@ -83,6 +87,7 @@ func (s *Service) handleExecuteCommand(caller *Caller, message protocol.Message)
 
 // 处理命令执行输出
 func (s *Service) handleCommandOutput(caller *Caller, message protocol.Message) error {
+	// 校验-----------------------------------------------------
 	if caller.Role != RoleDevice {
 		return newProtocolError("NOT_DEVICE", "only the target device can send command output")
 	}
@@ -96,6 +101,7 @@ func (s *Service) handleCommandOutput(caller *Caller, message protocol.Message) 
 	if !ok || sessionRecord.DeviceID != caller.DeviceID || sessionRecord.DeviceConnectionID != caller.ConnectionID {
 		return newProtocolError("SESSION_NOT_FOUND", "session not found")
 	}
+	// 校验完，开始处理业务---------------------------------------
 	commandTask, err := s.tasks.AppendOutput(sessionRecord.ID, message.RequestID, message.Stream, message.Data)
 	if err != nil {
 		return s.taskProtocolError(err)
@@ -124,6 +130,7 @@ func (s *Service) handleCommandOutput(caller *Caller, message protocol.Message) 
 
 // 处理命令执行结果
 func (s *Service) handleCommandResult(caller *Caller, message protocol.Message) error {
+	// 校验-----------------------------------------------------
 	if caller.Role != RoleDevice {
 		return newProtocolError("NOT_DEVICE", "only the target device can report a command result")
 	}
@@ -141,6 +148,8 @@ func (s *Service) handleCommandResult(caller *Caller, message protocol.Message) 
 	if err != nil {
 		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
+	// 校验完，开始处理业务---------------------------------------
+	// 终端状态的任务结果上报，可能是设备主动上报，也可能是操作者取消命令导致的终态
 	resultKnown := message.ResultKnown || status != task.StatusResultUnknown
 	commandTask, err := s.tasks.Finish(sessionRecord.ID, message.RequestID, status, message.ExitCode, resultKnown)
 	if err != nil {
@@ -153,6 +162,7 @@ func (s *Service) handleCommandResult(caller *Caller, message protocol.Message) 
 
 // 处理获取命令执行结果
 func (s *Service) handleGetCommandResult(caller *Caller, message protocol.Message) error {
+	// 校验-----------------------------------------------------
 	if err := s.validateID("session_id", message.SessionID); err != nil {
 		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
@@ -163,6 +173,8 @@ func (s *Service) handleGetCommandResult(caller *Caller, message protocol.Messag
 	if !ok || !s.canAccessSession(caller, sessionRecord) {
 		return newProtocolError("SESSION_NOT_FOUND", "session not found")
 	}
+	// 校验完，开始处理业务---------------------------------------
+	// 获取命令执行结果，可能是终态，也可能是中间态
 	view, err := s.tasks.ResultFromCursor(sessionRecord.ID, message.RequestID, message.Cursor)
 	if err != nil {
 		return s.taskProtocolError(err)
@@ -188,6 +200,7 @@ func (s *Service) handleGetCommandResult(caller *Caller, message protocol.Messag
 
 // 处理取消命令执行请求
 func (s *Service) handleCancelCommand(caller *Caller, message protocol.Message) error {
+	// 校验-----------------------------------------------------
 	if err := s.validateID("session_id", message.SessionID); err != nil {
 		return newProtocolError("INVALID_ARGUMENT", err.Error())
 	}
@@ -202,7 +215,7 @@ func (s *Service) handleCancelCommand(caller *Caller, message protocol.Message) 
 	if err != nil {
 		return s.taskProtocolError(err)
 	}
-	// Device-initiated cancel means the local process is already stopping.
+	// 设备主动取消意味着本地进程已经在停止了。
 	if caller.Role == RoleDevice && sessionRecord.DeviceID == caller.DeviceID {
 		commandTask, err = s.tasks.Finish(sessionRecord.ID, message.RequestID, task.StatusCancelled, nil, true)
 		if err != nil {

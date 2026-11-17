@@ -8,7 +8,8 @@
 //	agentremote:route:device:<device_id>  → "<conn_id> <gateway_id> <instance_id>"
 //
 // 网关每 TTL/3 续期一次自己名下的键；进程被强杀时键自然过期，
-// 谁也不会把残留键当成"这条连接还活着"。
+// 谁也不会把残留键当成"这条连接还活着"
+// gatewayID 标识网关，instanceID 标识网关的一次运行，pushAddr 标识网关的消息推送地址
 package registry
 
 import (
@@ -42,7 +43,7 @@ type Registry struct {
 	prefix string
 }
 
-// Options 描述如何连 Redis。
+// Options 描述如何连 Redis，就是Redis的配置信息而已
 type Options struct {
 	Addr     string
 	Password string
@@ -51,8 +52,8 @@ type Options struct {
 	Prefix   string
 }
 
-// Open 连接 Redis。它不会在启动时拨号：连不上时后续调用返回错误，
-// 不会让进程起不来（运维可以先起服务再起 Redis）。
+// Open 连接 Redis。它不会在启动时拨号：连不上时后续调用返回错误
+// 不会让进程起不来（运维可以先起服务再起 Redis）
 func Open(options Options) *Registry {
 	if options.TTL <= 0 {
 		options.TTL = 30 * time.Second
@@ -60,6 +61,7 @@ func Open(options Options) *Registry {
 	if options.Prefix == "" {
 		options.Prefix = defaultPrefix
 	}
+	//---------------------------------------------
 	return &Registry{
 		client: redis.NewClient(&redis.Options{
 			Addr:     options.Addr,
@@ -98,17 +100,20 @@ func (r *Registry) Ping(ctx context.Context) error {
 	return r.client.Ping(ctx).Err()
 }
 
-func (r *Registry) gatewayKey(gatewayID string) string {
+// 不用每次手动拼接字符串，直接从这里拿----------------------
+func (r *Registry) gatewayKey(gatewayID string) string { //查找网关的键名
 	return r.prefix + "gateway:" + gatewayID
 }
 
-func (r *Registry) connKey(connectionID string) string {
+func (r *Registry) connKey(connectionID string) string { //查找连接的键名
 	return r.prefix + "route:conn:" + connectionID
 }
 
-func (r *Registry) deviceKey(deviceID string) string {
+func (r *Registry) deviceKey(deviceID string) string { //查找设备的键名
 	return r.prefix + "route:device:" + deviceID
 }
+
+// ---------------------------------------------
 
 // RegisterGateway 登记本网关的 push 地址与本次启动标识，并续期。
 func (r *Registry) RegisterGateway(ctx context.Context, gatewayID, instanceID, pushAddr string) error {
@@ -118,7 +123,7 @@ func (r *Registry) RegisterGateway(ctx context.Context, gatewayID, instanceID, p
 	return r.client.Set(ctx, r.gatewayKey(gatewayID), instanceID+" "+pushAddr, r.ttl).Err()
 }
 
-// RenewGateway 只续期网关存活键，不改内容。
+// RenewGateway 续期一次网关存活键
 func (r *Registry) RenewGateway(ctx context.Context, gatewayID, instanceID, pushAddr string) error {
 	return r.RegisterGateway(ctx, gatewayID, instanceID, pushAddr)
 }
@@ -161,7 +166,7 @@ func (r *Registry) RenewConns(ctx context.Context, gatewayID, instanceID string,
 		return nil
 	}
 	value := gatewayID + " " + instanceID
-	pipe := r.client.Pipeline()
+	pipe := r.client.Pipeline() //Pipeline（管道）主要用于批量发送 Redis 命令
 	for _, connectionID := range connectionIDs {
 		pipe.Set(ctx, r.connKey(connectionID), value, r.ttl)
 	}
@@ -171,8 +176,8 @@ func (r *Registry) RenewConns(ctx context.Context, gatewayID, instanceID string,
 
 // ConnRoute 是一条连接的路由结果。
 type ConnRoute struct {
-	GatewayID  string
-	InstanceID string
+	GatewayID  string // GatewayID 是连接归属的网关 ID。
+	InstanceID string // InstanceID 是网关本次启动的唯一标识，网关重启后会变。
 }
 
 // ResolveConn 查一条连接属于哪个网关。路由不存在时返回 ErrNotFound。
@@ -187,8 +192,8 @@ func (r *Registry) ResolveConn(ctx context.Context, connectionID string) (ConnRo
 	if err != nil {
 		return ConnRoute{}, err
 	}
-	fields := strings.Fields(value)
-	if len(fields) != 2 {
+	fields := strings.Fields(value) //按照空白字符切割字符串，返回字符串切片 []string
+	if len(fields) != 2 {           //没有返回两个需要的字段，说明路由格式不正确
 		return ConnRoute{}, fmt.Errorf("registry: malformed conn route for %q", connectionID)
 	}
 	return ConnRoute{GatewayID: fields[0], InstanceID: fields[1]}, nil
@@ -196,8 +201,8 @@ func (r *Registry) ResolveConn(ctx context.Context, connectionID string) (ConnRo
 
 // GatewayRoute 是一个网关的存活信息。
 type GatewayRoute struct {
-	InstanceID string
-	PushAddr   string
+	InstanceID string // InstanceID 是网关本次启动的唯一标识，网关重启后会变。
+	PushAddr   string // PushAddr 是网关的推送地址。
 }
 
 // ResolveGateway 查网关当前这次启动的 push 地址。网关已经退出时返回 ErrNotFound。
@@ -221,9 +226,9 @@ func (r *Registry) ResolveGateway(ctx context.Context, gatewayID string) (Gatewa
 
 // DeviceRoute 是一个设备的路由结果。
 type DeviceRoute struct {
-	ConnectionID string
-	GatewayID    string
-	InstanceID   string
+	ConnectionID string // ConnectionID 是设备当前连接的 ID。
+	GatewayID    string // GatewayID 是设备当前连接归属的网关 ID。
+	InstanceID   string // InstanceID 是网关本次启动的唯一标识，网关重启后会变。
 }
 
 // ResolveDevice 查一个设备当前连在哪个连接、哪个网关上（P3 跨网关寻址用）。

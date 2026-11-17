@@ -6,6 +6,8 @@ package edge
 // 也不会把正在进行的协助打断；多网关时这条退路自然失效（连接不在那个网关上，
 // 投递会返回 ErrNoRoute，结果仍然是"设备不可用"，不会错投）。
 
+// Deliver 通过路由找到网关调用 deliver 把帧送过去；Alive 通过路由找到网关调用 alive 问连接是否还挂着。
+
 import (
 	"context"
 	"errors"
@@ -29,7 +31,7 @@ const lookupTimeout = 2 * time.Second
 // 所以这里要比 rpcTimeout 短：宁可报“没送到”，也不能堵住对面。
 const deliverTimeout = 2 * time.Second
 
-// RouteResolver 查"连接在哪、网关在哪"，由 registry.Registry 实现。
+// RouteResolver 查"连接在哪、网关在哪"，在 Registry 实现
 type RouteResolver interface {
 	ResolveConn(ctx context.Context, connectionID string) (registry.ConnRoute, error)
 	ResolveGateway(ctx context.Context, gatewayID string) (registry.GatewayRoute, error)
@@ -37,10 +39,11 @@ type RouteResolver interface {
 
 // pushClient 是一个网关 Push 服务的连接。
 type pushClient struct {
-	conn   *grpc.ClientConn
-	client edgepb.PushClient
+	conn   *grpc.ClientConn  //底层 gRPC 网络连接
+	client edgepb.PushClient //具备 Deliver 和 Alive 方法的 gRPC 客户端
 }
 
+// 连接目标网关的 gRPC Push 服务，并创建对应的 RPC 客户端
 func dialPush(address string) (*pushClient, error) {
 	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -72,13 +75,13 @@ func (c *pushClient) alive(ctx context.Context, connectionID string) (bool, erro
 type gatewayClient struct {
 	instanceID string
 	addr       string
-	client     *pushClient
+	client     *pushClient //每个网关的连接都对应一个 pushClient
 }
 
 // routerLink 实现 core.Link：把core.Service的出站帧push到 gateway 的 Push 服务。
 // 先查路由选出是哪个网关，查不到（或 Redis 不可用）才用兜底地址。
 type routerLink struct {
-	resolver     RouteResolver // nil 表示不做路由查询，只用 fallbackAddr
+	resolver     RouteResolver // 查路由，nil 表示不做路由查询，只用 fallbackAddr
 	fallbackAddr string        // 路由查不到时使用的网关地址
 
 	clientsMu sync.Mutex
@@ -122,15 +125,15 @@ func (l *routerLink) lock(connectionID string) *sync.Mutex {
 func (l *routerLink) clientFor(connectionID string) (*pushClient, error) {
 	if l.resolver != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
-		route, routeErr := l.resolver.ResolveConn(ctx, connectionID)
+		route, routeErr := l.resolver.ResolveConn(ctx, connectionID) //查找连接在哪个网关
 		if routeErr == nil {
-			gatewayRoute, gatewayErr := l.resolver.ResolveGateway(ctx, route.GatewayID)
-			cancel()
+			gatewayRoute, gatewayErr := l.resolver.ResolveGateway(ctx, route.GatewayID) //查找网关的推送地址
+			cancel()                                                                    //查到路由就取消 context，避免后续的 ResolveGateway 超时
 			if gatewayErr != nil {
 				// 路由还在但网关的存活键已经过期：那个网关已经死了。
 				return nil, core.ErrNoRoute
 			}
-			return l.clientForGateway(route.GatewayID, gatewayRoute)
+			return l.clientForGateway(route.GatewayID, gatewayRoute) //返回对应网关的 pushClient，这样可以把帧投递到对应网关
 		}
 		cancel()
 		if !errors.Is(routeErr, registry.ErrNotFound) {
@@ -147,17 +150,19 @@ func (l *routerLink) clientFor(connectionID string) (*pushClient, error) {
 func (l *routerLink) clientForGateway(gatewayID string, route registry.GatewayRoute) (*pushClient, error) {
 	l.clientsMu.Lock()
 	defer l.clientsMu.Unlock()
-	if cached := l.clients[gatewayID]; cached != nil &&
+	if cached := l.clients[gatewayID]; cached != nil && //去map里找这个网关的pushClient，如果有就返回
 		cached.instanceID == route.InstanceID && cached.addr == route.PushAddr {
 		return cached.client, nil
 	}
+	//如果没有就新建一个pushClient
 	client, err := dialPush(route.PushAddr)
 	if err != nil {
 		return nil, err
 	}
+	// 如果之前有旧的连接，就关掉它
 	if previous := l.clients[gatewayID]; previous != nil {
 		_ = previous.client.conn.Close()
-	}
+	} //把新的连接放到map里
 	l.clients[gatewayID] = &gatewayClient{instanceID: route.InstanceID, addr: route.PushAddr, client: client}
 	return client, nil
 }
@@ -182,7 +187,7 @@ func (l *routerLink) fallbackClient() (*pushClient, error) {
 
 // Deliver 投递一帧；目标连接不在 gateway 上时返回 core.ErrNoRoute。
 func (l *routerLink) Deliver(connectionID string, frame []byte) error {
-	client, err := l.clientFor(connectionID)
+	client, err := l.clientFor(connectionID) //查找连接对应的网关的pushClient
 	if err != nil {
 		return err
 	}

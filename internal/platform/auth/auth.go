@@ -1,7 +1,3 @@
-// Package auth verifies the server player password. The player password only
-// proves that a connection may use platform relay resources; it never grants
-// access to a device. Device access always requires a separate temporary
-// password and, in approval mode, an explicit owner decision.
 // 玩家密码仅用于验证连接是否可以使用平台中继资源；它永远不会授予对设备的访问权限。
 // 设备访问始终需要单独的临时密码，并且在审批模式下，需要设备所有者的明确决定。
 package auth
@@ -21,13 +17,13 @@ var (
 )
 
 // Authenticator performs constant-time password checks with per-IP rate
-// limiting. It stores only the configured secret in process memory.
+// limiting. It stores only the configured secret in process memory
 type Authenticator struct {
 	password []byte
 	limiter  *baseauth.Limiter
 }
 
-// New returns an authenticator for the given player password.
+// 用给定的玩家密码返回一个身份验证器
 func New(password string, attemptsPerMinute int) *Authenticator {
 	return &Authenticator{
 		password: []byte(password),
@@ -35,9 +31,8 @@ func New(password string, attemptsPerMinute int) *Authenticator {
 	}
 }
 
-// Authenticate verifies a candidate password. The rate limiter is consulted
-// before the comparison so repeated failures cannot be used to probe the
-// secret cheaply. remote 是接入层看到的对端地址，仅用于按 IP 限流。
+// Authenticate 验证候选密码。在进行比较之前会先咨询速率限制器，这样无法通过反复失败
+// remote 是接入层看到的对端地址，仅用于按 IP 限流。
 func (a *Authenticator) Authenticate(remote string, candidate string) error {
 	if a == nil {
 		return ErrBadPassword

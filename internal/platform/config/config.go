@@ -254,7 +254,7 @@ func Load(path string) (Config, error) {
 	return c, nil
 }
 
-// 拒绝不安全和不一致的字段
+// ----------------------------拒绝不安全和不一致的字段-----------------------------
 func (c Config) Validate() error {
 	if strings.TrimSpace(c.Listen) == "" {
 		return errors.New("listen address must be set")
@@ -347,43 +347,43 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// 获取配置中各种数值
-// SessionTimeout returns the approved session lifetime.
+// ----------------------获取配置中各种数值------------------------------------------
+// 允许的会话时间
 func (c Config) SessionTimeout() time.Duration {
 	return time.Duration(c.SessionTimeoutSec) * time.Second
 }
 
-// ApprovalTimeout returns the pending-approval lifetime.
+// 待审批的会话时间
 func (c Config) ApprovalTimeout() time.Duration {
 	return time.Duration(c.ApprovalTimeoutSec) * time.Second
 }
 
-// TempPasswordTTL returns the default temporary password lifetime.
+// 临时密码的默认生存时间
 func (c Config) TempPasswordTTL() time.Duration {
 	return time.Duration(c.TempPasswordTTLSec) * time.Second
 }
 
-// HeartbeatTimeout returns the read deadline for established connections.
+// 心跳超时时间
 func (c Config) HeartbeatTimeout() time.Duration {
 	return time.Duration(c.HeartbeatTimeoutSec) * time.Second
 }
 
-// HandshakeTimeout returns the deadline for the first frame.
+// 握手超时时间
 func (c Config) HandshakeTimeout() time.Duration {
 	return time.Duration(c.HandshakeTimeoutSec) * time.Second
 }
 
-// MinTempPasswordTTL returns the lower clamp for client requested TTLs.
+// 临时密码的最小生存时间
 func (c Config) MinTempPasswordTTL() time.Duration {
 	return time.Duration(c.TemporaryPasswordMin) * time.Second
 }
 
-// RouteTTL returns how long a Redis route key stays valid without renewal.
+// 路由键的有效时间
 func (c Config) RouteTTL() time.Duration {
 	return time.Duration(c.RouteTTLSec) * time.Second
 }
 
-// MaxTempPasswordTTL returns the upper clamp for client requested TTLs.
+// 临时密码的最大生存时间
 func (c Config) MaxTempPasswordTTL() time.Duration {
 	return time.Duration(c.TemporaryPasswordMax) * time.Second
 }

@@ -1,6 +1,4 @@
-// Package task owns in-memory command task state, bounded output buffering and
-// request idempotency. Tasks never survive a platform restart and are never
-// automatically replayed.
+// 命令任务状态、输出缓冲、request_id 幂等性
 package task
 
 import (
@@ -9,7 +7,7 @@ import (
 	"time"
 )
 
-// Status is the task lifecycle state.
+// 生命周期状态
 type Status string
 
 // 命令任务、request_id 幂等、输出字节预算、deadline、游标分页

@@ -1,6 +1,6 @@
-// Package transfer tracks in-memory upload and download state. It validates
-// chunk sequences, chunk counts and total size without retaining file contents.
-// Callers forward each validated chunk to the receiving peer.
+// Transfers 追踪内存中的上传和下载状态。
+// 它验证块序列、块计数和总大小，而不保留文件内容。
+// 调用方将每个经过验证的块转发给接收端。
 package transfer
 
 // 文件传输的块序号连续性、累计字节和块数上限、Base64 校验。

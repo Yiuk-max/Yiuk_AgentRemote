@@ -63,14 +63,15 @@ func main() {
 	}
 	grpcServer := grpc.NewServer() // 注册 Edge 服务，供 gateway 调用
 	edgepb.RegisterEdgeServer(grpcServer, edge.NewCoreServer(service))
-
+	//----------------------------------------------
 	if len(cfg.PlayerPassword) < config.RecommendedPlayerPasswordLen {
 		logger.Warn("player_password is shorter than recommended; use a longer random secret for public deployments",
 			"length", len(cfg.PlayerPassword), "recommended", config.RecommendedPlayerPasswordLen)
 	}
 	logger.Info("core listening for gateways", "grpc", cfg.CoreGRPCListen,
 		"fallback_gateway", cfg.GatewayGRPCAddr, "redis", cfg.RedisAddr)
-
+	//---------------------------------------------
+	// 优雅退出
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

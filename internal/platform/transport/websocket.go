@@ -1,5 +1,6 @@
 package transport
 
+// websocket.go 提供 WebSocket 连接的监听和拨号功能，封装了 gorilla/websocket
 import (
 	"crypto/tls"
 	"errors"

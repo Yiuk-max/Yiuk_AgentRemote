@@ -9,6 +9,7 @@ var ErrNoRoute = errors.New("core: connection is not attached")
 //
 // 单进程时由 gateway 直接实现，两个进程时由 gRPC 客户端实现；
 // core 里所有出站消息都经过它，没有第二条写 socket 的路径。
+// core_router.go的RouterLink实现了这个
 type Link interface {
 	// Deliver 投递一帧。目标连接不存在时返回 ErrNoRoute。
 	Deliver(connectionID string, frame []byte) error
