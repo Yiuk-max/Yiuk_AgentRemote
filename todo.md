@@ -8,7 +8,7 @@
 
 5 ✅ 制作setup 安装包
 
-7     github 仓库、主页、readme更新精修
+7     github 主页更新精修
 
 8 ✅ readme邀请合作开发,寻求有mac的开发者开发出 mac 版本客户端
 
@@ -30,9 +30,9 @@
 
 17 已经启动时，再启动，不新开进程，打开已有进程主页面
 
-18 终态会话永不回收；进程跑够 2048 次会话创建后，**所有新会话永久 `SESSION_LIMIT`**，直到重启
+18 ✅ 会话配额改成只数未结束的会话（原来数的是历史创建总数，跑满 `max_sessions` 次后所有新会话永久 `SESSION_LIMIT`）
 
-19  | 任务/传输终态记录永不回收 | `internal/platform/task/manager.go`、`transfer/manager.go` | 每条大输出命令最多留 2 MiB 常驻；长时间运行会 OOM
+19 ✅ 终态任务/传输记录按 `terminal_record_retain_sec` 回收，并按 `terminal_output_retain_bytes` 从最老的终态任务开始淘汰（原来每条大输出命令最多 2 MiB 永久常驻）
 
 20 审批通过后把密码返还给agent方便重连
 

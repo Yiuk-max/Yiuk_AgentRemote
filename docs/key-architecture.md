@@ -149,7 +149,7 @@
 3. **`revoked` 永不可 reclaim**，且 `revoked` 判定必须在密码校验与分配**之前**，否则撤销会被过期或重启自动解除。
 4. **命令只能绑定已批准的会话**：`requested` / `pending_approval` / 终态会话一律不执行。
 5. **批准即全权**：会话创建后即拥有执行 / 读 / 写三项能力；任何新增的“会话级断言”（如按路径白名单）必须是**收紧**而不是依赖调用方声明。
-6. **`request_id` 不可跨会话复用**；同一会话内重复提交返回原结果，不重复执行。
+6. **`request_id` 不可跨会话复用**；同一会话内重复提交返回原结果，不重复执行。幂等只在**记录保留期内**有效：终态任务按 `terminal_record_retain_sec` 回收后，同一个 `request_id` 会被当作新任务，`get_command_result` 返回 `TASK_NOT_FOUND`。
 7. **断线不自动重放**；不确定就 `result_unknown`。
 8. **单连接消息严格有序**（依赖 D2 的同步分发；拆分后依赖 gateway 对同一连接串行调用 core）。
 9. **临时密码、命令正文、完整输出不写服务端日志**（`internal/platform/audit` 只记 `RedactID` 摘要）。
@@ -190,14 +190,14 @@
 
 ---
 
-## 5. 已知薄弱点（尚未修复，按风险排序）
+## 5. 已知薄弱点（按风险排序；标 ✅ 的已修复）
 
 写在文档里而不是留在脑子里。每条都标了位置，便于后续接手。
 
 | # | 风险 | 位置 | 症状 | 方向 |
 | --- | --- | --- | --- | --- |
-| 1 | `max_sessions` 变成**终身配额** | `internal/platform/session/manager.go`（`Create` 里 `len(m.sessions) >= maxSessions`，且全文件无删除） | 终态会话永不回收；进程跑够 2048 次会话创建后，**所有新会话永久 `SESSION_LIMIT`**，直到重启 | 改成活跃计数，或终态会话延迟回收 |
-| 2 | 任务/传输终态记录永不回收 | `internal/platform/task/manager.go`、`transfer/manager.go` | 每条大输出命令最多留 2 MiB 常驻；长时间运行会 OOM | 终态记录 TTL / LRU 回收 |
+| 1 ✅ | `max_sessions` 曾是**终身配额** | `internal/platform/session/manager.go`（`Create` 里原来数 `len(m.sessions)`） | 进程跑够 `max_sessions` 次会话创建后，所有新会话永久 `SESSION_LIMIT`，直到重启 | 已改成只数未结束的会话（`TestSessionQuotaCountsOnlyOpenSessions`） |
+| 2 ✅ | 任务/传输终态记录曾永不回收 | `internal/platform/task/manager.go`（`Reap`）、`transfer/manager.go`（`Reap`）、`core/janitor.go` | 每条大输出命令最多留 2 MiB 常驻；长时间运行会 OOM | 已按 `terminal_record_retain_sec` 回收，并按 `terminal_output_retain_bytes` 从最老的终态任务开始淘汰（`TestReapTerminalTasks`、`TestReapTerminalTransfers`） |
 | 3 | 结果分页没有字节预算 | `task.Manager.ResultFromCursor` 返回 cursor 之后**全部**分块；`max_output_bytes`(2 MiB) ≫ `max_frame_bytes`(256 KiB) | 一条输出超过约 256 KiB 的命令，`get_command_result` 编码失败 → 写循环退出 → **操作者连接被关 → 会话中断** | 按字节切页 + `Encode` 失败降级为错误帧而不是退出写循环 |
 | 4 | 会话无滑动续期，`LastActivity` 是死字段 | `session/manager.go`（`Activate`/`Authorize` 只写不读） | `timeout_seconds` 最大 3600 但会话 600s 就被 janitor 杀掉，长命令必然中断 | 有活动即续期，或区分 idle / max lifetime |
 | 5 | 上传无流控 | `internal/platformclient/tools_upload.go` 一次性发完所有分块；`internal/platform/core/handler_upload.go` 忽略 `send` 返回值 | 32 MiB = 512 帧灌进深度 64 的队列；设备稍慢就被判 `slow_client` 断开；设备重连后分块静默丢弃 | 窗口/ack 流控，队列满时反压操作者而不是断设备 |

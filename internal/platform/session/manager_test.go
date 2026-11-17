@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -211,5 +212,42 @@ func TestApproveAndRejectRejectExpiredPendingSession(t *testing.T) {
 	}
 	if _, err := m.Reject("p2", "dev1", "no"); !errors.Is(err, ErrExpired) {
 		t.Fatalf("reject expired got %v, want ErrExpired", err)
+	}
+}
+
+// 配额只数「还没结束」的会话：终态记录会留着供查询，但不能把配额吃光。
+// 旧实现数的是 len(sessions)，创建满 max_sessions 次之后就再也开不了会话。
+func TestSessionQuotaCountsOnlyOpenSessions(t *testing.T) {
+	now := time.Unix(1000, 0)
+	m := newManager(2, 8, 10*time.Minute, 2*time.Minute, func() time.Time { return now })
+
+	create := func(id string) error {
+		_, err := m.Create(id, CreateRequest{
+			DeviceID: "d1", OperatorConnectionID: "op1", DeviceConnectionID: "dev1",
+			Purpose: "help", Mode: device.ModeDirect,
+		})
+		return err
+	}
+
+	// 连开连关 5 次：终态记录留在内存里，但配额不该被它们占住。
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("s%d", i)
+		if err := create(id); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+		if _, err := m.Close(id, "done"); err != nil {
+			t.Fatalf("close %s: %v", id, err)
+		}
+	}
+
+	// 并发配额本身仍然有效：同时开 2 个可以，第 3 个必须被拦。
+	if err := create("open1"); err != nil {
+		t.Fatalf("create open1: %v", err)
+	}
+	if err := create("open2"); err != nil {
+		t.Fatalf("create open2: %v", err)
+	}
+	if err := create("open3"); !errors.Is(err, ErrSessionLimit) {
+		t.Fatalf("third concurrent session got %v, want ErrSessionLimit", err)
 	}
 }

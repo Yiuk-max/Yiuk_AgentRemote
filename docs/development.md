@@ -372,6 +372,7 @@ docker run -d --name yiuk-gateway --network yiuk --restart unless-stopped   -e Y
 
 - 不提交真实密码、TLS 私钥或其他凭证。
 - 平台服务完全内存化，重启后临时密码、会话、任务全部失效。
+- 终态的任务与传输记录按 `terminal_record_retain_sec`（默认 900 秒）回收，保留的输出总量受 `terminal_output_retain_bytes`（默认 64 MiB）限制；回收后 `get_command_result` 对老任务返回 `TASK_NOT_FOUND`。会话记录不回收，关闭后仍可查状态。
 - 每套部署使用独立的随机 `player_password`，不要与其他服务复用。
 - 管理端口由防火墙限制为可信运维终端。
 - 生产环境使用 TLS 并校验证书，`allow_plaintext` / `allow_insecure` 仅本机测试。

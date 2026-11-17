@@ -3,6 +3,7 @@ package task
 
 import (
 	"errors"
+	"sort"
 	"sync"
 	"time"
 )
@@ -322,4 +323,64 @@ func isTerminal(status Status) bool {
 	default:
 		return false
 	}
+}
+
+// minReapAge 是「输出字节超上限」时允许淘汰的最短终态年龄。
+// 留着这一分针，避免刚返回的结果因为总量超限被立刻删掉。
+const minReapAge = time.Minute
+
+// Reap 回收终态任务记录。
+//
+// 两个维度：先进按保留时长删，再按保留下来的输出字节上限，从最老的终态任务
+// 开始淘汰。只动终态任务，运行中的永远不会被回收。
+// 回收后，被删掉的 request_id 可以重新使用（幂等只保证在保留期内）。
+// 返回 (按时间回收数, 按字节回收数)。
+func (m *Manager) Reap(retain time.Duration, maxRetainedOutputBytes int) (int, int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+
+	removedByAge := 0
+	if retain > 0 {
+		for requestID, commandTask := range m.tasks {
+			if !isTerminal(commandTask.Status) || commandTask.FinishedAt.IsZero() {
+				continue
+			}
+			if now.Sub(commandTask.FinishedAt) < retain {
+				continue
+			}
+			delete(m.tasks, requestID)
+			removedByAge++
+		}
+	}
+
+	removedBySize := 0
+	if maxRetainedOutputBytes > 0 {
+		totalBytes := 0
+		candidates := make([]*Task, 0, len(m.tasks))
+		for _, commandTask := range m.tasks {
+			totalBytes += commandTask.OutputBytes
+			if !isTerminal(commandTask.Status) || commandTask.FinishedAt.IsZero() {
+				continue
+			}
+			if now.Sub(commandTask.FinishedAt) < minReapAge {
+				continue
+			}
+			candidates = append(candidates, commandTask)
+		}
+		if totalBytes > maxRetainedOutputBytes {
+			sort.Slice(candidates, func(i, j int) bool {
+				return candidates[i].FinishedAt.Before(candidates[j].FinishedAt)
+			})
+			for _, commandTask := range candidates {
+				if totalBytes <= maxRetainedOutputBytes {
+					break
+				}
+				delete(m.tasks, commandTask.RequestID)
+				totalBytes -= commandTask.OutputBytes
+				removedBySize++
+			}
+		}
+	}
+	return removedByAge, removedBySize
 }

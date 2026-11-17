@@ -250,3 +250,29 @@ func isTerminal(status Status) bool {
 		return false
 	}
 }
+
+// Reap 回收终态传输记录。
+//
+// 传输记录只存记账信息（序号、累计字节、名字、哈希），不存文件内容，
+// 所以只需要按时间回收。回收后对应的 request_id 可以重新使用。
+// 返回回收条数。
+func (m *Manager) Reap(retain time.Duration) int {
+	if retain <= 0 {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	removed := 0
+	for requestID, fileTransfer := range m.transfers {
+		if !isTerminal(fileTransfer.Status) || fileTransfer.FinishedAt.IsZero() {
+			continue
+		}
+		if now.Sub(fileTransfer.FinishedAt) < retain {
+			continue
+		}
+		delete(m.transfers, requestID)
+		removed++
+	}
+	return removed
+}

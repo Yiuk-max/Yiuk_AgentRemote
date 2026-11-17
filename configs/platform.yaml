@@ -61,3 +61,12 @@ platform:
   # 多网关时每个 gateway 用不同的 gateway_id。
   route_ttl_sec: 30
   gateway_id: "gw-1"
+
+  # —— 终态记录保留策略 ——
+  # 会话、命令任务、文件传输的记录都留在内存里供查询；任务还带着输出分块，
+  # 所以必须回收，否则每条大输出命令最多 2 MiB 永久常驻（长跑会 OOM）。
+  # 回收之后 get_command_result 会返回 TASK_NOT_FOUND，
+  # 也就是“幂等”只保证在保留期内有效。
+  terminal_record_retain_sec: 900
+  # 保留的终态任务输出总字节上限；超出时从最老的终态任务开始淘汰。
+  terminal_output_retain_bytes: 67108864

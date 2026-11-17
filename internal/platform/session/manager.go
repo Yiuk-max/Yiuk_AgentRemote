@@ -167,15 +167,21 @@ func (m *Manager) Create(sessionID string, request CreateRequest) (*Session, err
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// 检查
-	if len(m.sessions) >= m.maxSessions {
-		return nil, ErrSessionLimit
-	}
-	openSessionsForDevice := 0 //设备已经有的会话数量
+	// 只数「还没结束」的会话。终态记录会一直留在内存里供查询，
+	// 如果把它们也算进配额，进程创建满 max_sessions 次之后就再也开不了会话。
+	openSessions := 0
+	openSessionsForDevice := 0 //设备当前还没结束的会话数量
 	for _, sessionRecord := range m.sessions {
-		if sessionRecord.DeviceID == request.DeviceID && !isTerminal(sessionRecord.Status) {
+		if isTerminal(sessionRecord.Status) {
+			continue
+		}
+		openSessions++
+		if sessionRecord.DeviceID == request.DeviceID {
 			openSessionsForDevice++
 		}
+	}
+	if openSessions >= m.maxSessions {
+		return nil, ErrSessionLimit
 	}
 	if openSessionsForDevice >= m.maxSessionsPerDevice {
 		return nil, ErrSessionLimit

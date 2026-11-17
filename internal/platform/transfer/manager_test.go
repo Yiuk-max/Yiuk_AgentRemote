@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -75,5 +76,44 @@ func TestTransferResultSizeMismatchIsUnknown(t *testing.T) {
 	}
 	if tr.Status != StatusResultUnknown || tr.ResultKnown {
 		t.Fatalf("mismatched size should be unknown: %#v", tr)
+	}
+}
+
+// 终态传输记录也要回收，否则 request_id 被永久占用、记录无限增长。
+func TestReapTerminalTransfers(t *testing.T) {
+	now := time.Unix(1000, 0)
+	m := newManager(4, func() time.Time { return now })
+
+	// r1 正常结束，r2 还在传。
+	if _, _, err := m.Start("s1", "r1", "corr-1", 64, time.Minute); err != nil {
+		t.Fatalf("start r1: %v", err)
+	}
+	if _, err := m.Finish("s1", "r1", StatusSucceeded, "a.log", 3, true); err != nil {
+		t.Fatalf("finish r1: %v", err)
+	}
+	if _, _, err := m.Start("s1", "r2", "corr-2", 64, time.Minute); err != nil {
+		t.Fatalf("start r2: %v", err)
+	}
+
+	// 还没到保留期：不回收。
+	if removed := m.Reap(10 * time.Minute); removed != 0 {
+		t.Fatalf("reap before retention = %d, want 0", removed)
+	}
+
+	now = now.Add(11 * time.Minute)
+	if removed := m.Reap(10 * time.Minute); removed != 1 {
+		t.Fatalf("reap after retention = %d, want 1", removed)
+	}
+	// 回收掉的记录再也查不到；在传的还能继续记分块。
+	if _, err := m.RecordChunk("s1", "r1", 1, encoded("abc")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("reaped transfer = %v, want ErrNotFound", err)
+	}
+	if _, err := m.RecordChunk("s1", "r2", 1, encoded("abc")); err != nil {
+		t.Fatalf("in-progress transfer must never be reaped: %v", err)
+	}
+
+	// 回收后 request_id 可以重新使用。
+	if _, created, err := m.Start("s2", "r1", "corr-3", 64, time.Minute); err != nil || !created {
+		t.Fatalf("reuse reaped request id: created=%v err=%v", created, err)
 	}
 }

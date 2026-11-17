@@ -82,4 +82,16 @@ func (s *Service) expireOperationsAndPruneDevices() {
 	if released := s.devices.ReleaseUnusedDevices(time.Duration(s.config.UnusedDeviceReleaseSec) * time.Second); released > 0 {
 		s.audit.Event("unused_devices_released", "count", released)
 	}
+	// 终态任务/传输记录会一直留着给人查，但任务还带着输出分块，
+	// 所以这里按保留时长回收，再按常驻输出上限从最老的终态任务开始淘汰。
+	// 会话记录很小，且关闭后仍要能回答“状态是什么”，不在这里回收。
+	retain := s.config.TerminalRecordRetain()
+	if removedByAge, removedBySize := s.tasks.Reap(retain, s.config.TerminalOutputRetainBytes); removedByAge+removedBySize > 0 {
+		s.audit.Event("terminal_tasks_reaped", "by_age", removedByAge, "by_size", removedBySize)
+	}
+	for _, transfers := range []*transfer.Manager{s.downloads, s.uploads} {
+		if removed := transfers.Reap(retain); removed > 0 {
+			s.audit.Event("terminal_transfers_reaped", "count", removed)
+		}
+	}
 }

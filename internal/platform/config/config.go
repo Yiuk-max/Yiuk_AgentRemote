@@ -77,6 +77,11 @@ type Config struct {
 	RedisPassword string `yaml:"redis_password"` // Redis 密码，空表示无密码
 	RedisDB       int    `yaml:"redis_db"`       // Redis 数据库编号
 	RouteTTLSec   int    `yaml:"route_ttl_sec"`  // 路由键 TTL（秒），网关按 1/3 周期续期
+
+	// 终态记录保留策略。会话、任务、传输的记录都留在内存里供查询，
+	// 任务还带着输出分块（每条最多 max_output_bytes），所以必须回收。
+	TerminalRecordRetainSec   int `yaml:"terminal_record_retain_sec"`   // 终态任务/传输记录保留时长（秒）
+	TerminalOutputRetainBytes int `yaml:"terminal_output_retain_bytes"` // 保留的终态任务输出总字节上限
 }
 
 // 硬编码的配置默认值
@@ -118,6 +123,8 @@ func Default() Config {
 		RedisAddr:              "127.0.0.1:6379",
 		RedisDB:                0,
 		RouteTTLSec:            30,
+		TerminalRecordRetainSec:     900,      // 15 分钟，够 Agent 回来取结果
+		TerminalOutputRetainBytes:   64 << 20, // 常驻输出上限 64 MiB
 	}
 }
 
@@ -225,6 +232,12 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.RouteTTLSec == 0 {
 		c.RouteTTLSec = d.RouteTTLSec
+	}
+	if c.TerminalRecordRetainSec == 0 {
+		c.TerminalRecordRetainSec = d.TerminalRecordRetainSec
+	}
+	if c.TerminalOutputRetainBytes == 0 {
+		c.TerminalOutputRetainBytes = d.TerminalOutputRetainBytes
 	}
 	if c.LogFile == "" {
 		c.LogFile = d.LogFile
@@ -344,6 +357,12 @@ func (c Config) Validate() error {
 	if c.RouteTTLSec < 5 || c.RouteTTLSec > 300 {
 		return errors.New("route_ttl_sec must be between 5 and 300")
 	}
+	if c.TerminalRecordRetainSec < 60 || c.TerminalRecordRetainSec > 24*3600 {
+		return errors.New("terminal_record_retain_sec must be between 60 and 86400")
+	}
+	if c.TerminalOutputRetainBytes < 1<<20 || c.TerminalOutputRetainBytes > 1<<30 {
+		return errors.New("terminal_output_retain_bytes must be between 1 MiB and 1 GiB")
+	}
 	return nil
 }
 
@@ -376,6 +395,11 @@ func (c Config) HandshakeTimeout() time.Duration {
 // 临时密码的最小生存时间
 func (c Config) MinTempPasswordTTL() time.Duration {
 	return time.Duration(c.TemporaryPasswordMin) * time.Second
+}
+
+// 终态任务/传输记录的保留时长
+func (c Config) TerminalRecordRetain() time.Duration {
+	return time.Duration(c.TerminalRecordRetainSec) * time.Second
 }
 
 // 路由键的有效时间
