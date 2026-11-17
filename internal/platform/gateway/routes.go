@@ -23,6 +23,8 @@ type RouteStore interface {
 	PutDevice(ctx context.Context, deviceID, connectionID, gatewayID, instanceID string) error
 	DropDevice(ctx context.Context, deviceID, connectionID, gatewayID, instanceID string) error
 	RenewConns(ctx context.Context, gatewayID, instanceID string, connectionIDs []string) error
+	// RenewDevices 续期设备路由；connectionByDevice 是「设备 ID → 连接 ID」。
+	RenewDevices(ctx context.Context, gatewayID, instanceID string, connectionByDevice map[string]string) error
 }
 
 // publishGateway 登记本网关的 push 地址与本次启动标识，供 core 寻址。
@@ -115,7 +117,7 @@ func (s *Server) runRouteKeepalive(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.publishGateway(ctx)
-			connectionIDs := s.connectionIDs()
+			connectionIDs, connectionByDevice := s.routeSnapshot()
 			if len(connectionIDs) == 0 {
 				continue
 			}
@@ -123,18 +125,26 @@ func (s *Server) runRouteKeepalive(ctx context.Context) {
 			if err := s.routes.RenewConns(renewCtx, s.gatewayID, s.instanceID, connectionIDs); err != nil {
 				s.logger.Warn("connection route renewal failed", "count", len(connectionIDs), "error", err)
 			}
+			if err := s.routes.RenewDevices(renewCtx, s.gatewayID, s.instanceID, connectionByDevice); err != nil {
+				s.logger.Warn("device route renewal failed", "count", len(connectionByDevice), "error", err)
+			}
 			cancel()
 		}
 	}
 }
 
-// connectionIDs 返回本节点当前持有的连接 ID，用于批量续期。
-func (s *Server) connectionIDs() []string {
+// routeSnapshot 返回本节点当前持有的连接 ID，以及「设备 ID → 连接 ID」。
+// 设备路由和连接路由一起续期，否则 route:device 会在 TTL 到期后自己消失。
+func (s *Server) routeSnapshot() ([]string, map[string]string) {
 	s.connectionsMu.Lock()
 	defer s.connectionsMu.Unlock()
 	ids := make([]string, 0, len(s.connections))
-	for connectionID := range s.connections {
+	connectionByDevice := make(map[string]string)
+	for connectionID, clientConn := range s.connections {
 		ids = append(ids, connectionID)
+		if clientConn.publishedDeviceID != "" {
+			connectionByDevice[clientConn.publishedDeviceID] = connectionID
+		}
 	}
-	return ids
+	return ids, connectionByDevice
 }
