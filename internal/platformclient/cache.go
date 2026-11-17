@@ -225,8 +225,9 @@ func (c *Client) cachedFinalCommandResult(sessionID, requestID string, cursor in
 
 // sessionToolResult 将协议会话消息转换为稳定的工具返回字段。
 func sessionToolResult(message protocol.Message) map[string]any {
+	var result map[string]any
 	if message.Session != nil {
-		return map[string]any{
+		result = map[string]any{
 			"session_id":      message.Session.SessionID,
 			"device_id":       message.Session.DeviceID,
 			"status":          message.Session.Status,
@@ -239,8 +240,15 @@ func sessionToolResult(message protocol.Message) map[string]any {
 			"operator":        message.Session.Operator,
 			"operator_device": message.Session.OperatorDevice,
 		}
+	} else {
+		result = map[string]any{"session_id": message.SessionID, "device_id": message.DeviceID, "status": message.Status}
 	}
-	return map[string]any{"session_id": message.SessionID, "device_id": message.DeviceID, "status": message.Status}
+	// 设备所有者批准时交出的临时密码：服务端只转给操作者，用来在密码有效期内
+	// 断线后直接重连（direct），不必重新申请一次审批。
+	if message.TemporaryPassword != "" {
+		result["temporary_password"] = message.TemporaryPassword
+	}
+	return result
 }
 
 // commandToolResult 将命令结果消息转换为工具返回结构。

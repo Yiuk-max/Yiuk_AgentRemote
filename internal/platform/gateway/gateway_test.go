@@ -630,3 +630,75 @@ func TestOutputTruncation(t *testing.T) {
 		t.Fatalf("unexpected paged output: %#v", paged)
 	}
 }
+
+// 设备批准时交出的临时密码要自动转给操作者，供其在密码有效期内断线后直接重连。
+// 只转给操作者本人；会话进入终态后不再携带。
+func TestApprovalSharesTemporaryPassword(t *testing.T) {
+	address, _ := startServer(t, nil)
+	device := dialClient(t, address)
+	device.auth(testPlayerPassword)
+	device.register("device-pwd", testDevicePassword, protocol.ModeApproval)
+
+	operator := dialClient(t, address)
+	operator.auth(testPlayerPassword)
+
+	requestSession := func(purpose string) string {
+		t.Helper()
+		operator.send(protocol.Message{Type: protocol.TypeRequestSession, DeviceID: "device-pwd", Purpose: purpose})
+		created := operator.recv(protocol.TypeSessionCreated)
+		if created.SessionID == "" {
+			t.Fatalf("no session created: %#v", created)
+		}
+		device.recv(protocol.TypeSessionRequest)
+		return created.SessionID
+	}
+
+	// 交上来的密码不是设备当前密码：仍然批准，但不转交。
+	wrongPasswordSession := requestSession("wrong password")
+	device.send(protocol.Message{
+		Type: protocol.TypeApproveSession, SessionID: wrongPasswordSession,
+		TemporaryPassword: "ffffffffffffffffffffffffffffffff",
+	})
+	approved := operator.recvWhere(protocol.TypeSessionStatus, func(m protocol.Message) bool {
+		return m.Status == protocol.StatusApproved
+	})
+	if approved.TemporaryPassword != "" {
+		t.Fatalf("operator must not receive an unverified password, got %q", approved.TemporaryPassword)
+	}
+
+	// 交上来的是当前密码：批准后自动转给操作者。
+	sharedSession := requestSession("share the password")
+	device.send(protocol.Message{
+		Type: protocol.TypeApproveSession, SessionID: sharedSession,
+		TemporaryPassword: testDevicePassword,
+	})
+	pushed := operator.recvWhere(protocol.TypeSessionStatus, func(m protocol.Message) bool {
+		return m.TemporaryPassword != ""
+	})
+	if pushed.TemporaryPassword != testDevicePassword {
+		t.Fatalf("pushed password = %q, want the device password", pushed.TemporaryPassword)
+	}
+
+	// 轮询会话状态也能拿到同一个密码。
+	operator.send(protocol.Message{Type: protocol.TypeSessionStatus, SessionID: sharedSession})
+	polled := operator.recvWhere(protocol.TypeSessionStatus, func(m protocol.Message) bool {
+		return m.TemporaryPassword != ""
+	})
+	if polled.TemporaryPassword != testDevicePassword {
+		t.Fatalf("polled password = %q, want the device password", polled.TemporaryPassword)
+	}
+
+	// 会话关闭后不再携带凭据。
+	operator.send(protocol.Message{Type: protocol.TypeCloseSession, SessionID: sharedSession})
+	closed := operator.recvWhere(protocol.TypeSessionStatus, func(m protocol.Message) bool {
+		return m.Status == protocol.StatusClosed
+	})
+	if closed.TemporaryPassword != "" {
+		t.Fatalf("closed session must not carry the password, got %q", closed.TemporaryPassword)
+	}
+	operator.send(protocol.Message{Type: protocol.TypeSessionStatus, SessionID: sharedSession})
+	afterClose := operator.recv(protocol.TypeSessionStatus)
+	if afterClose.TemporaryPassword != "" {
+		t.Fatalf("password must be cleared after close, got %q", afterClose.TemporaryPassword)
+	}
+}

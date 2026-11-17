@@ -79,17 +79,17 @@ func TestDirectAndApprovalSessionLifecycle(t *testing.T) {
 	if _, err := m.Authorize("pending", "op2", PermissionExecuteCommand); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("pending authorize got %v, want ErrInvalidState", err)
 	}
-	if _, err := m.Approve("pending", "wrong-device"); !errors.Is(err, ErrNotOwner) {
+	if _, err := m.Approve("pending", "wrong-device", ""); !errors.Is(err, ErrNotOwner) {
 		t.Fatalf("wrong approver got %v, want ErrNotOwner", err)
 	}
-	approved, err := m.Approve("pending", "dev1")
+	approved, err := m.Approve("pending", "dev1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if approved.Status != StatusApproved {
 		t.Fatalf("approved status = %s", approved.Status)
 	}
-	if _, err := m.Approve("pending", "dev1"); err != nil {
+	if _, err := m.Approve("pending", "dev1", ""); err != nil {
 		t.Fatalf("approve should be idempotent: %v", err)
 	}
 	active, err := m.Activate("pending", "op2")
@@ -204,7 +204,7 @@ func TestApproveAndRejectRejectExpiredPendingSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	now = now.Add(3 * time.Minute)
-	if _, err := m.Approve("p1", "dev1"); !errors.Is(err, ErrExpired) {
+	if _, err := m.Approve("p1", "dev1", ""); !errors.Is(err, ErrExpired) {
 		t.Fatalf("approve expired got %v, want ErrExpired", err)
 	}
 	if s, ok := m.Get("p1"); !ok || s.Status != StatusExpired {
@@ -249,5 +249,44 @@ func TestSessionQuotaCountsOnlyOpenSessions(t *testing.T) {
 	}
 	if err := create("open3"); !errors.Is(err, ErrSessionLimit) {
 		t.Fatalf("third concurrent session got %v, want ErrSessionLimit", err)
+	}
+}
+
+// 批准的临时密码与 approved 状态一起写入，任何看到 approved 的一方也能看到它；
+// 会话进入终态后清空，避免记录继续携带凭据。
+func TestApproveRecordsOperatorPassword(t *testing.T) {
+	now := time.Unix(1000, 0)
+	m := newTestManager(&now)
+	if _, err := m.Create("p", CreateRequest{
+		DeviceID: "d1", OperatorConnectionID: "op1", DeviceConnectionID: "dev1",
+		Purpose: "help", Mode: device.ModeApproval,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	approved, err := m.Approve("p", "dev1", "0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.Status != StatusApproved || approved.OperatorPassword == "" {
+		t.Fatalf("approve must record the password together with the status: %#v", approved)
+	}
+
+	// 幂等重放：设备再批准一次时带上新密码也能更新。
+	if _, err := m.Approve("p", "dev1", "ffffffffffffffffffffffffffffffff"); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := m.Get("p")
+	if stored.OperatorPassword != "ffffffffffffffffffffffffffffffff" {
+		t.Fatalf("replayed approve should refresh the password, got %q", stored.OperatorPassword)
+	}
+
+	// 关闭之后不再携带。
+	if _, err := m.Close("p", "done"); err != nil {
+		t.Fatal(err)
+	}
+	closed, _ := m.Get("p")
+	if closed.OperatorPassword != "" {
+		t.Fatalf("closed session must clear the password, got %q", closed.OperatorPassword)
 	}
 }

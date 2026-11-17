@@ -673,8 +673,13 @@ void PlatformClient::dispatchPlatformMessage(const QJsonObject &message) {
 }
 
 void PlatformClient::approveSession(const QString &sessionId) {
-    sendProtocolMessage(QJsonObject{{QStringLiteral("type"), QStringLiteral("approve_session")},
-                     {QStringLiteral("session_id"), sessionId}});
+    QJsonObject message{{QStringLiteral("type"), QStringLiteral("approve_session")},
+                        {QStringLiteral("session_id"), sessionId}};
+    // 批准时把当前临时密码一并交给平台转给操作者：断线后它可以在密码有效期内直接重连，
+    // 不必再弹一次审批。服务端会核对这是设备当前的密码，不是就只批准、不转交。
+    if (!config_.temporaryPassword.isEmpty())
+        message.insert(QStringLiteral("temporary_password"), config_.temporaryPassword);
+    sendProtocolMessage(message);
 }
 
 void PlatformClient::rejectSession(const QString &sessionId) {

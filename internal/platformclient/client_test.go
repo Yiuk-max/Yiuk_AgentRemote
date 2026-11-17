@@ -7,8 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"io"
+	"errors"
 	"log/slog"
 	"net"
 	"os"
@@ -349,6 +349,21 @@ func TestPlatformClientRequestWithoutPasswordCreatesApprovalSession(t *testing.T
 	request := device.recv(protocol.TypeSessionRequest)
 	if request.SessionID != sessionID {
 		t.Fatalf("unexpected session request: %#v", request)
+	}
+
+	// 设备批准时把当前临时密码交上来，平台要把它转给 Agent：
+	// 断线后 Agent 可以凭它直接重连，不必再走一次审批。
+	device.send(protocol.Message{
+		Type: protocol.TypeApproveSession, SessionID: sessionID, TemporaryPassword: devicePassword,
+	})
+	// 设备会收到批准请求的应答；等到它，说明 core 已经处理完这次批准。
+	device.recv(protocol.TypeSessionStatus)
+	status := invoke(t, backend, agenttools.GetSessionStatus, map[string]any{"session_id": sessionID}).(map[string]any)
+	if status["status"] != protocol.StatusApproved {
+		t.Fatalf("unexpected status: %#v", status)
+	}
+	if status["temporary_password"] != devicePassword {
+		t.Fatalf("approved session should return the owner's temporary password; full result: %#v", status)
 	}
 }
 

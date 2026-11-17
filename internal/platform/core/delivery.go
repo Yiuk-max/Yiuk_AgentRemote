@@ -70,6 +70,25 @@ func (s *Service) notifySessionStatus(sessionRecord *session.Session) {
 	}
 }
 
+// notifyOperatorApproval 把设备批准时交出的临时密码单独发给操作者。
+//
+// 这是唯一携带该密码的出站消息：notifySessionStatus 永远不带，
+// 因为同一条通知也会发给设备，而凭据只该到操作者手里。
+func (s *Service) notifyOperatorApproval(sessionRecord *session.Session, password string) {
+	if sessionRecord == nil || sessionRecord.OperatorConnectionID == "" || password == "" {
+		return
+	}
+	info := protocolSessionInfo(sessionRecord)
+	s.send(sessionRecord.OperatorConnectionID, protocol.Message{
+		Type:              protocol.TypeSessionStatus,
+		SessionID:         sessionRecord.ID,
+		DeviceID:          sessionRecord.DeviceID,
+		Status:            string(sessionRecord.Status),
+		Session:           &info,
+		TemporaryPassword: password,
+	})
+}
+
 // sendResponse 回显请求的 correlation_id 后投递直接响应。
 // 异步事件不通过此方法发送。
 func (s *Service) sendResponse(caller *Caller, request, response protocol.Message) error {

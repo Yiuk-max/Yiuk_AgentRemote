@@ -96,12 +96,32 @@ func (s *Service) handleApproveSession(caller *Caller, message protocol.Message)
 			return newProtocolError("SESSION_NOT_FOUND", "session not found")
 		}
 	}
-	sessionRecord, err := s.sessions.Approve(message.SessionID, caller.ConnectionID)
+	// 设备批准时可以把自己的当前临时密码一起交上来，由服务端转给操作者，
+	// 让它在密码有效期内断线后直接重连（direct），不必再申请一次审批。
+	// 交上来的必须是设备当前的密码：校验不过就只批准、不转交，避免把无效凭据给出去。
+	// 校验放在批准之前，密码和 approved 状态在同一把锁里写入，不留“已批准但没凭据”的窗口。
+	operatorPassword := message.TemporaryPassword
+	if operatorPassword != "" && len(operatorPassword) > maxTemporaryPasswordLen {
+		operatorPassword = ""
+	}
+	if operatorPassword != "" {
+		if _, verifyErr := s.devices.VerifyPassword(caller.DeviceID, operatorPassword); verifyErr != nil {
+			s.audit.Warn("approval_password_rejected", "session", audit.RedactID(message.SessionID),
+				"device", audit.RedactID(caller.DeviceID), "code", auditErrorCode(verifyErr))
+			operatorPassword = ""
+		}
+	}
+	sessionRecord, err := s.sessions.Approve(message.SessionID, caller.ConnectionID, operatorPassword)
 	if err != nil {
 		return s.sessionProtocolError(err)
 	}
 	s.notifySessionStatus(sessionRecord)
 	s.audit.Event("session_approved", "session", audit.RedactID(sessionRecord.ID), "device", audit.RedactID(sessionRecord.DeviceID))
+	if operatorPassword != "" {
+		s.notifyOperatorApproval(sessionRecord, operatorPassword)
+		s.audit.Event("approval_password_shared", "session", audit.RedactID(sessionRecord.ID),
+			"device", audit.RedactID(caller.DeviceID))
+	}
 	sessionInfo := protocolSessionInfo(sessionRecord)
 	return s.sendResponse(caller, message, protocol.Message{
 		Type:      protocol.TypeSessionStatus,
@@ -159,14 +179,19 @@ func (s *Service) handleGetSessionStatus(caller *Caller, message protocol.Messag
 		return newProtocolError("SESSION_NOT_FOUND", "session not found")
 	}
 	sessionInfo := protocolSessionInfo(sessionRecord)
-	return s.sendResponse(caller, message, protocol.Message{
+	response := protocol.Message{
 		Type:           protocol.TypeSessionStatus,
 		SessionID:      sessionRecord.ID,
 		DeviceID:       sessionRecord.DeviceID,
 		Status:         string(sessionRecord.Status),
 		Session:        &sessionInfo,
 		ActiveSessions: s.sessions.CountOpenByDevice(sessionRecord.DeviceID),
-	})
+	}
+	// 批准的临时密码只回传给操作者本人，用于断线后直接重连。
+	if caller.ConnectionID == sessionRecord.OperatorConnectionID {
+		response.TemporaryPassword = sessionRecord.OperatorPassword
+	}
+	return s.sendResponse(caller, message, response)
 }
 
 // 打开会话通道
@@ -187,13 +212,18 @@ func (s *Service) handleOpenSessionChannel(caller *Caller, message protocol.Mess
 		s.notifySessionStatus(sessionRecord)
 	}
 	sessionInfo := protocolSessionInfo(sessionRecord)
-	return s.sendResponse(caller, message, protocol.Message{
+	response := protocol.Message{
 		Type:      protocol.TypeSessionStatus,
 		SessionID: sessionRecord.ID,
 		DeviceID:  sessionRecord.DeviceID,
 		Status:    string(sessionRecord.Status),
 		Session:   &sessionInfo,
-	})
+	}
+	// 操作者本人拿通道时顺带拿回批准的临时密码，断线后可以直接重连。
+	if caller.ConnectionID == sessionRecord.OperatorConnectionID {
+		response.TemporaryPassword = sessionRecord.OperatorPassword
+	}
+	return s.sendResponse(caller, message, response)
 }
 
 // 关闭会话

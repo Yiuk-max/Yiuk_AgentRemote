@@ -111,10 +111,18 @@ func main() {
 	// 5. approval mode: device approves
 	if *mode == "approval" {
 		request := device.recv(protocol.TypeSessionRequest)
-		device.send(protocol.Message{Type: protocol.TypeApproveSession, SessionID: request.SessionID})
-		operator.recv(protocol.TypeSessionStatus)
+		// 设备批准时自动带上自己的当前临时密码，平台核对后要把它转给操作者。
+		device.send(protocol.Message{
+			Type: protocol.TypeApproveSession, SessionID: request.SessionID, TemporaryPassword: devicePassword,
+		})
+		approved := operator.recvWhere(protocol.TypeSessionStatus, func(m protocol.Message) bool {
+			return m.TemporaryPassword != ""
+		})
+		if approved.TemporaryPassword != devicePassword {
+			fail("operator received temporary_password %q, want the device password", approved.TemporaryPassword)
+		}
 		device.recv(protocol.TypeSessionStatus)
-		step("session approved", "session", short(sessionID))
+		step("session approved", "session", short(sessionID), "password_returned", true)
 	}
 
 	// 6. operator executes a command
@@ -240,6 +248,17 @@ func (c *client) recv(types ...string) protocol.Message {
 }
 
 // recvError reads the next error frame and returns its code.
+// recvWhere 读消息直到拿到满足条件的那个类型。
+// 批准会连续发多条同类型通知，只有其中一条带密码，用它挑出来。
+func (c *client) recvWhere(want string, ok func(protocol.Message) bool) protocol.Message {
+	for {
+		message := c.recv(want)
+		if ok(message) {
+			return message
+		}
+	}
+}
+
 func (c *client) recvError() string {
 	for {
 		_ = c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))

@@ -67,6 +67,9 @@ type Session struct {
 	ClosedAt             time.Time           // 会话进入关闭、拒绝、过期或中断等终态的时间
 	CloseReason          string              // 记录会话结束原因
 	LastActivity         time.Time           // 最近一次会话活动时间
+	// OperatorPassword 是设备所有者批准时交出的当前临时密码，用来让操作者在
+	// 密码有效期内直接重连。只回传给操作者本人，会话进入终态即清空，不进日志。
+	OperatorPassword string // 批准时转交的临时密码
 }
 
 // Clone 返回一个副本，调用者可以在不持有管理器锁的情况下读取
@@ -215,7 +218,12 @@ func (m *Manager) Create(sessionID string, request CreateRequest) (*Session, err
 }
 
 // 批准会将待处理的会话转为已批准
-func (m *Manager) Approve(sessionID, deviceConnectionID string) (*Session, error) {
+// Approve 把待批准会话转为已批准。
+//
+// operatorPassword 是设备所有者在批准时交出的当前临时密码（可以为空）：
+// 它与状态变更在同一把锁里写入，所以任何看到 approved 的一方也能同时看到它，
+// 不会出现“已批准但还没记下密码”的窗口。
+func (m *Manager) Approve(sessionID, deviceConnectionID, operatorPassword string) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	sessionRecord, err := m.sessionByID(sessionID)
@@ -227,6 +235,10 @@ func (m *Manager) Approve(sessionID, deviceConnectionID string) (*Session, error
 	}
 	switch sessionRecord.Status {
 	case StatusApproved, StatusActive:
+		// 幂等重放：设备再次批准时带上密码也照样记下。
+		if operatorPassword != "" {
+			sessionRecord.OperatorPassword = operatorPassword
+		}
 		return sessionRecord.Clone(), nil
 	case StatusPendingApproval:
 		now := m.now()
@@ -234,11 +246,13 @@ func (m *Manager) Approve(sessionID, deviceConnectionID string) (*Session, error
 			sessionRecord.Status = StatusExpired
 			sessionRecord.ClosedAt = now
 			sessionRecord.CloseReason = "expired"
+			sessionRecord.OperatorPassword = "" // 终态不再携带凭据
 			return nil, ErrExpired
 		}
 		sessionRecord.Status = StatusApproved
 		sessionRecord.ApprovedAt = now
 		sessionRecord.ExpiresAt = now.Add(m.sessionTTL)
+		sessionRecord.OperatorPassword = operatorPassword
 		return sessionRecord.Clone(), nil
 	default:
 		return nil, ErrInvalidState
@@ -264,11 +278,13 @@ func (m *Manager) Reject(sessionID, deviceConnectionID, reason string) (*Session
 			sessionRecord.Status = StatusExpired
 			sessionRecord.ClosedAt = now
 			sessionRecord.CloseReason = "expired"
+			sessionRecord.OperatorPassword = "" // 终态不再携带凭据
 			return nil, ErrExpired
 		}
 		sessionRecord.Status = StatusRejected
 		sessionRecord.ClosedAt = now
 		sessionRecord.CloseReason = reason
+		sessionRecord.OperatorPassword = "" // 终态不再携带凭据
 		return sessionRecord.Clone(), nil
 	default:
 		return nil, ErrInvalidState
@@ -344,6 +360,7 @@ func (m *Manager) Close(sessionID, reason string) (*Session, error) {
 	sessionRecord.Status = StatusClosed
 	sessionRecord.ClosedAt = m.now()
 	sessionRecord.CloseReason = reason
+	sessionRecord.OperatorPassword = "" // 终态不再携带凭据
 	return sessionRecord.Clone(), nil
 }
 
@@ -427,6 +444,7 @@ func (m *Manager) interruptMatchingSessions(matchesSession func(*Session) bool, 
 		sessionRecord.Status = StatusInterrupted
 		sessionRecord.ClosedAt = now
 		sessionRecord.CloseReason = reason
+		sessionRecord.OperatorPassword = "" // 终态不再携带凭据
 		interruptedSessions = append(interruptedSessions, sessionRecord.Clone())
 	}
 	return interruptedSessions
@@ -445,6 +463,7 @@ func (m *Manager) Expire() []*Session {
 		sessionRecord.Status = StatusExpired
 		sessionRecord.ClosedAt = now
 		sessionRecord.CloseReason = "expired"
+		sessionRecord.OperatorPassword = "" // 终态不再携带凭据
 		expiredSessions = append(expiredSessions, sessionRecord.Clone())
 	}
 	return expiredSessions
