@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -14,8 +15,8 @@ func (f backendFunc) Invoke(ctx context.Context, req Request) (any, error) { ret
 func TestToolCatalog(t *testing.T) {
 	core := NewCore(nil)
 	tools := core.Tools()
-	if len(tools) != 11 {
-		t.Fatalf("got %d tools, want 11", len(tools))
+	if len(tools) != 14 {
+		t.Fatalf("got %d tools, want 14", len(tools))
 	}
 	seen := map[string]bool{}
 	for _, tool := range tools {
@@ -68,6 +69,14 @@ func TestCallRejectsInvalidInputBeforeBackend(t *testing.T) {
 		{CloseSession, `{"session_id":"s","extra":true}`},
 		{ExecuteCommand, `{"session_id":"s","command":"whoami","timeout_seconds":0}`},
 		{DownloadFile, `{"session_id":"s"}`},
+		{TakeScreenshot, `{"session_id":"s","format":"bmp"}`},
+		{TakeScreenshot, `{"session_id":"s","max_width":10}`},
+		{Click, `{"session_id":"s","x":1}`},
+		{Click, `{"session_id":"s","x":-1,"y":1}`},
+		{Click, `{"session_id":"s","x":1,"y":1,"button":"back"}`},
+		{TypeText, `{"session_id":"s"}`},
+		{TypeText, `{"session_id":"s","text":"hi","method":"sendkeys"}`},
+		{TypeText, `{"session_id":"s","text":"` + strings.Repeat("字", 4001) + `"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name+tc.input, func(t *testing.T) {

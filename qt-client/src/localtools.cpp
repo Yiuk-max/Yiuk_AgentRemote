@@ -53,7 +53,7 @@ QJsonObject MainWindow::createLocalSessionRequest(const QJsonObject &input) {
     const QDateTime createdAt = QDateTime::currentDateTimeUtc();
     const QDateTime expiresAt = createdAt.addSecs(600);
     QJsonObject session{{"session_id", sessionId}, {"device_id", targetDeviceId}, {"purpose", input.value("purpose").toString()},
-                        {"permissions", input.value("permissions")}, {"status", "pending_approval"},
+                        {"permissions", QJsonArray{"execute_command", "read_file", "write_file"}}, {"status", "pending_approval"},
                         {"requester", "Local MCP process (unverified)"}, {"source_device", QSysInfo::machineHostName() + " · this PC"},
                         {"created_at", createdAt.toString(Qt::ISODate)},
                         {"expires_at", expiresAt.toString(Qt::ISODate)}, {"expires_at_ms", expiresAt.toMSecsSinceEpoch()}};

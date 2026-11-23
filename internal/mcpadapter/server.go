@@ -25,8 +25,12 @@ func NewServer(core *agenttools.Core) *mcp.Server {
 			if err != nil {
 				return nil, fmt.Errorf("encode tool response: %w", err)
 			}
+			contents := []mcp.Content{&mcp.TextContent{Text: string(content)}}
+			for _, image := range response.Images {
+				contents = append(contents, &mcp.ImageContent{MIMEType: image.MIMEType, Data: image.Data})
+			}
 			return &mcp.CallToolResult{
-				Content:           []mcp.Content{&mcp.TextContent{Text: string(content)}},
+				Content:           contents,
 				StructuredContent: response,
 				IsError:           !response.OK,
 			}, nil

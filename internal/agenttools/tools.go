@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -22,6 +23,9 @@ const (
 	UploadFile        = "upload_file"
 	CancelCommand     = "cancel_command"
 	CloseSession      = "close_session"
+	TakeScreenshot    = "take_screenshot"
+	Click             = "click"
+	TypeText          = "type_text"
 )
 
 // ToolSpec 描述一个可供 Agent 调用的工具及其输入、输出结构。
@@ -41,10 +45,11 @@ type Request struct {
 
 // Response 是工具调用的统一结果格式；业务错误通过 Code 和 Message 返回。
 type Response struct {
-	OK      bool   `json:"ok"`
-	Code    string `json:"code"`
-	Message string `json:"message,omitempty"`
-	Data    any    `json:"data,omitempty"`
+	OK      bool    `json:"ok"`
+	Code    string  `json:"code"`
+	Message string  `json:"message,omitempty"`
+	Data    any     `json:"data,omitempty"`
+	Images  []Image `json:"-"`
 }
 
 // Backend 是稳定且独立于 Agent 的接口，由本地客户端或远程平台连接实现
@@ -54,6 +59,7 @@ type Backend interface {
 
 type Core struct {
 	backend Backend
+	desktop desktopState
 }
 
 // NewCore 创建工具分发核心
@@ -74,7 +80,10 @@ func (c *Core) Call(ctx context.Context, name string, input json.RawMessage) Res
 	if c.backend == nil {
 		return Response{Code: "NOT_CONFIGURED", Message: "remote platform backend is not configured"}
 	}
-	data, err := c.backend.Invoke(ctx, Request{Name: spec.Name, Input: append(json.RawMessage(nil), input...)})
+	data, images, handled, err := c.callDesktopTool(ctx, spec.Name, input)
+	if !handled {
+		data, err = c.backend.Invoke(ctx, Request{Name: spec.Name, Input: append(json.RawMessage(nil), input...)})
+	}
 	if err != nil {
 		var toolErr *Error
 		if errors.As(err, &toolErr) {
@@ -82,7 +91,7 @@ func (c *Core) Call(ctx context.Context, name string, input json.RawMessage) Res
 		}
 		return Response{Code: "INTERNAL", Message: "tool request failed"}
 	}
-	return Response{OK: true, Code: "OK", Data: data}
+	return Response{OK: true, Code: "OK", Data: data, Images: images}
 }
 
 // Error 表示可安全传递给工具调用方的结构化业务错误。
@@ -124,6 +133,9 @@ var toolSpecs = []ToolSpec{
 	tool(UploadFile, "Upload one local file to the target device in an approved session. Files are limited to 32 MiB; the device refuses to replace an existing file unless overwrite is true. remote_path may be a full path, or empty to let the device store the file in its uploads directory; the result returns the final remote_path, size and SHA-256.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"local_path":{"type":"string","minLength":1,"maxLength":4096},"remote_path":{"type":"string","maxLength":4096},"overwrite":{"type":"boolean"}},"required":["session_id","local_path"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
 	tool(CancelCommand, "Cancel a running command in an approved session.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"request_id":{"type":"string","minLength":1,"maxLength":128}},"required":["session_id","request_id"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
 	tool(CloseSession, "Close a remote session and revoke its authorization.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128}},"required":["session_id"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), Idempotent: true, OpenWorld: boolPtr(false)}),
+	tool(TakeScreenshot, "Capture the whole desktop (all monitors) of the device in an approved session and return it as an image. The image is scaled down to max_width pixels wide (default 1568). Coordinates for click are pixels in the most recent screenshot of the session, so take a new screenshot whenever the screen may have changed. Fails while the device is locked or showing a UAC prompt.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"max_width":{"type":"integer","minimum":320,"maximum":7680},"format":{"type":"string","enum":["png","jpeg"]}},"required":["session_id"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, OpenWorld: boolPtr(false)}),
+	tool(Click, "Move the mouse and click on the device in an approved session. x and y are pixel coordinates in the most recent take_screenshot image of this session (call take_screenshot first). button defaults to left; set double for a double-click. Clicks into elevated (administrator) windows are silently blocked by Windows.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"button":{"type":"string","enum":["left","right","middle"]},"double":{"type":"boolean"}},"required":["session_id","x","y"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
+	tool(TypeText, "Type text into the focused control on the device in an approved session, e.g. a chat box: click the input first, then call this. Any language including Chinese and emoji is typed directly, independent of the input method. method \"type\" (default) sends characters one by one and types line breaks as Shift+Enter so chat apps do not send early; method \"paste\" pastes through the clipboard (better for long text) and restores the previous clipboard text afterwards. Set press_enter to press Enter once after the text, which sends the message in most chat apps. Input into elevated (administrator) windows is silently blocked by Windows.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"text":{"type":"string","minLength":1,"maxLength":4000},"method":{"type":"string","enum":["type","paste"]},"press_enter":{"type":"boolean"}},"required":["session_id","text"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
 }
 
 // 名称->工具定义 映射
@@ -165,6 +177,12 @@ func validateInput(raw json.RawMessage, name string) error {
 		required = []string{"session_id", "remote_path"}
 	case UploadFile:
 		required = []string{"session_id", "local_path"}
+	case TakeScreenshot:
+		required = []string{"session_id"}
+	case Click:
+		required = []string{"session_id", "x", "y"}
+	case TypeText:
+		required = []string{"session_id", "text"}
 	}
 	for _, key := range required {
 		if _, exists := fields[key]; !exists {
@@ -187,11 +205,20 @@ func validateInput(raw json.RawMessage, name string) error {
 		DestinationPath  string `json:"destination_path"`
 		LocalPath        string `json:"local_path"`
 		Overwrite        *bool  `json:"overwrite"`
+		MaxWidth         *int   `json:"max_width"`
+		Format           string `json:"format"`
+		X                *int   `json:"x"`
+		Y                *int   `json:"y"`
+		Button           string `json:"button"`
+		Double           *bool  `json:"double"`
+		Text             string `json:"text"`
+		Method           string `json:"method"`
+		PressEnter       *bool  `json:"press_enter"`
 	}
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return fmt.Errorf("invalid arguments: %w", err)
 	}
-	for _, key := range []string{"device_id", "purpose", "session_id", "request_id", "command", "working_directory", "temporary_password", "remote_path", "destination_path", "local_path"} {
+	for _, key := range []string{"device_id", "purpose", "session_id", "request_id", "command", "working_directory", "temporary_password", "remote_path", "destination_path", "local_path", "format", "button", "text", "method"} {
 		if value, ok := fields[key]; ok {
 			var s string
 			if err := json.Unmarshal(value, &s); err != nil {
@@ -234,6 +261,24 @@ func validateInput(raw json.RawMessage, name string) error {
 	if input.WaitForApproval != nil && (*input.WaitForApproval < 0 || *input.WaitForApproval > 300) {
 		return fmt.Errorf("wait_for_approval_seconds must be between 0 and 300")
 	}
+	if input.MaxWidth != nil && (*input.MaxWidth < 320 || *input.MaxWidth > 7680) {
+		return fmt.Errorf("max_width must be between 320 and 7680")
+	}
+	if input.Format != "" && input.Format != "png" && input.Format != "jpeg" {
+		return fmt.Errorf("format must be png or jpeg")
+	}
+	if (input.X != nil && *input.X < 0) || (input.Y != nil && *input.Y < 0) {
+		return fmt.Errorf("x and y must not be negative")
+	}
+	if _, ok := mouseButtonFlags[input.Button]; input.Button != "" && !ok {
+		return fmt.Errorf("button must be left, right or middle")
+	}
+	if utf8.RuneCountInString(input.Text) > maxTypeTextRunes {
+		return fmt.Errorf("text exceeds %d characters", maxTypeTextRunes)
+	}
+	if input.Method != "" && input.Method != "type" && input.Method != "paste" {
+		return fmt.Errorf("method must be type or paste")
+	}
 	return nil
 }
 
@@ -250,6 +295,9 @@ var schemaFields = map[string]map[string]struct{}{
 	UploadFile:        fieldSet("session_id", "local_path", "remote_path", "overwrite"),
 	CancelCommand:     fieldSet("session_id", "request_id"),
 	CloseSession:      fieldSet("session_id"),
+	TakeScreenshot:    fieldSet("session_id", "max_width", "format"),
+	Click:             fieldSet("session_id", "x", "y", "button", "double"),
+	TypeText:          fieldSet("session_id", "text", "method", "press_enter"),
 }
 
 // fieldSet 将字段名切片转换为便于查询的集合。

@@ -129,7 +129,8 @@ Agent: get_command_result(session_id, request_id) → 拼成人话告诉我
 
 **Agent 接口**
 
-- 11 个 MCP 工具：`list_devices`、`get_device_status`、`request_connection`、`run_command`、`get_session_status`、`execute_command`、`get_command_result`、`download_file`、`upload_file`、`cancel_command`、`close_session`。
+- 14 个 MCP 工具：`list_devices`、`get_device_status`、`request_connection`、`run_command`、`get_session_status`、`execute_command`、`get_command_result`、`download_file`、`upload_file`、`cancel_command`、`close_session`、`take_screenshot`、`click`、`type_text`。
+- `take_screenshot` / `click` / `type_text` 在 MCP 侧组合已有的命令执行与文件下载实现：截全部显示器（物理像素，默认缩到 1568 宽）并以图片返回；点击坐标取自最近一次截图，由 MCP 换算回屏幕坐标；文字输入向当前焦点控件（如聊天框）逐字投递 Unicode 字符（不受输入法影响，换行按 Shift+Enter），或经剪贴板粘贴后恢复原剪贴板，可选输完按回车发送。
 - 标准 MCP stdio 适配器，**不绑定任何 Agent 宿主**——pi、Claude Desktop、Cursor 都能用。
 
 **体验**
