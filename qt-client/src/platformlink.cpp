@@ -118,7 +118,7 @@ QString MainWindow::mcpSetupPromptText() const {
         "3. 本机平台连接配置由 Yiuk 客户端维护，位置为：\n%2\n"
         "   其中包含平台地址、Player 密码和 TLS 设置。不要在 MCP 配置里复制、输出或泄露密码；MCP Server 会从该配置文件读取连接信息。\n"
         "4. 检查 MCP 配置语法并告知我如何重启/重新加载当前 Agent 以启用工具。不要擅自修改平台地址、凭据或 TLS 安全选项。\n\n"
-        "可用工具包括 list_devices、get_device_status、request_connection、run_command、execute_command、get_command_result、download_file、upload_file、cancel_command 和 close_session。远程操作前先确认目标设备与任务；没有有效临时密码时，连接请求需要目标设备所有者批准。"
+        "可用工具包括 list_devices、get_device_status、request_connection、run_command、execute_command、get_command_result、download_file、upload_file、cancel_command、close_session、ask_user 和 get_user_reply。远程操作前先确认目标设备与任务；没有有效临时密码时，连接请求需要目标设备所有者批准。"
     ).arg(sourceExe, clientConfig);
 }
 
@@ -148,7 +148,7 @@ bool MainWindow::writeMcpPlatformClientConfig(const PlatformClient::Config &plat
 
 void MainWindow::copyMcpSetupPrompt() {
     copyToClipboard(mcpSetupPromptText(), "MCP 安装提示词已复制");
-    showStatusMessage("已复制提示词，请粘贴给当前 Agent 执行接入", 4000);
+    showStatusMessage("已复制 MCP 安装提示词", 4000);
 }
 
 
@@ -170,6 +170,39 @@ void MainWindow::initializePlatformClient() {
     connect(platform, &PlatformClient::sessionRequested, this, &MainWindow::onPlatformSessionRequested);
     connect(platform, &PlatformClient::sessionUpdated, this, &MainWindow::onPlatformSessionUpdated);
     connect(platform, &PlatformClient::sessionCreated, this, &MainWindow::onPlatformSessionCreated);
+    connect(platform, &PlatformClient::userQuestionRequested, this, [this](const QJsonObject &request) {
+        const QString sessionId = request.value("session_id").toString();
+        const QString requestId = request.value("request_id").toString();
+        if (!allowsUserQuestion(sessionId) || sessions.value(sessionId).value("source").toString() != "platform") {
+            platform->sendUserReply(QJsonObject{{"type", "user_question_failed"}, {"session_id", sessionId}, {"request_id", requestId}});
+            return;
+        }
+        const bool first = userQuestion->result(sessionId, requestId).isEmpty();
+        const QString error = userQuestion->ask(request);
+        if (!error.isEmpty()) {
+            platform->sendUserReply(QJsonObject{{"type", "user_question_failed"}, {"session_id", sessionId}, {"request_id", requestId}, {"code", error}});
+            return;
+        }
+        const auto reply = userQuestion->result(sessionId, requestId);
+        if (reply.value("status").toString() != "pending") platform->sendUserReply(reply);
+        else platformQuestionIds.insert(requestId);
+        if (first) {
+            appendActivity(sessionId, QStringLiteral("Agent 发起用户询问"));
+            // Tray-resident owners may be working in another app; the window is
+            // top-most, and this reminder uses the same path as session alerts.
+            if (trayIcon && !isVisible() && QSystemTrayIcon::supportsMessages())
+                trayIcon->showMessage(QStringLiteral("Agent 需要你回答"),
+                                      QStringLiteral("远程协助中的一个询问正在等待你的回复。"),
+                                      QSystemTrayIcon::Information, 8000);
+        }
+    });
+    connect(platform, &PlatformClient::userQuestionCanceled, this, [this](const QJsonObject &request) {
+        const QString id = request.value("request_id").toString();
+        platformQuestionIds.remove(id);
+        const QString status = request.value("status").toString();
+        userQuestion->cancel(request.value("session_id").toString(), id,
+            status == "timed_out" || status == "result_unknown" ? status : QStringLiteral("cancelled"));
+    });
     connect(platform, &PlatformClient::commandRequested, this, &MainWindow::onPlatformCommandRequested);
     connect(platform, &PlatformClient::fileDownloadRequested, this, &MainWindow::onPlatformFileDownloadRequested);
     connect(platform, &PlatformClient::fileUploadRequested, this, &MainWindow::onPlatformFileUploadRequested);
@@ -248,7 +281,7 @@ void MainWindow::initializePlatformClient() {
     });
     loadPlatformConfig();
     if (!platform->config().address.isEmpty()) {
-        showStatusMessage("启动后自动连接平台…", 3000);
+        showStatusMessage("正在连接平台…", 3000);
         // 等窗口首帧渲染后再连接，避免启动时 TLS 握手与证书弹框抢在界面出现前
         QTimer::singleShot(0, this, [this] {
             if (platform && platform->state() == "disconnected") platform->connectToPlatform();
@@ -310,7 +343,6 @@ void MainWindow::updatePlatformState(const QString &state) {
                                                : "font-size: 11px; color: #687588; padding: 2px 5px;");
     }
     if (deviceState) deviceState->setText(connected ? "设备：平台在线" : "设备：未注册");
-    if (platformStatusValue) platformStatusValue->setText(connected ? "状态：平台已连接" : (connecting ? "状态：正在连接平台…" : "状态：平台未连接"));
     if (platformConnectButton) platformConnectButton->setText(connected || connecting ? "断开平台" : "连接平台");
     refreshDevicesPage();
 }

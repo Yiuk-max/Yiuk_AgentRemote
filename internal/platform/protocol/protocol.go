@@ -55,6 +55,13 @@ const (
 	TypeFileUploadChunk  = "file_upload_chunk"
 	TypeFileUploadResult = "file_upload_result"
 
+	TypeAskUser              = "ask_user"
+	TypeUserQuestionAccepted = "user_question_accepted"
+	TypeGetUserReply         = "get_user_reply"
+	TypeUserReply            = "user_reply"
+	TypeUserQuestionFailed   = "user_question_failed"
+	TypeCancelUserQuestion   = "cancel_user_question"
+
 	TypeListDevices = "list_devices"
 	TypeDeviceList  = "device_list"
 
@@ -123,6 +130,12 @@ type Message struct {
 
 	Purpose     string   `json:"purpose,omitempty"`
 	Permissions []string `json:"permissions,omitempty"`
+
+	Question      string   `json:"question,omitempty"`
+	Options       []string `json:"options,omitempty"`
+	Answer        string   `json:"answer,omitempty"`
+	AnswerSource  string   `json:"answer_source,omitempty"`
+	SelectedIndex *int     `json:"selected_index,omitempty"`
 
 	Command          string `json:"command,omitempty"`
 	WorkingDirectory string `json:"working_directory,omitempty"`

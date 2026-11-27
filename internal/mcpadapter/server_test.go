@@ -54,8 +54,8 @@ func TestMCPListsToolsAndReturnsStructuredToolResponse(t *testing.T) {
 			t.Fatal("download_file should declare a destructive hint")
 		}
 	}
-	if len(toolNames) != 14 {
-		t.Fatalf("got %d tools, want 14: %v", len(toolNames), toolNames)
+	if len(toolNames) != 16 {
+		t.Fatalf("got %d tools, want 16: %v", len(toolNames), toolNames)
 	}
 
 	result, err := clientSession.CallTool(context.Background(), &mcp.CallToolParams{

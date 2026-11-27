@@ -39,6 +39,8 @@ func (s *Service) expireOperationsAndPruneDevices() {
 			s.send(sessionRecord.OperatorConnectionID, resultMessage)
 		}
 	}
+	s.expireUserQuestions()
+	s.questions.Reap(s.config.TerminalRecordRetain())
 	for _, expiredOperation := range s.uploads.Expire() {
 		sessionRecord, ok := s.sessions.Get(expiredOperation.SessionID)
 		if !ok {

@@ -62,6 +62,8 @@ func (c *Client) Close() error {
 // Invoke 按工具名称分发调用，并将原始 JSON 参数交给对应的平台操作。
 func (c *Client) Invoke(ctx context.Context, request agenttools.Request) (any, error) {
 	switch request.Name {
+	case agenttools.AskUser, agenttools.GetUserReply:
+		return c.handleQuestion(ctx, request)
 	case agenttools.ListDevices:
 		return c.handleListDevices(ctx)
 	case agenttools.GetDeviceStatus:

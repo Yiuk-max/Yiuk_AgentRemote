@@ -11,6 +11,7 @@
 #include <string>
 
 #include "panelpipe.h"
+#include "resource.h"
 
 namespace yiuk {
 namespace {
@@ -206,6 +207,9 @@ bool PanelWindow::Create(HINSTANCE instance) {
     cls.style = CS_DBLCLKS | CS_HREDRAW | CS_VREDRAW;
     cls.lpfnWndProc = &PanelWindow::WndProc;
     cls.hInstance = instance;
+    cls.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_YIUK_APP));
+    cls.hIconSm = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(IDI_YIUK_APP),
+        IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
     cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     cls.lpszClassName = kWindowClass;
     if (!RegisterClassExW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
@@ -790,7 +794,9 @@ bool PanelWindow::AddTrayIcon() {
     trayIcon.uID = 1;
     trayIcon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     trayIcon.uCallbackMessage = kTrayIconMessage;
-    trayIcon.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    trayIcon.hIcon = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),
+        MAKEINTRESOURCEW(IDI_YIUK_TRAY), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
     wcsncpy(trayIcon.szTip, L"远程协助活动：左键恢复，右键打开菜单",
             ARRAYSIZE(trayIcon.szTip) - 1);
     trayIconAdded = Shell_NotifyIconW(NIM_ADD, &trayIcon) != FALSE;

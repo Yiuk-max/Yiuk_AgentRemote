@@ -68,6 +68,12 @@ func (s *Service) dispatch(caller *Caller, message protocol.Message) error {
 		return s.handleGetSessionStatus(caller, message)
 	case protocol.TypeOpenSessionChannel:
 		return s.handleOpenSessionChannel(caller, message)
+	case protocol.TypeAskUser:
+		return s.handleAskUser(caller, message)
+	case protocol.TypeGetUserReply:
+		return s.handleGetUserReply(caller, message)
+	case protocol.TypeUserReply, protocol.TypeUserQuestionFailed:
+		return s.handleUserReply(caller, message)
 	case protocol.TypeExecuteCommand:
 		return s.handleExecuteCommand(caller, message)
 	case protocol.TypeCommandOutput:

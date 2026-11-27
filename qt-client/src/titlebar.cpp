@@ -58,6 +58,10 @@ QPushButton *TitleBar::windowButton(Glyph glyph, const QString &kind, const QStr
     button->setCursor(Qt::PointingHandCursor);
     // 标题栏按钮不会获取键盘焦点，因此对话框仍会聚焦到首个实际输入项，而不是关闭图标
     button->setFocusPolicy(Qt::NoFocus);
+    // Window buttons must never become a dialog's implicit default action:
+    // pressing Enter in a dialog should never close it behind the user's back.
+    button->setAutoDefault(false);
+    button->setDefault(false);
     button->setFixedSize(38, 30);
     button->setStyleSheet(kind == "close"
         ? "QPushButton { border: 0; background: transparent; padding: 0; min-width: 0; } QPushButton:hover { background: #e81123; border-radius: 4px; }"

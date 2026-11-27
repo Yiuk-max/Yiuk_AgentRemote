@@ -5,7 +5,7 @@
 
 QWidget *MainWindow::createSettingsPage() {
     QVBoxLayout *layout = nullptr;
-    settingsPage = pageShell("设置", "管理本机协助、平台连接和本地数据。", &layout);
+    settingsPage = pageShell("设置", QString(), &layout);
     layout->setContentsMargins(57, 16, 57, 10);
 
     auto *settingsBody = new QVBoxLayout;
@@ -54,17 +54,10 @@ QWidget *MainWindow::createSettingsPage() {
         return qMakePair(card, cardLayout);
     };
 
-    auto *generalSection = new QFrame;
-    generalSection->setObjectName("settingsCard");
-    auto *generalLayout = new QHBoxLayout(generalSection);
-    generalLayout->setContentsMargins(16, 8, 16, 8);
-    generalLayout->setSpacing(16);
-    auto *generalTitle = makeLabel("本机协助", "font-size: 16px; font-weight: 650; color: #263446;");
-    generalLayout->addWidget(generalTitle);
-    auto *risk = makeLabel("PowerShell 将以当前 Windows 用户权限运行。这不是沙箱。", "font-size: 12px; color: #8a5b14; background: #fff6e5; border: 1px solid #f3dfb0; border-radius: 6px; padding: 7px 9px;");
-    risk->setWordWrap(false);
-    generalLayout->addWidget(risk, 1);
-    settingsContentLayout->addWidget(generalSection);
+    auto *risk = makeLabel("PowerShell 以当前 Windows 用户权限运行，不是沙箱。",
+                           "font-size: 12px; color: #8a5b14; background: #fff6e5; "
+                           "border: 1px solid #f3dfb0; border-radius: 6px; padding: 7px 9px;");
+    settingsContentLayout->addWidget(risk);
 
     auto platformParts = makeSettingsCard();
     QFrame *platformSection = platformParts.first;
@@ -92,8 +85,6 @@ QWidget *MainWindow::createSettingsPage() {
     platformConnectButton = makePrimaryButton(QStringLiteral("连接平台"), 40);
     platformConnectButton->setMinimumWidth(120);
     platformActionRow->addWidget(platformConnectButton);
-    platformStatusValue = makeLabel("状态：平台未连接", "font-size: 12px; color: #69788d;");
-    platformActionRow->addWidget(platformStatusValue);
     platformActionRow->addStretch();
     platformLayout->addLayout(platformActionRow);
     settingsContentLayout->addWidget(platformSection);
@@ -104,7 +95,7 @@ QWidget *MainWindow::createSettingsPage() {
     agentLayout->setContentsMargins(16, 8, 16, 8);
     agentLayout->setSpacing(8);
     agentLayout->addWidget(makeLabel("Agent / MCP 接入", "font-size: 16px; font-weight: 650; color: #263446;"));
-    auto *copyMcpPrompt = iconButton(Glyph::Copy, "复制 MCP 安装提示词。提示词包含本机 MCP Server 路径与配置方法；粘贴给 Agent 后，让它按当前 Agent 的方式注册 MCP Server。");
+    auto *copyMcpPrompt = iconButton(Glyph::Copy, "复制 MCP 安装提示词");
     agentLayout->addWidget(copyMcpPrompt);
     agentLayout->addStretch();
     settingsContentLayout->addWidget(agentSection);
@@ -148,7 +139,7 @@ QWidget *MainWindow::createSettingsPage() {
     connect(platformTls, &QCheckBox::toggled, this, [this] { savePlatformConfig(); });
     connect(clearHistory, &QPushButton::clicked, this, [this] {
         if (!askConfirm(this, "清除本地记录",
-                        "清除所有本机会话和任务记录？\n\n正在运行的任务不会因此停止。清除后无法恢复。",
+                        "清除所有本机会话和任务记录？正在运行的任务不受影响，且无法恢复。",
                         "清除记录"))
             return;
         sessions.clear();

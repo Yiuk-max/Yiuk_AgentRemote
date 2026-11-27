@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(YiukDeviceAssist VERSION 0.1.7 LANGUAGES CXX)
+project(YiukDeviceAssist VERSION 0.1.8 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,6 +19,9 @@ qt_add_executable(yiuk-device-assist WIN32
     src/titlebar.h
     src/yiukdialog.cpp
     src/yiukdialog.h
+    src/userquestion.cpp
+    src/userquestion.h
+    src/questions.cpp
     src/mainwindow.cpp
     src/mainwindow.h
     src/pages_home.cpp
@@ -43,6 +46,25 @@ qt_add_executable(yiuk-device-assist WIN32
 )
 
 if(WIN32)
+    enable_language(RC)
+    # One generated resource carries the icon plus the file version, so
+    # Explorer/setup.exe and the window title can never disagree on the version.
+    string(REPLACE "." "," YIUK_RC_FILEVERSION "${PROJECT_VERSION},0")
+    # The generated resource carries icons + version info; regenerate it when
+    # the artwork changes (windres emits no depfile for ICON statements).
+    function(yiuk_add_version_resource target internal filename description)
+        set(YIUK_RC_INTERNAL "${internal}")
+        set(YIUK_RC_FILENAME "${filename}")
+        set(YIUK_RC_DESCRIPTION "${description}")
+        set(rc_file "${CMAKE_CURRENT_BINARY_DIR}/${internal}.rc")
+        configure_file(resources/app-version.rc.in "${rc_file}" @ONLY)
+        set_property(SOURCE "${rc_file}" PROPERTY OBJECT_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/app.ico;${CMAKE_CURRENT_SOURCE_DIR}/resources/tray.ico;${CMAKE_CURRENT_SOURCE_DIR}/resources/resource.h")
+        target_sources(${target} PRIVATE "${rc_file}")
+        set(${target}_RC_FILE "${rc_file}" PARENT_SCOPE)
+    endfunction()
+    yiuk_add_version_resource(yiuk-device-assist "yiuk-device-assist" "yiuk-device-assist.exe" "Yiuk Device Assist")
+    target_include_directories(yiuk-device-assist PRIVATE resources)
     target_link_libraries(yiuk-device-assist PRIVATE crypt32)
 endif()
 
@@ -58,6 +80,10 @@ add_executable(yiuk-activity-panel WIN32
     src/panel/panelwindow.cpp
     src/panel/panelwindow.h
 )
+target_include_directories(yiuk-activity-panel PRIVATE resources)
+if(WIN32)
+    yiuk_add_version_resource(yiuk-activity-panel "yiuk-activity-panel" "yiuk-activity-panel.exe" "Yiuk Activity Panel")
+endif()
 target_compile_definitions(yiuk-activity-panel PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
 target_link_libraries(yiuk-activity-panel PRIVATE gdiplus shell32 user32 gdi32)
@@ -101,6 +127,17 @@ endif()
 # 使用 -DYIUK_BUILD_TESTS=ON 构建
 option(YIUK_BUILD_TESTS "Build the Qt platform interop harness" OFF)
 if(YIUK_BUILD_TESTS)
+    # Reuse the shipped UI sources so integration tests exercise real styling,
+    # authorization and session cleanup, not a parallel mock dialog.
+    get_target_property(YIUK_UI_SOURCES yiuk-device-assist SOURCES)
+    list(REMOVE_ITEM YIUK_UI_SOURCES src/main.cpp "${yiuk-device-assist_RC_FILE}")
+    qt_add_executable(yiuk-question-interop tests/userquestion_interop.cpp ${YIUK_UI_SOURCES})
+    set_target_properties(yiuk-question-interop PROPERTIES WIN32_EXECUTABLE FALSE)
+    target_include_directories(yiuk-question-interop PRIVATE src)
+    target_link_libraries(yiuk-question-interop PRIVATE Qt6::Widgets Qt6::Network crypt32)
+    target_compile_definitions(yiuk-question-interop PRIVATE YIUK_CLIENT_VERSION="${PROJECT_VERSION}")
+    add_dependencies(yiuk-question-interop yiuk-activity-panel)
+
     qt_add_executable(yiuk-platform-interop
         tests/platform_interop.cpp
         src/platformclient.cpp

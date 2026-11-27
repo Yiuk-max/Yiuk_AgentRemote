@@ -54,6 +54,7 @@ public:
     QString state() const { return state_; }
 
     // 设备端操作
+    void sendUserReply(const QJsonObject &reply);
     void approveSession(const QString &sessionId);
     void rejectSession(const QString &sessionId);
     void sendCommandOutput(const QString &sessionId, const QString &requestId, const QString &stream,
@@ -88,6 +89,8 @@ signals:
     void sessionRequested(const QJsonObject &session);
     void sessionUpdated(const QJsonObject &session);
     void sessionCreated(const QJsonObject &session);
+    void userQuestionRequested(const QJsonObject &request);
+    void userQuestionCanceled(const QJsonObject &request);
     void commandRequested(const QString &sessionId, const QString &requestId, const QString &command,
                           const QString &workingDirectory, int timeoutSeconds);
     void commandOutputReceived(const QString &sessionId, const QString &requestId, const QString &stream,

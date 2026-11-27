@@ -8,6 +8,7 @@ package core
 import (
 	"agentremote/internal/platform/audit"
 	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platform/question"
 	"agentremote/internal/platform/session"
 )
 
@@ -48,6 +49,12 @@ func (s *Service) encode(message protocol.Message) []byte {
 func (s *Service) notifySessionStatus(sessionRecord *session.Session) {
 	if sessionRecord == nil {
 		return
+	}
+	switch sessionRecord.Status {
+	case session.StatusClosed, session.StatusExpired, session.StatusRejected:
+		s.finishUserQuestions(sessionRecord.ID, question.Cancelled)
+	case session.StatusInterrupted:
+		s.finishUserQuestions(sessionRecord.ID, question.Unknown)
 	}
 	info := protocolSessionInfo(sessionRecord)
 	statusMessage := protocol.Message{

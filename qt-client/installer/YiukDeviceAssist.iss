@@ -14,7 +14,7 @@
 ; 同一台设备身份。需要彻底清除时由用户手动删除该目录。
 
 #define MyAppName "Yiuk Device Assist"
-#define MyAppVersion "0.1.7"
+#define MyAppVersion "0.1.8"
 #define MyAppPublisher "Yiuk"
 #define MyAppExeName "yiuk-device-assist.exe"
 
@@ -32,6 +32,7 @@ AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
+SetupIconFile={#RepoRoot}\qt-client\resources\app.ico
 ; 必须是四段数字，否则 setup.exe 的“文件版本”留空
 VersionInfoVersion={#MyAppVersion}.0
 VersionInfoProductName={#MyAppName}

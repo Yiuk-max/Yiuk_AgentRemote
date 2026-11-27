@@ -3,6 +3,7 @@
 
 #include <QApplication>
 #include <QDir>
+#include <QIcon>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QLockFile>
@@ -13,6 +14,8 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("Yiuk Device Assist");
     app.setOrganizationName("Yiuk");
+    // Inherited by the main window and dialogs, including the Windows taskbar.
+    app.setWindowIcon(QIcon(QStringLiteral(":/icons/app.ico")));
 
     // The local bridge and the platform registration both identify this machine by
     // device code, so allowing two GUI processes would create duplicate owners.

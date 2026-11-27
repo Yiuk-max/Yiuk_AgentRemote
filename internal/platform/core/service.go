@@ -19,6 +19,7 @@ import (
 	"agentremote/internal/platform/config"
 	"agentremote/internal/platform/device"
 	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platform/question"
 	"agentremote/internal/platform/session"
 	"agentremote/internal/platform/task"
 	"agentremote/internal/platform/transfer"
@@ -32,6 +33,7 @@ type Service struct {
 
 	devices   *device.Manager
 	sessions  *session.Manager
+	questions *question.Manager
 	tasks     *task.Manager
 	downloads *transfer.Manager // 下载传输状态；不保存文件内容
 	uploads   *transfer.Manager // 上传管理器
@@ -57,6 +59,7 @@ func New(serverConfig config.Config, logger *slog.Logger, link Link) *Service {
 		codec:         protocol.NewCodec(serverConfig.MaxFrameBytes),
 		devices:       device.NewManager(serverConfig.MaxDevices, serverConfig.TempPasswordTTL()),
 		sessions:      session.NewManager(serverConfig.MaxSessions, serverConfig.MaxSessionsPerDevice, serverConfig.SessionTimeout(), serverConfig.ApprovalTimeout()),
+		questions:     question.New(32),
 		tasks:         task.NewManager(serverConfig.MaxOutputBytes, serverConfig.MaxTasksPerSession),
 		downloads:     transfer.NewManager(serverConfig.MaxTasksPerSession),
 		uploads:       transfer.NewManager(serverConfig.MaxTasksPerSession),

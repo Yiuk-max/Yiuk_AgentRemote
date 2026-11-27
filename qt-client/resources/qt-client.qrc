@@ -1,5 +1,8 @@
 <RCC>
     <qresource prefix="/icons">
+        <file>app.ico</file>
+        <file>tray.ico</file>
+        <file>tray.svg</file>
         <file>check.svg</file>
         <file alias="home.svg">home.svg</file>
         <file alias="devices.svg">devices.svg</file>

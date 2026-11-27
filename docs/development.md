@@ -156,7 +156,7 @@ go run ./cmd/device-sim -addr host:29564 -password '<player-password>' \
 只有一个 Windows x64 绿色目录（无安装器），目录里放三个 exe 与 Qt 运行库，再压 zip：
 
 ```sh
-VERSION=0.1.6
+VERSION=0.1.8
 BUILD=qt-client/build-qt
 OUT=release/YiukDeviceAssist-$VERSION-win64
 
@@ -170,7 +170,7 @@ windeployqt --release --no-translations $OUT/yiuk-device-assist.exe
 
 - 只对主客户端跑 `windeployqt`：`yiuk-activity-panel.exe` 只依赖系统 DLL，`yiuk-mcp.exe` 是纯 Go 静态产物。
 - `windeployqt` 会一并带上 `opengl32sw.dll`、`D3Dcompiler_47.dll` 与 MinGW 运行库（Qt 的软件 OpenGL 回退，在不装显卡驱动的机器上更稳）。0.1.5 包的文件数和体积以实际构建结果为准。
-- 版本号来自 `qt-client/CMakeLists.txt` 的 `project(... VERSION ...)`，会显示在窗口标题与「关于」信息里；改版本必须重新构建。
+- 版本号来自 `qt-client/CMakeLists.txt` 的 `project(... VERSION ...)`：窗口标题、「关于」、两个 EXE 的文件版本（由 `resources/app-version.rc.in` 生成）和安装包都取自这一处；改版本必须重新构建。
 - 打包后检查：目录里同时有 `Qt6Core/Gui/Widgets/Network.dll`、`platforms/qwindows.dll` 与三个 exe；在**不把 Qt 加进 `PATH`** 的情况下双击 `yiuk-device-assist.exe` 能启动，并确认窗口标题里的版本号正确。
 - 再验一次面板：启动客户端后从托盘菜单打开活动面板（或直接向 `yiuk-activity-panel.exe` 的 stdin 馈协议行，见[本机开发环境](local-dev.md)）；缺少面板时会提示找不到 `yiuk-activity-panel.exe`。
 

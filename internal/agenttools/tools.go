@@ -12,6 +12,8 @@ import (
 
 const (
 	// 以下常量是工具目录中的稳定名称，也用于分发后端调用。
+	AskUser           = "ask_user"
+	GetUserReply      = "get_user_reply"
 	ListDevices       = "list_devices"
 	GetDeviceStatus   = "get_device_status"
 	RequestConnection = "request_connection"
@@ -122,6 +124,8 @@ func tool(name, description, input string, annotations ToolAnnotations) ToolSpec
 
 // toolSpecs 是 MCP 暴露给 Agent 的唯一工具目录，输入 schema 与运行时校验需保持一致。
 var toolSpecs = []ToolSpec{
+	tool(AskUser, "Ask the device owner one question in an approved session. Shows up to six choices and always allows a custom text answer. Returns a request_id immediately; use get_user_reply later, without busy-polling. Do not repeat a pending question or perform actions that depend on its answer. A reply does not grant extra permissions. Never request passwords, verification codes or private keys.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"question":{"type":"string","minLength":1,"maxLength":1000},"options":{"type":"array","maxItems":6,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":100}},"timeout_seconds":{"type":"integer","minimum":15,"maximum":300}},"required":["session_id","question"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(false), OpenWorld: boolPtr(false)}),
+	tool(GetUserReply, "Read the status and reply to ask_user. Returns pending, answered, cancelled, timed_out or result_unknown. Only answered is an explicit user response; none of the other states implies consent. If pending, wait before querying again; do not busy-poll or automatically reissue questions after a disconnect.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"request_id":{"type":"string","minLength":1,"maxLength":128}},"required":["session_id","request_id"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
 	tool(ListDevices, "List devices available to the current operator.", `{"type":"object","properties":{},"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
 	tool(GetDeviceStatus, "Get online and session status for a device.", `{"type":"object","properties":{"device_id":{"type":"string","minLength":1,"maxLength":128}},"required":["device_id"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
 	tool(RequestConnection, "Request a remote session to one target device. Without temporary_password the device owner must approve; with the owner's current temporary password, the session connects directly without changing the target's mode setting. Pass wait_for_approval_seconds to wait for an owner decision when requesting approval. Approval grants the full set of session actions: run PowerShell, download remote files and upload local files. A pending session is not authorization to execute commands. When the owner approves, their current temporary password is returned as temporary_password: reuse it to create a new session after a disconnect without asking for approval again, until it expires or is rotated.", `{"type":"object","properties":{"device_id":{"type":"string","minLength":1,"maxLength":128},"purpose":{"type":"string","minLength":1,"maxLength":512},"temporary_password":{"type":"string","minLength":32,"maxLength":256},"wait_for_approval_seconds":{"type":"integer","minimum":0,"maximum":300}},"required":["device_id","purpose"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(false), OpenWorld: boolPtr(false)}),
@@ -171,7 +175,9 @@ func validateInput(raw json.RawMessage, name string) error {
 		required = []string{"session_id"}
 	case ExecuteCommand:
 		required = []string{"session_id", "command"}
-	case GetCommandResult, CancelCommand:
+	case AskUser:
+		required = []string{"session_id", "question"}
+	case GetCommandResult, CancelCommand, GetUserReply:
 		required = []string{"session_id", "request_id"}
 	case DownloadFile:
 		required = []string{"session_id", "remote_path"}
@@ -187,6 +193,11 @@ func validateInput(raw json.RawMessage, name string) error {
 	for _, key := range required {
 		if _, exists := fields[key]; !exists {
 			return fmt.Errorf("missing required field %q", key)
+		}
+	}
+	if name == AskUser {
+		if err := validateQuestionInput(fields); err != nil {
+			return err
 		}
 	}
 	var input struct {
@@ -218,7 +229,7 @@ func validateInput(raw json.RawMessage, name string) error {
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return fmt.Errorf("invalid arguments: %w", err)
 	}
-	for _, key := range []string{"device_id", "purpose", "session_id", "request_id", "command", "working_directory", "temporary_password", "remote_path", "destination_path", "local_path", "format", "button", "text", "method"} {
+	for _, key := range []string{"device_id", "purpose", "session_id", "request_id", "command", "working_directory", "temporary_password", "remote_path", "destination_path", "local_path", "format", "button", "text", "method", "question"} {
 		if value, ok := fields[key]; ok {
 			var s string
 			if err := json.Unmarshal(value, &s); err != nil {
@@ -284,6 +295,8 @@ func validateInput(raw json.RawMessage, name string) error {
 
 // schemaFields 按工具记录允许的字段，用于补充 JSON Schema 的未知字段检查。
 var schemaFields = map[string]map[string]struct{}{
+	AskUser:           fieldSet("session_id", "question", "options", "timeout_seconds"),
+	GetUserReply:      fieldSet("session_id", "request_id"),
 	ListDevices:       fieldSet(),
 	GetDeviceStatus:   fieldSet("device_id"),
 	RequestConnection: fieldSet("device_id", "purpose", "temporary_password", "wait_for_approval_seconds"),

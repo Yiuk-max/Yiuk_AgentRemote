@@ -35,6 +35,8 @@ QJsonObject MainWindow::invokeLocalTool(const QString &tool, const QJsonObject &
     }
     if (tool == "request_connection") return createLocalSessionRequest(input);
     if (tool == "get_session_status") return localSessionStatusResult(input.value("session_id").toString());
+    if (tool == "ask_user") return askLocalUser(input);
+    if (tool == "get_user_reply") return getLocalUserReply(input);
     if (tool == "execute_command") return startLocalCommand(input);
     if (tool == "download_file") return downloadLocalFile(input);
     if (tool == "upload_file") return uploadLocalFile(input);

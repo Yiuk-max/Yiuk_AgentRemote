@@ -41,6 +41,17 @@ MainWindow::MainWindow() {
             QComboBox#settingsField:focus { border-color: #1479ed; }
             QComboBox#settingsField::drop-down { border: none; width: 28px; }
             QScrollArea#settingsScroll { border: none; background: transparent; }
+            /* Read-only lists and long Agent questions share one thin scrollbar;
+               the Fusion default renders as a heavy dark strip on white cards. */
+            QScrollBar:vertical { background: transparent; width: 10px; margin: 0; }
+            QScrollBar::handle:vertical { background: #cbd5e1; border-radius: 4px; min-height: 32px; margin: 2px; }
+            QScrollBar::handle:vertical:hover { background: #b3c0d1; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+            QScrollBar:horizontal { background: transparent; height: 10px; margin: 0; }
+            QScrollBar::handle:horizontal { background: #cbd5e1; border-radius: 4px; min-width: 32px; margin: 2px; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
             QScrollArea#sessionsScroll { border: none; background: transparent; }
             QFrame#sessionRow { background: #f7f9fc; border: 1px solid #e4eaf2; border-radius: 8px; }
             QLabel#settingsFieldLabel { color: #5f6d80; font-size: 13px; }
@@ -116,6 +127,20 @@ MainWindow::MainWindow() {
     contentLayout->addWidget(statusFooter);
     layout->addWidget(content, 1);
     setCentralWidget(root);
+    userQuestion = new UserQuestion(this);
+    connect(userQuestion, &UserQuestion::finished, this, [this](const QJsonObject &reply) {
+        const QString id = reply.value("request_id").toString();
+        const auto session = sessions.value(reply.value("session_id").toString());
+        const QString status = session.value("status").toString();
+        const QString replyStatus = reply.value("status").toString();
+        if (platformQuestionIds.remove(id) && platform && platform->isConnected() &&
+            (status == "active" || status == "approved") &&
+            session.value("expires_at_ms").toInteger() > QDateTime::currentMSecsSinceEpoch() &&
+            (replyStatus == "answered" || replyStatus == "cancelled"))
+            platform->sendUserReply(reply);
+        appendActivity(reply.value("session_id").toString(),
+            QStringLiteral("用户询问结束：%1").arg(reply.value("status").toString()));
+    });
     setupSystemTray();
     startLocalBridge();
     initializePlatformClient();
@@ -123,11 +148,12 @@ MainWindow::MainWindow() {
 
 
 void MainWindow::setupSystemTray() {
-    trayIcon = new QSystemTrayIcon(QApplication::style()->standardIcon(QStyle::SP_ComputerIcon), this);
+    // Use pre-rendered small sizes: no SVG plugin is needed for the tray icon.
+    trayIcon = new QSystemTrayIcon(QIcon(QStringLiteral(":/icons/tray.ico")), this);
     trayIcon->setToolTip("Yiuk Device Assist");
     auto *menu = new QMenu(this);
-    auto *open = menu->addAction("打开 Yiuk Device Assist");
-    auto *activity = menu->addAction("打开远程协助活动");
+    auto *open = menu->addAction("打开主窗口");
+    auto *activity = menu->addAction("远程协助活动");
     auto *quit = menu->addAction("退出");
     connect(open, &QAction::triggered, this, [this] { showMainWindow(); });
     connect(activity, &QAction::triggered, this, [this] { openOrActivateActivityPanel(); });
@@ -320,10 +346,12 @@ QWidget *MainWindow::pageShell(const QString &title, const QString &subtitle, QV
     layout->setContentsMargins(57, 30, 57, 26);
     layout->setSpacing(0);
     layout->addWidget(makeLabel(title, "font-size: 22px; font-weight: 650; color: #1d2939;"));
-    layout->addSpacing(4);
-    auto *description = makeLabel(subtitle, "font-size: 13px; color: #7a8798;");
-    description->setWordWrap(true);
-    layout->addWidget(description);
+    if (!subtitle.isEmpty()) {
+        layout->addSpacing(4);
+        auto *description = makeLabel(subtitle, "font-size: 13px; color: #7a8798;");
+        description->setWordWrap(true);
+        layout->addWidget(description);
+    }
     layout->addSpacing(14);
     *outLayout = layout;
     return page;
@@ -343,7 +371,7 @@ QWidget *MainWindow::deviceRow(const QString &code, const QString &name, bool lo
     auto *details = new QVBoxLayout;
     details->setSpacing(3);
     auto *nameLabel = makeLabel(name, "font-size: 14px; font-weight: 650; color: #263446;");
-    auto *codeLabel = makeLabel(code + (local ? "  ·  Windows · 当前用户" : "  ·  未建立会话"), "font-size: 12px; color: #687588;");
+    auto *codeLabel = makeLabel(code, "font-size: 12px; color: #687588;");
     details->addWidget(nameLabel);
     details->addWidget(codeLabel);
     layout->addLayout(details, 1);
@@ -546,15 +574,12 @@ void MainWindow::onDeviceCodeAssigned(const QString &assignedId) {
     if (digits.size() != 9) return;
     const QString formatted = formatDeviceCode(digits);
     if (formatted == deviceCode) return;
-    const QString previous = deviceCode;
     deviceCode = formatted;
     saveDeviceCode(digits);
     refreshDevicesPage();
-    QTimer::singleShot(0, this, [this, previous, formatted] {
+    QTimer::singleShot(0, this, [this, formatted] {
         showInfoMessage(this, QStringLiteral("设备码已更新"),
-                        QStringLiteral("平台上的设备码 %1 与本机凭据不匹配，已分配新设备码 %2。\n"
-                                       "请把新的设备码告知需要连接本机的人。")
-                            .arg(previous, formatted));
+                        QStringLiteral("本机设备码现为 %1，请告知需要连接本机的人。").arg(formatted));
     });
 }
 

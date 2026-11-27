@@ -545,6 +545,14 @@ void PlatformClient::dispatchPlatformMessage(const QJsonObject &message) {
         emit sessionUpdated(message.value(QStringLiteral("session")).toObject());
         return;
     }
+    if (type == QLatin1String("ask_user")) {
+        emit userQuestionRequested(message);
+        return;
+    }
+    if (type == QLatin1String("cancel_user_question")) {
+        emit userQuestionCanceled(message);
+        return;
+    }
     if (type == QLatin1String("execute_command")) {
         emit commandRequested(message.value(QStringLiteral("session_id")).toString(),
                               message.value(QStringLiteral("request_id")).toString(),
@@ -670,6 +678,12 @@ void PlatformClient::dispatchPlatformMessage(const QJsonObject &message) {
         return;
     }
     // 忽略 ping/pong/heartbeat_ack 等通知消息
+}
+
+void PlatformClient::sendUserReply(const QJsonObject &reply) {
+    QJsonObject message = reply;
+    if (!message.contains(QStringLiteral("type"))) message.insert(QStringLiteral("type"), QStringLiteral("user_reply"));
+    sendProtocolMessage(message);
 }
 
 void PlatformClient::approveSession(const QString &sessionId) {

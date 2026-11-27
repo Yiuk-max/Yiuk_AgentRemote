@@ -6,6 +6,7 @@
 #include "securestore.h"
 #include "apphelpers.h"
 #include "glyph.h"
+#include "userquestion.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -14,6 +15,7 @@
 #include <QComboBox>
 #include <QFrame>
 #include <QHash>
+#include <QSet>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QIcon>
@@ -97,10 +99,14 @@ private:
     QTimer *sessionTimer = nullptr;
     LocalBridge *bridge = nullptr;
     PlatformClient *platform = nullptr;
+    UserQuestion *userQuestion = nullptr;
+    QSet<QString> platformQuestionIds;
+    QJsonObject askLocalUser(const QJsonObject &input);
+    QJsonObject getLocalUserReply(const QJsonObject &input);
+    bool allowsUserQuestion(const QString &sessionId);
     QLineEdit *platformAddress = nullptr;
     QLineEdit *platformPassword = nullptr;
     QCheckBox *platformTls = nullptr;
-    QLabel *platformStatusValue = nullptr;
     QPushButton *platformConnectButton = nullptr;
     QString pendingDeviceLookupCorrelationId;
     QString pendingDeviceLookupDeviceId;

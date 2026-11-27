@@ -212,6 +212,22 @@ func TestTwoProcessFlow(t *testing.T) {
 		t.Fatalf("command status = %q, want %q", result.Status, protocol.TaskSucceeded)
 	}
 
+	// Questions use exactly the same opaque gateway/core route, no new RPC.
+	operator.send(protocol.Message{Type: protocol.TypeAskUser, SessionID: sessionID,
+		RequestID: "edge-question", Question: "选择？", Options: []string{"A", "B"}})
+	operator.expect(protocol.TypeUserQuestionAccepted)
+	question := device.expect(protocol.TypeAskUser)
+	index := 1
+	device.send(protocol.Message{Type: protocol.TypeUserReply, SessionID: sessionID,
+		RequestID: question.RequestID, Status: "answered", AnswerSource: "option", SelectedIndex: &index})
+	if reply := operator.expect(protocol.TypeUserReply); reply.Answer != "B" {
+		t.Fatal(reply)
+	}
+	operator.send(protocol.Message{Type: protocol.TypeGetUserReply, SessionID: sessionID, RequestID: question.RequestID})
+	if reply := operator.expect(protocol.TypeUserReply); reply.Status != "answered" {
+		t.Fatal(reply)
+	}
+
 	// 设备掉线：gateway 关连接后必须调 Detach，core 中断会话并通知操作者。
 	_ = device.conn.Close()
 	interrupted := operator.expect(protocol.TypeSessionStatus)

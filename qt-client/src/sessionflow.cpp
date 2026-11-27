@@ -21,6 +21,7 @@ void MainWindow::expireSessionIfNeeded(const QString &sessionId) {
 
 
 void MainWindow::cancelSessionCommands(const QString &sessionId, const QString &status) {
+    if (userQuestion) userQuestion->cancelSession(sessionId, status == "result_unknown" ? status : QStringLiteral("cancelled"));
     QStringList requestIds;
     for (auto taskIt = tasks.cbegin(); taskIt != tasks.cend(); ++taskIt) {
         if (taskIt.value().value("session_id").toString() == sessionId && commandRunners.contains(taskIt.key()))
@@ -82,7 +83,7 @@ void MainWindow::showApprovalDialog(const QString &sessionId) {
     dialog.content()->addWidget(makeLabel(QStringLiteral("Agent 请求远程协助权限"),
                                           "font-size: 15px; font-weight: 650; color: #263446;"));
     const QString permissionText = joinJsonStringArray(session.value("permissions").toArray());
-    auto *details = makeLabel(QString("请求者：%1\n来源设备：%2\n请求时间：%3\n用途：%4\n请求权限：%5\n有效期至：%6\n\n批准后，Agent 可在当前 Windows 用户权限范围内执行多条 PowerShell 命令、按 read_file 权限下载远端文件，或按 write_file 权限把文件上传到本机。普通用户权限不是沙箱。请求者身份尚未经过远程验证。")
+    auto *details = makeLabel(QString("请求者：%1\n来源设备：%2\n请求时间：%3\n用途：%4\n请求权限：%5\n有效期至：%6\n\n批准后，Agent 可在当前用户权限内执行命令和读写文件，这不是沙箱；请求者身份未经远程验证。")
         .arg(session.value("requester").toString(), session.value("source_device").toString(),
              session.value("created_at").toString(), session.value("purpose").toString(),
              permissionText, session.value("expires_at").toString()),

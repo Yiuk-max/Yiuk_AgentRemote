@@ -108,43 +108,43 @@ QWidget *MainWindow::createHomePage() {
 
 void MainWindow::lookupDeviceBeforeConnecting(const QString &deviceId) {
     if (!platform || !platform->isConnected()) {
-        showInfoMessage(this, "远程平台未连接", "设备码：" + formatDeviceCode(deviceId) + "\n\n请先在设置中连接平台服务器。");
+        showInfoMessage(this, "远程平台未连接", "请先在设置中连接平台服务器。");
         return;
     }
     if (!pendingDeviceLookupCorrelationId.isEmpty()) return;
     pendingDeviceLookupCorrelationId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     pendingDeviceLookupDeviceId = deviceId;
     platform->listDevices(pendingDeviceLookupCorrelationId);
-    showStatusMessage("正在向后端查询设备…", 2000);
+    showStatusMessage("正在查询设备…", 2000);
     const QString requestId = pendingDeviceLookupCorrelationId;
     QTimer::singleShot(6000, this, [this, requestId] {
         if (pendingDeviceLookupCorrelationId != requestId) return;
         pendingDeviceLookupCorrelationId.clear();
         pendingDeviceLookupDeviceId.clear();
-        showWarningMessage(this, "设备查询超时", "后端没有响应，请稍后重试。");
+        showWarningMessage(this, "设备查询超时", "请稍后重试。");
     });
 }
 
 
 void MainWindow::promptAndRequestConnection(const QString &deviceId) {
     if (hasOtherLiveSession()) {
-        showWarningMessage(this, "已有活动会话", "当前客户端已有一个活动或待批准会话，请先结束它再发起新的连接。");
+        showWarningMessage(this, "已有活动会话", "请先结束当前会话。");
         return;
     }
     if (!platform || !platform->isConnected()) return;
     QString temporary;
     if (!askText(this, "连接设备",
-                 "输入设备所有者提供的临时密码可直接连接；留空则发送申请并等待对方批准：",
+                 "留空则等待对方批准",
                  QLineEdit::Password, QString(), &temporary))
         return;
     if (!temporary.isEmpty() && temporary.size() < 32) {
-        showWarningMessage(this, "临时密码无效", "临时密码至少需要 32 个字符。");
+        showWarningMessage(this, "临时密码无效", "至少需要 32 个字符。");
         return;
     }
     QString purpose;
-    if (!askText(this, "协助用途", "简要说明本次协助用途：", QLineEdit::Normal,
+    if (!askText(this, "协助用途", "本次用途", QLineEdit::Normal,
                  QStringLiteral("远程协助"), &purpose) || purpose.isEmpty())
         return;
     platform->requestSession(deviceId, purpose, QStringList{QStringLiteral("execute_command")}, temporary);
-    showStatusMessage(temporary.isEmpty() ? "已发送连接申请，等待对方批准" : "正在建立直接连接", 4000);
+    showStatusMessage(temporary.isEmpty() ? "已发送连接申请" : "正在建立直接连接", 4000);
 }
