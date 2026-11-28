@@ -725,12 +725,20 @@ void MainWindow::setupNativeOperations() {
             return NativeOperationDispatcher::envelopeOk(data);
         });
 
-    // vision.find：UIA 文本定位。坐标以最近一张截图为准，返回里的 screenshot_id
-    // 可以直接交给 click；图像模板匹配尚未实现（见 platformevents_vision.cpp）。
+    // vision.find：UIA 文本定位 / OpenCV 模板匹配。坐标以最近一张截图为准，返回里的
+    // screenshot_id 可以直接交给 click 或 drag。
     nativeOps->registerOperation(
         QStringLiteral("vision.find"),
         [this](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
             return runVisionFind(sessionId, arguments, cancelled);
+        });
+
+    // vision.click_target：客户端内 find -> pick -> click 一笔事务（全程持设备门）。
+    // 找不到 / 歧义 / 取消时一个 down 都不发，失败信封里带候选供 Agent 换参数。
+    nativeOps->registerOperation(
+        QStringLiteral("vision.click_target"),
+        [this](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
+            return runVisionClickTarget(sessionId, arguments, cancelled);
         });
 
     // input.drag：按住左键沿确定性路径拖动（窗口、滑块、拖拽排序）。

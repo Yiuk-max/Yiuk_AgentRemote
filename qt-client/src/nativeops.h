@@ -60,7 +60,10 @@ public:
     static constexpr int kMaxEnvelopeBytes = 32 * 1024;
 
     static QJsonObject envelopeOk(const QJsonObject &data);
-    static QJsonObject envelopeError(const QString &code, const QString &message, const QString &hint = QString());
+    // data 是可选的现场信息（例如 click_target 的候选列表与得分）：失败也需要把
+    // "为什么没点"告诉 Agent。体积计入 kMaxEnvelopeBytes，所以只能放摘要，不能放图片。
+    static QJsonObject envelopeError(const QString &code, const QString &message, const QString &hint = QString(),
+                                     const QJsonObject &data = QJsonObject());
 
 signals:
     void finished(const QString &sessionId, const QString &requestId, const QString &status,

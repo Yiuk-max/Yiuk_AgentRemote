@@ -206,8 +206,11 @@ private:
     void onPlatformNativeRequested(const QString &sessionId, const QString &requestId, const QString &operation,
                                    const QJsonObject &arguments, int timeoutSeconds);
     void setupNativeOperations();
-    // 原生操作 vision.find：UIA 文本定位，返回最近截图的坐标与 screenshot_id。
+    // 原生操作 vision.find：文本 / 图像定位，返回最近截图的坐标与 screenshot_id。
     QJsonObject runVisionFind(const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled);
+    // 原生操作 vision.click_target：客户端内 find -> pick -> click 一笔事务。
+    QJsonObject runVisionClickTarget(const QString &sessionId, const QJsonObject &arguments,
+                                     const std::atomic_bool *cancelled);
     void sendNativeEnvelope(const QString &sessionId, const QString &requestId, const QJsonObject &envelope);
     struct FileDownloadState {
         QString sessionId;

@@ -141,7 +141,15 @@ func decodeNativeResult(operation string, result map[string]any) (json.RawMessag
 		if code == "" {
 			code = "NATIVE_OPERATION_FAILED"
 		}
-		return nil, &agenttools.Error{Code: code, Message: envelope.Message, Hint: envelope.Hint}
+		// 失败也带现场：click_target 的 NOT_FOUND / AMBIGUOUS_TARGET 会把候选、得分、
+		// 阈值放在这里，Agent 靠它决定换 pick 还是缩 region，而不是靠猜。
+		var data any
+		if len(envelope.Data) > 0 && string(envelope.Data) != "null" {
+			if err := json.Unmarshal(envelope.Data, &data); err != nil {
+				data = nil
+			}
+		}
+		return nil, &agenttools.Error{Code: code, Message: envelope.Message, Hint: envelope.Hint, Data: data}
 	}
 	if len(envelope.Data) == 0 {
 		return json.RawMessage(`{}`), nil

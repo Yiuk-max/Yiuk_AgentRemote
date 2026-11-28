@@ -10,15 +10,15 @@
 
 ## 1. 一句话状态
 
-**P0 完成、P1 95%（只差本机 bridge 异步化）、P2 完成、P3 文本与图像定位完成（OCR/等待语义未做）、P4 完成 `move_mouse` 平滑移动与 `drag`（`click_target` 未做）。**
+**P0 完成、P1 95%（只差本机 bridge 异步化）、P2 完成、P3 文本与图像定位完成（OCR/等待语义未做）、P4 完成（`move_mouse` 平滑移动、`drag`、`click_target`）。**
 
-客户端已有两套原生内核：`yiuk-vision`（GDI 抓屏 / 快照 / 节流 / 设备门 / UIA / OpenCV）与 `yiuk-input`（SendInput / 确定性轨迹 / 按键守卫 / 灰度变化检测）。`take_screenshot`、`click`、`move_mouse`、`find_on_screen`、`drag` 现在都优先走客户端原生通道，旧客户端自动回退脚本（`find_on_screen` / `drag` 除外，它们必须原生）。
+客户端已有两套原生内核：`yiuk-vision`（GDI 抓屏 / 快照 / 节流 / 设备门 / UIA / OpenCV）与 `yiuk-input`（SendInput / 确定性轨迹 / 按键守卫 / 灰度变化检测）。`take_screenshot`、`click`、`move_mouse`、`find_on_screen`、`click_target`、`drag` 现在都优先走客户端原生通道，旧客户端自动回退脚本（`find_on_screen` / `click_target` / `drag` 除外，它们必须原生）。
 
 工作区干净，最新提交 `49fa56c`（本文档自身）。
 
 ## 2. 能做什么
 
-### 2.1 MCP 工具（24 个）
+### 2.1 MCP 工具（25 个）
 
 | 分类 | 工具 |
 | --- | --- |
@@ -26,7 +26,7 @@
 | 命令 | `run_command`、`execute_command`、`get_command_result`、`cancel_command` |
 | 文件 | `download_file`、`upload_file`、`list_dir`、`stat_path` |
 | 桌面 | `take_screenshot`、`click`、`move_mouse`、`drag`、`press_keys`、`type_text` |
-| 视觉 | `find_on_screen`（UIA 文本 / OpenCV 图像模板） |
+| 视觉 | `find_on_screen`（UIA 文本 / OpenCV 图像模板）、`click_target`（定位+选择+点击一笔事务） |
 | 等待 | `wait`、`wait_for` |
 | 交互 | `ask_user`、`get_user_reply` |
 
@@ -42,7 +42,7 @@
 | `input.move` | 已实现 | `duration_ms` 确定性 ease-in-out |
 | `input.drag` | 已实现 | 按下 → 路径 → 抬起，`released:true` 只在确认释放时返回 |
 | `vision.find` | 已实现 | UIA 文本 + OpenCV 灰度模板匹配 |
-| `vision.click_target` | 未实现 | 客户端内 find/pick/click 事务 |
+| `vision.click_target` | 已实现 | 客户端内 find→pick→click 事务（全程持设备门，歧义/未命中不按下） |
 | `vision.save_template` | 未实现 | 从快照裁剪模板 |
 
 ### 2.3 绿色化：所有文件都在程序目录
@@ -116,7 +116,8 @@ $env:YIUK_INTEROP_NATIVE    = "1"
 .\qt-client\build-qt\yiuk-platform-interop.exe
 ```
 
-依次应出现：`screen.capture` → `screen.capture(save)` → `screen.release` → `vision.find`。
+依次应出现：`screen.capture` → `screen.capture(save)` → `screen.release` → `vision.find` →
+`vision.click_target`（故意用一个不会出现的文本，期望设备返回 `NOT_FOUND` 并带回候选现场；这一段不碰鼠标）。
 
 可选段（都会真的动鼠标/窗口，默认关闭）：
 
@@ -172,7 +173,6 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 
 | 项 | 状态 |
 | --- | --- |
-| `click_target` / `vision.click_target` | 未实现（P4 剩余） |
 | OCR 兜底 | 未实现（UIA 已可用；`OCR_UNAVAILABLE` 语义待补） |
 | `find_on_screen` 的 `timeout_seconds` / `wait_until_found` | 未实现 |
 | 多显示器 / 混合 DPI / 负原点 | 未验证（P5） |
@@ -184,11 +184,10 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 
 ## 8. 下一步（按顺序）
 
-1. **`click_target`**：客户端内 find → pick → click 一笔事务（默认 `unique` + `detect_change`，歧义/未命中时**不按下**）。可直接复用 `VisionService::searchText/matchImage` 与 `clickWithOptions`，注意把设备门持有到点击结束。
-2. **`find_on_screen` 的等待语义**：`timeout_seconds` + `wait_until_found`（每 500ms 一轮、轮间释放设备门、可取消）。
-3. **OCR 兜底**：`Windows.Media.Ocr`（P0 已验 C++ 直连可用），缺语言包返回 `OCR_UNAVAILABLE` + hint。
-4. **P5**：`vision.save_template`（从快照裁剪，配额与路径校验）、多显示器/混合 DPI、ROI 缓存。
-5. **P6**：Windows CI（Qt + OpenCV 固定版本缓存）、绿色包/安装器体积与启动验证、`Release\` 重新打包。
+1. **`find_on_screen` 的等待语义**：`timeout_seconds` + `wait_until_found`（每 500ms 一轮、轮间释放设备门、可取消）；同一个等待器可以给 `click_target` 复用（等按钮出现再点）。
+2. **OCR 兜底**：`Windows.Media.Ocr`（P0 已验 C++ 直连可用），缺语言包返回 `OCR_UNAVAILABLE` + hint。
+3. **P5**：`vision.save_template`（从快照裁剪，配额与路径校验）、多显示器/混合 DPI、ROI 缓存。
+4. **P6**：Windows CI（Qt + OpenCV 固定版本缓存）、绿色包/安装器体积与启动验证、`Release\` 重新打包。
 
 ## 9. 交接检查清单
 

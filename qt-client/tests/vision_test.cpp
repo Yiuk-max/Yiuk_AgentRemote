@@ -184,6 +184,85 @@ void testLimiter() {
     check(intervalClock.elapsed() >= 200, QStringLiteral("min interval is enforced between captures"));
 }
 
+// click_target 的选择策略：唯一/歧义/边界 0.03 都在这里钉死。
+void testPickTarget() {
+    using yiuk::vision::TargetCandidate;
+    using yiuk::vision::TargetPickStatus;
+
+    const auto make = [](int left, int top, double score, const QString &text = QString()) {
+        TargetCandidate candidate;
+        candidate.bbox = QRect(left, top, 40, 20);
+        candidate.score = score;
+        candidate.text = text;
+        candidate.source = QStringLiteral("uia");
+        return candidate;
+    };
+
+    // 没有候选：NOT_FOUND，而不是“点屏幕左上角”。
+    auto outcome = yiuk::vision::pickTarget({}, QStringLiteral("unique"));
+    check(outcome.status == TargetPickStatus::NotFound, QStringLiteral("empty candidate set is NOT_FOUND"));
+
+    // 单个候选：unique 直接点。
+    outcome = yiuk::vision::pickTarget({make(100, 100, 0.9)}, QStringLiteral("unique"));
+    check(outcome.status == TargetPickStatus::Picked && outcome.index == 0,
+          QStringLiteral("unique picks the only candidate"));
+
+    // 两个不同位置、同分：判定为歧义，一个 down 也不发。
+    outcome = yiuk::vision::pickTarget({make(100, 100, 0.9), make(400, 100, 0.9)}, QStringLiteral("unique"));
+    check(outcome.status == TargetPickStatus::Ambiguous, QStringLiteral("equal scores at different places is ambiguous"));
+    check(outcome.competitor == 1, QStringLiteral("ambiguity names the competing candidate"));
+
+    // 边界：得分差恰好 0.03 不算歧义（规则是“小于 0.03”）；0.029 算。
+    outcome = yiuk::vision::pickTarget({make(100, 100, 0.93), make(400, 100, 0.90)}, QStringLiteral("unique"));
+    check(outcome.status == TargetPickStatus::Picked, QStringLiteral("score gap of exactly 0.03 is not ambiguous"));
+    outcome = yiuk::vision::pickTarget({make(100, 100, 0.929), make(400, 100, 0.90)}, QStringLiteral("unique"));
+    check(outcome.status == TargetPickStatus::Ambiguous, QStringLiteral("score gap below 0.03 is ambiguous"));
+
+    // 同一视觉目标的重叠命中（UIA 父子节点、NMS 残留）不是竞争：否则一个按钮永远点不了。
+    // 中心重合或一个框有 ≥60% 面积被另一个盖住，就算同一个目标。
+    outcome = yiuk::vision::pickTarget({make(100, 100, 0.90), make(101, 100, 0.90)}, QStringLiteral("unique"));
+    check(outcome.status == TargetPickStatus::Picked, QStringLiteral("overlapping same-target hits are not a competitor"));
+    outcome = yiuk::vision::pickTarget({make(100, 100, 0.90), make(100, 100, 0.90)}, QStringLiteral("unique"));
+    check(outcome.status == TargetPickStatus::Picked, QStringLiteral("identical boxes are not a competitor"));
+    // 相邻但不重叠的图标（差 60px）就是两个不同目标，仍要判歧义。
+    outcome = yiuk::vision::pickTarget({make(100, 100, 0.90), make(160, 100, 0.90)}, QStringLiteral("unique"));
+    check(outcome.status == TargetPickStatus::Ambiguous, QStringLiteral("neighbouring icons are different targets"));
+
+    // 同位置的弱候选不能掩盖另一个位置的真竞争：比的是「不在同一目标上的最强对手」。
+    outcome = yiuk::vision::pickTarget(
+        {make(100, 100, 0.95), make(102, 100, 0.94), make(500, 300, 0.94)}, QStringLiteral("unique"));
+    check(outcome.status == TargetPickStatus::Ambiguous,
+          QStringLiteral("a same-target duplicate does not hide a real competitor"));
+
+    // best / first / index:N 的语义。
+    const QVector<TargetCandidate> many{make(100, 100, 0.80, QStringLiteral("first")), make(400, 100, 0.99),
+                                        make(700, 100, 0.90)};
+    outcome = yiuk::vision::pickTarget(many, QStringLiteral("best"));
+    check(outcome.status == TargetPickStatus::Picked && outcome.index == 1,
+          QStringLiteral("best picks the highest score"));
+    outcome = yiuk::vision::pickTarget(many, QStringLiteral("first"));
+    check(outcome.status == TargetPickStatus::Picked && outcome.index == 0,
+          QStringLiteral("first picks the first returned candidate"));
+    outcome = yiuk::vision::pickTarget(many, QStringLiteral("index:3"));
+    check(outcome.status == TargetPickStatus::Picked && outcome.index == 2,
+          QStringLiteral("index:3 is 1-based"));
+    outcome = yiuk::vision::pickTarget(many, QStringLiteral("index:4"));
+    check(outcome.status == TargetPickStatus::InvalidPick, QStringLiteral("index out of range is rejected"));
+    outcome = yiuk::vision::pickTarget(many, QStringLiteral("index:0"));
+    check(outcome.status == TargetPickStatus::InvalidPick, QStringLiteral("index:0 is rejected"));
+    outcome = yiuk::vision::pickTarget(many, QStringLiteral("nearest"));
+    check(outcome.status == TargetPickStatus::InvalidPick, QStringLiteral("unknown pick mode is rejected"));
+
+    // pick 大小写与空白宽容（Agent 手写参数经常带空格）。
+    outcome = yiuk::vision::pickTarget(many, QStringLiteral(" Best "));
+    check(outcome.status == TargetPickStatus::Picked && outcome.index == 1,
+          QStringLiteral("pick is trimmed and case-insensitive"));
+
+    // 中心点与 find_on_screen 的取法一致（左 + 宽/2），点击落在同一个像素上。
+    check(make(100, 100, 0.9).center() == QPoint(120, 110),
+          QStringLiteral("candidate center matches find_on_screen rounding"));
+}
+
 void testTextNormalization() {
     using yiuk::vision::normalizeText;
     check(normalizeText(QStringLiteral("Save As")) == normalizeText(QStringLiteral("saveas")),
@@ -509,6 +588,7 @@ int main(int argc, char **argv) {
     testTemplateMatching();
     testTemplateMatchingOnFiles();
     testTextNormalization();
+    testPickTarget();
     testTextSearchOnDesktop();
     testDeviceGate();
     testPrune();

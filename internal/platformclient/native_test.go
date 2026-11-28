@@ -162,6 +162,44 @@ func TestInvokeNativePropagatesBusinessError(t *testing.T) {
 	}
 }
 
+func TestInvokeNativeCarriesFailureFindings(t *testing.T) {
+	address := startPlatform(t)
+	device := dialFakeDevice(t, address)
+	device.registerWithCapabilities("device-1", []string{"vision.click_target"})
+	backend := newNativeBackend(t, address)
+	invoke(t, backend, agenttools.ListDevices, map[string]any{})
+	sessionID := newNativeSession(t, backend, device)
+
+	// click_target 判歧义时不会点击，但信封里必须带着候选与得分：
+	// Agent 靠它决定换成 pick=best 还是缩小 region，而不是盲猜。
+	go func() {
+		forwarded := device.recv(protocol.TypeExecuteNative)
+		device.send(protocol.Message{
+			Type: protocol.TypeCommandOutput, SessionID: sessionID, RequestID: forwarded.RequestID,
+			Stream: "stdout",
+			Data:   `{"ok":false,"code":"AMBIGUOUS_TARGET","message":"two candidates","hint":"use pick=best","data":{"candidate_count":2,"top_score":0.9,"competitor_score":0.89}}`,
+		})
+		device.send(protocol.Message{
+			Type: protocol.TypeCommandResult, SessionID: sessionID, RequestID: forwarded.RequestID,
+			Status: protocol.TaskSucceeded,
+		})
+	}()
+
+	_, err := backend.InvokeNative(context.Background(), sessionID, "vision.click_target",
+		json.RawMessage(`{"text":"收藏","pick":"unique"}`), 0)
+	toolErr := asToolError(t, err)
+	if toolErr.Code != "AMBIGUOUS_TARGET" || toolErr.Hint == "" {
+		t.Fatalf("unexpected business error: %#v", toolErr)
+	}
+	data, ok := toolErr.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("failure findings were dropped: %#v", toolErr.Data)
+	}
+	if data["candidate_count"] != float64(2) || data["top_score"] != 0.9 {
+		t.Fatalf("unexpected findings: %#v", data)
+	}
+}
+
 func TestInvokeNativeReportsUnknownResultOnDeviceDisconnect(t *testing.T) {
 	address := startPlatform(t)
 	device := dialFakeDevice(t, address)

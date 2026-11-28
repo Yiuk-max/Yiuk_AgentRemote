@@ -35,6 +35,98 @@ QString normalizedFormat(const QString &format) {
 
 }  // namespace
 
+const double kAmbiguityScoreGap = 0.03;
+
+namespace {
+
+// 两个候选是不是「同一个视觉目标」。
+//
+// UIA 经常把按钮和它内部的文本节点一起返回（同一个字的两个框），OpenCV 的 NMS
+// 也可能留下几乎重叠的两个框。它们不是歧义，否则一个按钮永远点不成。
+// 判据：中心重合，或者一个框有 ≥ 60% 的面积被另一个盖住。
+bool sameVisualTarget(const TargetCandidate &a, const TargetCandidate &b) {
+    if (a.center() == b.center()) return true;
+    const QRect overlap = a.bbox.intersected(b.bbox);
+    if (overlap.isEmpty()) return false;
+    const qint64 overlapArea = qint64(overlap.width()) * overlap.height();
+    const qint64 smallerArea = qMin(qint64(a.bbox.width()) * a.bbox.height(),
+                                    qint64(b.bbox.width()) * b.bbox.height());
+    return smallerArea > 0 && overlapArea * 10 >= smallerArea * 6;
+}
+
+}  // namespace
+
+TargetPickOutcome pickTarget(const QVector<TargetCandidate> &candidates, const QString &pickRaw) {
+    TargetPickOutcome outcome;
+    const QString pick = pickRaw.trimmed().toLower();
+    if (candidates.isEmpty()) {
+        outcome.status = TargetPickStatus::NotFound;
+        outcome.message = QStringLiteral("没有命中任何候选");
+        return outcome;
+    }
+
+    // 得分最高者；同分时取返回顺序靠前的那个（UIA 阅读顺序更接近人的预期）。
+    const auto bestIndex = [&candidates]() {
+        int best = 0;
+        for (int i = 1; i < candidates.size(); ++i) {
+            if (candidates.at(i).score > candidates.at(best).score) best = i;
+        }
+        return best;
+    };
+
+    if (pick.isEmpty() || pick == QLatin1String("unique")) {
+        const int top = bestIndex();
+        // 只把「不在同一个视觉目标上」的候选当竞争对手：同框的父子节点 / NMS 残留
+        // 不是歧义，否则一个按钮永远点不成。
+        int competitor = -1;
+        for (int i = 0; i < candidates.size(); ++i) {
+            if (i == top || sameVisualTarget(candidates.at(i), candidates.at(top))) continue;
+            if (competitor < 0 || candidates.at(i).score > candidates.at(competitor).score) competitor = i;
+        }
+        outcome.index = top;
+        outcome.competitor = competitor;
+        if (competitor >= 0 && candidates.at(top).score - candidates.at(competitor).score < kAmbiguityScoreGap) {
+            outcome.status = TargetPickStatus::Ambiguous;
+            outcome.message = QStringLiteral("命中 %1 个候选，第一与第二名得分差小于 %2，不点击")
+                                  .arg(candidates.size())
+                                  .arg(kAmbiguityScoreGap, 0, 'g', 2);
+            return outcome;
+        }
+        outcome.status = TargetPickStatus::Picked;
+        return outcome;
+    }
+
+    if (pick == QLatin1String("best")) {
+        outcome.status = TargetPickStatus::Picked;
+        outcome.index = bestIndex();
+        return outcome;
+    }
+
+    if (pick == QLatin1String("first")) {
+        outcome.status = TargetPickStatus::Picked;
+        outcome.index = 0;
+        return outcome;
+    }
+
+    if (pick.startsWith(QLatin1String("index:"))) {
+        bool ok = false;
+        const int number = pick.mid(6).trimmed().toInt(&ok);
+        if (!ok || number < 1 || number > candidates.size()) {
+            outcome.status = TargetPickStatus::InvalidPick;
+            outcome.message = QStringLiteral("pick=index:%1 超出候选范围（共 %2 个，从 1 起）")
+                                  .arg(pick.mid(6).trimmed(), QString::number(candidates.size()));
+            return outcome;
+        }
+        outcome.status = TargetPickStatus::Picked;
+        outcome.index = number - 1;
+        return outcome;
+    }
+
+    outcome.status = TargetPickStatus::InvalidPick;
+    outcome.message = QStringLiteral("pick 只能是 unique / best / first / index:N，收到 %1").arg(pickRaw);
+    return outcome;
+}
+
 VisionService::VisionService(QObject *parent) : QObject(parent), layoutVersion_(currentLayoutVersion()) {}
 
 VisionService::DeviceLock::DeviceLock(VisionService &service, const std::atomic_bool *cancelled, QString *code,
@@ -63,16 +155,26 @@ QString VisionService::screenshotsDirectory() {
 bool VisionService::capture(const QString &sessionId, const CaptureOptions &options,
                             const std::atomic_bool *cancelled, CaptureOutcome *outcome, QString *code,
                             QString *message) {
+    if (sessionId.isEmpty()) {
+        if (code) *code = QStringLiteral("INVALID_ARGUMENT");
+        if (message) *message = QStringLiteral("会话 ID 为空");
+        return false;
+    }
+    // 设备级门在最外层：两个会话同时抓屏时必须排队，不能一起抢 CPU 与 GDI。
+    DeviceLock deviceLock(*this, cancelled, code, message);
+    if (!deviceLock.held()) return false;
+    return captureLocked(sessionId, options, cancelled, outcome, code, message);
+}
+
+bool VisionService::captureLocked(const QString &sessionId, const CaptureOptions &options,
+                                  const std::atomic_bool *cancelled, CaptureOutcome *outcome, QString *code,
+                                  QString *message) {
     auto fail = [code, message](const QString &failureCode, const QString &failureMessage) {
         if (code) *code = failureCode;
         if (message) *message = failureMessage;
         return false;
     };
     if (sessionId.isEmpty()) return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("会话 ID 为空"));
-
-    // 设备级门在最外层：两个会话同时抓屏时必须排队，不能一起抢 CPU 与 GDI。
-    DeviceLock deviceLock(*this, cancelled, code, message);
-    if (!deviceLock.held()) return false;
 
     if (!limiter_.acquire(sessionId, cancelled, message)) {
         if (code) *code = QStringLiteral("CANCELLED");
@@ -191,15 +293,27 @@ bool VisionService::clickWithOptions(const QString &sessionId, const QString &sc
                                      const QString &button, bool doubleClick, bool detectChange, int settleMs,
                                      const std::atomic_bool *cancelled, QJsonObject *data, QString *code,
                                      QString *message) {
+    if (data == nullptr) {
+        if (code) *code = QStringLiteral("INVALID_ARGUMENT");
+        if (message) *message = QStringLiteral("data 为空");
+        return false;
+    }
+    DeviceLock lock(*this, cancelled, code, message);
+    if (!lock.held()) return false;
+    return clickPointLocked(sessionId, screenshotId, x, y, button, doubleClick, detectChange, settleMs, cancelled,
+                            data, code, message);
+}
+
+bool VisionService::clickPointLocked(const QString &sessionId, const QString &screenshotId, int x, int y,
+                                     const QString &button, bool doubleClick, bool detectChange, int settleMs,
+                                     const std::atomic_bool *cancelled, QJsonObject *data, QString *code,
+                                     QString *message) {
     auto fail = [code, message](const QString &failureCode, const QString &failureMessage) {
         if (code) *code = failureCode;
         if (message) *message = failureMessage;
         return false;
     };
     if (data == nullptr) return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("data 为空"));
-
-    DeviceLock lock(*this, cancelled, code, message);
-    if (!lock.held()) return false;
 
     int screenX = 0;
     int screenY = 0;
@@ -236,6 +350,177 @@ bool VisionService::clickWithOptions(const QString &sessionId, const QString &sc
         payload.insert(QStringLiteral("diff_ratio"), metrics.diffRatio);
         payload.insert(QStringLiteral("changed_ratio"), metrics.changedRatio);
     }
+    *data = payload;
+    return true;
+}
+
+namespace {
+
+QJsonArray candidatesToJson(const QVector<TargetCandidate> &candidates) {
+    QJsonArray array;
+    for (const TargetCandidate &candidate : candidates) {
+        const QRect &box = candidate.bbox;
+        array.append(QJsonObject{
+            {QStringLiteral("bbox"),
+             QJsonArray{box.left(), box.top(), box.left() + box.width(), box.top() + box.height()}},
+            {QStringLiteral("center"), QJsonArray{candidate.center().x(), candidate.center().y()}},
+            {QStringLiteral("score"), candidate.score},
+            {QStringLiteral("source"), candidate.source},
+            {QStringLiteral("text"), candidate.text},
+            {QStringLiteral("control_type"), candidate.controlType},
+        });
+    }
+    return array;
+}
+
+}  // namespace
+
+bool VisionService::clickTarget(const QString &sessionId, const ClickTargetOptions &options,
+                                const std::atomic_bool *cancelled, QJsonObject *data, QString *code,
+                                QString *message) {
+    auto fail = [code, message](const QString &failureCode, const QString &failureMessage) {
+        if (code) *code = failureCode;
+        if (message) *message = failureMessage;
+        return false;
+    };
+    if (data == nullptr) return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("data 为空"));
+    if (sessionId.isEmpty()) return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("会话 ID 为空"));
+    if (!options.useImage && options.text.text.trimmed().isEmpty())
+        return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("text 不能为空"));
+    if (options.useImage && options.needle.isNull())
+        return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("模板图像为空"));
+
+    // pick 先校验：参数写错不应该先付一次抓屏的代价。
+    const QString pick = options.pick.trimmed().isEmpty() ? QStringLiteral("unique") : options.pick.trimmed();
+    const QString pickLower = pick.toLower();
+    if (pickLower.startsWith(QLatin1String("index:"))) {
+        bool ok = false;
+        const int number = pickLower.mid(6).trimmed().toInt(&ok);
+        if (!ok || number < 1)
+            return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("pick 的 index:N 需要 N >= 1"));
+    } else if (pickLower != QLatin1String("unique") && pickLower != QLatin1String("best") &&
+               pickLower != QLatin1String("first")) {
+        return fail(QStringLiteral("INVALID_ARGUMENT"),
+                    QStringLiteral("pick 只能是 unique / best / first / index:N"));
+    }
+
+    const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
+
+    // 全程持门：抓屏 -> 定位 -> 点击之间不能让别的会话插进来改画面或抢鼠标。
+    DeviceLock lock(*this, cancelled, code, message);
+    if (!lock.held()) return false;
+
+    // 1. 抓一帧作为坐标基准。不落盘、不缩放：点击坐标必须与像素一一对应。
+    CaptureOptions captureOptions;
+    captureOptions.saveToDisk = false;
+    captureOptions.keepImage = true;
+    CaptureOutcome shot;
+    if (!captureLocked(sessionId, captureOptions, cancelled, &shot, code, message)) return false;
+
+    // 2. 定位。unique 至少要两个候选才判断得了歧义，所以把 limit 抬到 2。
+    int limit = options.useImage ? options.image.limit : options.text.limit;
+    if (pickLower == QLatin1String("unique")) limit = qMax(2, limit);
+    limit = qBound(1, limit, 20);
+
+    QVector<TargetCandidate> candidates;
+    const QString source = options.useImage ? QStringLiteral("opencv") : QStringLiteral("uia");
+    bool truncated = false;
+    int visitedNodes = 0;
+    int locateMs = 0;
+    if (options.useImage) {
+        TemplateOptions imageOptions = options.image;
+        imageOptions.limit = limit;
+        QVector<TemplateHit> hits;
+        if (!matchTemplateImage(shot.image, options.needle, imageOptions, &hits, code, message)) return false;
+        for (const TemplateHit &hit : hits) {
+            TargetCandidate candidate;
+            candidate.bbox = hit.rect;
+            candidate.score = hit.score;
+            candidate.source = source;
+            candidates.append(candidate);
+        }
+    } else {
+        TextQuery query = options.text;
+        query.limit = limit;
+        TextSearchOutcome outcome;
+        if (!findText(query, &outcome, code, message)) return false;
+        truncated = outcome.truncated;
+        visitedNodes = outcome.visitedNodes;
+        locateMs = outcome.elapsedMs;
+        for (const TextMatch &hit : outcome.matches) {
+            QRect rect;
+            SnapshotRef ignored;
+            // UIA 给的是物理屏幕坐标，必须换算到刚抓这一帧的坐标系。
+            if (!screenRectToScreenshot(sessionId, hit.rect, &rect, &ignored, code, message)) continue;
+            TargetCandidate candidate;
+            candidate.bbox = rect;
+            candidate.score = hit.score;
+            candidate.text = hit.name;
+            candidate.source = hit.source;
+            candidate.controlType = hit.controlType;
+            candidates.append(candidate);
+        }
+    }
+
+    // 3. 选择。未命中 / 歧义都在这里收口，保证不发任何 down 事件。
+    QJsonObject detail = geometryToJson(shot.geometry);
+    detail.insert(QStringLiteral("captured"), true);
+    detail.insert(QStringLiteral("screenshot_id"), shot.screenshotId);
+    detail.insert(QStringLiteral("layout_version"), shot.layoutVersion);
+    detail.insert(QStringLiteral("matches"), candidatesToJson(candidates));
+    detail.insert(QStringLiteral("candidate_count"), candidates.size());
+    detail.insert(QStringLiteral("source"), source);
+    detail.insert(QStringLiteral("pick"), pick);
+    detail.insert(QStringLiteral("truncated"), truncated);
+    detail.insert(QStringLiteral("visited_nodes"), visitedNodes);
+    detail.insert(QStringLiteral("locate_ms"), locateMs);
+    if (options.useImage) detail.insert(QStringLiteral("threshold"), options.image.threshold);
+
+    const TargetPickOutcome choice = pickTarget(candidates, pick);
+    if (choice.status != TargetPickStatus::Picked) {
+        // 失败也把现场带回去：Agent 要靠候选、得分、阈值决定下一步怎么改参数。
+        if (choice.index >= 0 && choice.index < candidates.size())
+            detail.insert(QStringLiteral("top_score"), candidates.at(choice.index).score);
+        if (choice.competitor >= 0 && choice.competitor < candidates.size())
+            detail.insert(QStringLiteral("competitor_score"), candidates.at(choice.competitor).score);
+        *data = detail;
+        switch (choice.status) {
+            case TargetPickStatus::NotFound:
+                return fail(QStringLiteral("NOT_FOUND"), choice.message);
+            case TargetPickStatus::Ambiguous:
+                return fail(QStringLiteral("AMBIGUOUS_TARGET"), choice.message);
+            default:
+                return fail(QStringLiteral("INVALID_ARGUMENT"), choice.message);
+        }
+    }
+
+    // 4. 点击：落点取命中框中心（截图坐标），与 find_on_screen 的 center 同一算法。
+    const TargetCandidate &chosen = candidates.at(choice.index);
+    const QPoint point = chosen.center();
+    const int settleMs = options.detectChange ? (options.settleMs > 0 ? options.settleMs : 250) : 0;
+    QJsonObject clicked;
+    if (!clickPointLocked(sessionId, shot.screenshotId, point.x(), point.y(),
+                          options.button.isEmpty() ? QStringLiteral("left") : options.button, options.doubleClick,
+                          options.detectChange, settleMs, cancelled, &clicked, code, message)) {
+        return false;
+    }
+
+    QJsonObject payload = detail;
+    for (auto it = clicked.begin(); it != clicked.end(); ++it) payload.insert(it.key(), it.value());
+    const QRect &box = chosen.bbox;
+    payload.insert(QStringLiteral("picked"),
+                   QJsonObject{
+                       {QStringLiteral("index"), choice.index + 1},
+                       {QStringLiteral("bbox"),
+                        QJsonArray{box.left(), box.top(), box.left() + box.width(), box.top() + box.height()}},
+                       {QStringLiteral("center"), QJsonArray{point.x(), point.y()}},
+                       {QStringLiteral("score"), chosen.score},
+                       {QStringLiteral("source"), chosen.source},
+                       {QStringLiteral("text"), chosen.text},
+                       {QStringLiteral("control_type"), chosen.controlType},
+                   });
+    payload.insert(QStringLiteral("detect_change"), options.detectChange);
+    payload.insert(QStringLiteral("elapsed_ms"), QDateTime::currentMSecsSinceEpoch() - startedAtMs);
     *data = payload;
     return true;
 }

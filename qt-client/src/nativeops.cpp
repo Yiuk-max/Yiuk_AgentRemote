@@ -193,12 +193,13 @@ QJsonObject NativeOperationDispatcher::envelopeOk(const QJsonObject &data) {
 }
 
 QJsonObject NativeOperationDispatcher::envelopeError(const QString &code, const QString &message,
-                                                     const QString &hint) {
+                                                     const QString &hint, const QJsonObject &data) {
     QJsonObject envelope{
         {QStringLiteral("ok"), false},
         {QStringLiteral("code"), code},
         {QStringLiteral("message"), message},
     };
     if (!hint.isEmpty()) envelope.insert(QStringLiteral("hint"), hint);
+    if (!data.isEmpty()) envelope.insert(QStringLiteral("data"), data);
     return envelope;
 }

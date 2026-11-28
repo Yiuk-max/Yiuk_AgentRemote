@@ -1,6 +1,6 @@
 # MCP 工具
 
-24 个工具。多数组合工具仍可走「`execute_command` + `get_command_result`」脚本路径（`wait` 纯本地）；
+25 个工具。多数组合工具仍可走「`execute_command` + `get_command_result`」脚本路径（`wait` 纯本地）；
 抓屏、鼠标与文本定位在设备上报能力时改走原生通道（`execute_native`），旧客户端自动回退脚本。
 
 | 分类 | 工具 |
@@ -9,7 +9,7 @@
 | 命令 | `run_command`、`execute_command`、`get_command_result`、`cancel_command` |
 | 文件 | `download_file`、`upload_file`、`list_dir`、`stat_path` |
 | 桌面 | `take_screenshot`、`click`、`move_mouse`、`drag`、`press_keys`、`type_text` |
-| 视觉 | `find_on_screen`（UIA 文本定位 + OpenCV 图像模板匹配） |
+| 视觉 | `find_on_screen`（UIA 文本定位 + OpenCV 图像模板匹配）、`click_target`（定位+点击一笔事务） |
 | 等待 | `wait`、`wait_for` |
 | 交互 | `ask_user`、`get_user_reply` |
 
@@ -42,6 +42,13 @@
   路径（先用 `upload_file` 传模板），`image_b64` 是 PNG/JPEG（解码后 ≤64 KiB、尺寸 ≤2048x2048）。
   实现是灰度 `TM_CCOEFF_NORMED` + IoU 0.3 去重，`threshold` 默认 0.88；`matches[].source` 为
   `opencv`。客户端未编译 OpenCV 时返回 `UNSUPPORTED_OPERATION`，不伪装成"找不到"。
+- **`click_target` 只在客户端内完成，且默认不乱点**。`text` / `image_path` / `image_b64`
+  三选一（与 `find_on_screen` 同语义），定位用的那一帧就是点击的坐标基准，全程持设备门，
+  中间不会插进别的会话抓屏或抢鼠标。`pick`：`unique`（默认）/ `best` / `first` / `index:N`。
+  歧义判据是"第一名与**另一个视觉目标**的最强对手得分差 < 0.03"（同框的 UIA 父子节点、
+  NMS 残留不算竞争）：命中多个则返回 `AMBIGUOUS_TARGET`，没命中返回 `NOT_FOUND`，
+  **两种情况都不发 down 事件**，错误 `data` 里带 `matches` / `top_score` / `threshold`。
+  它没有脚本回退：旧客户端返回 `UNSUPPORTED_CLIENT`，需要升级客户端。
 - **错误自带现场**。失败回复带 `hint`（下一步建议）和 `data.devices`（最多 20 台在线设备）。
 - **schema 是唯一校验来源**。`validateInput` 直接把 `InputSchema` 交给 JSON Schema 校验器，不再手写一遍约束。
 - **分发走注册表**。agenttools 分本地工具（`localTools`）、组合工具（`composedTools`）、后端工具（`BackendTools()`）三层；`TestEveryToolHasExactlyOneHandler` 与 `TestEveryBackendToolHasAHandler` 拦“加了工具忘实现”。

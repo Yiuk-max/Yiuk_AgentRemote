@@ -101,6 +101,27 @@ int main(int argc, char *argv[]) {
                 return NativeOperationDispatcher::envelopeError(code, message);
             return NativeOperationDispatcher::envelopeOk(data);
         });
+    // click_target：与真实客户端共用 VisionService::clickTarget。
+    // 这里故意不传会命中的目标：验收只拿"设备拒绝点击 + 带回现场"这一段，不碰鼠标。
+    dispatcher.registerOperation(
+        QStringLiteral("vision.click_target"),
+        [vision](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
+            yiuk::vision::ClickTargetOptions options;
+            options.text.text = arguments.value(QStringLiteral("text")).toString();
+            options.text.match = arguments.value(QStringLiteral("match")).toString(QStringLiteral("contains"));
+            options.text.controlType = arguments.value(QStringLiteral("control_type")).toString();
+            options.text.limit = qBound(1, arguments.value(QStringLiteral("limit")).toInt(5), 20);
+            options.pick = arguments.value(QStringLiteral("pick")).toString(QStringLiteral("unique"));
+            options.detectChange = arguments.value(QStringLiteral("detect_change")).toBool(true);
+            if (arguments.contains(QStringLiteral("settle_ms")))
+                options.settleMs = qBound(0, arguments.value(QStringLiteral("settle_ms")).toInt(), 2000);
+            QJsonObject data;
+            QString code;
+            QString message;
+            if (!vision->clickTarget(sessionId, options, cancelled, &data, &code, &message))
+                return NativeOperationDispatcher::envelopeError(code, message, QString(), data);
+            return NativeOperationDispatcher::envelopeOk(data);
+        });
     // 原生输入：点击（含变化检测）委托给 VisionService::clickWithOptions，
     // 与真实客户端完全同一份实现，避免测试替身"漏掉采样"却看不出问题。
     dispatcher.registerOperation(
@@ -210,7 +231,9 @@ int main(int argc, char *argv[]) {
     deviceConfig.enabled = true;
     deviceConfig.clientVersion = QStringLiteral("interop");
     deviceConfig.capabilities = QStringList{QStringLiteral("screen.capture"), QStringLiteral("screen.release"),
-                                            QStringLiteral("vision.find"), QStringLiteral("input.click"),
+                                            QStringLiteral("vision.find"),
+                                            QStringLiteral("vision.click_target"),
+                                            QStringLiteral("input.click"),
                                             QStringLiteral("input.move"), QStringLiteral("input.drag")};
     device->setConfig(deviceConfig);
 
@@ -252,6 +275,7 @@ int main(int argc, char *argv[]) {
     bool savedResultOk = false;
     bool releasedResultOk = false;
     bool findResultOk = false;
+    bool clickTargetOk = false;
     bool inputMoveOk = false;
     bool inputClickOk = false;
     bool changeDetectedOk = false;
@@ -362,6 +386,23 @@ int main(int argc, char *argv[]) {
         // 只校验原生操作的输出：普通命令的 stdout 不是 JSON 信封，误判会直接让测试失败。
         if (!requestId.startsWith(QLatin1String("interop-native"))) return;
         const QJsonObject envelope = QJsonDocument::fromJson(data.toUtf8()).object();
+        if (requestId == QLatin1String("interop-native-click-target")) {
+            // 这一段的成功判据是"设备主动拒绝点击"：NOT_FOUND 且带现场，一个 down 都没发。
+            const QJsonObject findings = envelope.value(QStringLiteral("data")).toObject();
+            if (envelope.value(QStringLiteral("ok")).toBool() ||
+                envelope.value(QStringLiteral("code")).toString() != QLatin1String("NOT_FOUND") ||
+                !findings.value(QStringLiteral("matches")).isArray() ||
+                findings.value(QStringLiteral("candidate_count")).toInt() != 0 ||
+                findings.value(QStringLiteral("screenshot_id")).toString().size() != 12) {
+                qWarning() << "click_target should have refused with NOT_FOUND" << data;
+                ++failures;
+                return;
+            }
+            clickTargetOk = true;
+            qInfo() << "operator saw click_target refuse" << envelope.value(QStringLiteral("code")).toString()
+                    << findings.value(QStringLiteral("candidate_count")).toInt() << "candidates";
+            return;
+        }
         if (!envelope.value(QStringLiteral("ok")).toBool()) {
             qWarning() << "native envelope was not ok" << requestId << data;
             ++failures;
@@ -702,6 +743,19 @@ int main(int argc, char *argv[]) {
         }
         if (requestId == QLatin1String("interop-native-find")) {
             if (!findResultOk) ++failures;
+            // 第五段：找 + 点一笔事务。目标是一串前台窗口里不会出现的文本，
+            // 所以期望它拒绝：这条路不碰鼠标，可以在无人看着时跑。
+            qInfo() << "submitting native operation vision.click_target";
+            operatorClient->submitNative(sessionId, QStringLiteral("interop-native-click-target"),
+                                         QStringLiteral("vision.click_target"),
+                                         QJsonObject{{QStringLiteral("text"),
+                                                      QStringLiteral("yiuk-interop-absent-9f3a")},
+                                                     {QStringLiteral("pick"), QStringLiteral("unique")}},
+                                         10);
+            return;
+        }
+        if (requestId == QLatin1String("interop-native-click-target")) {
+            if (!clickTargetOk) ++failures;
             if (inputEnabled) {
                 submitInputAcceptance(sessionId);
             } else if (!windowDragClass.isEmpty()) {
@@ -856,11 +910,11 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     if (nativeEnabled && (!nativeSent || !nativeSeen || !nativeResultOk || !savedResultOk || !releasedResultOk ||
-                          !findResultOk)) {
+                          !findResultOk || !clickTargetOk)) {
         qWarning() << "native round trip did not complete"
                    << "sent:" << nativeSent << "seen:" << nativeSeen << "ok:" << nativeResultOk
                    << "saved:" << savedResultOk << "released:" << releasedResultOk
-                   << "find:" << findResultOk;
+                   << "find:" << findResultOk << "click_target:" << clickTargetOk;
         return 1;
     }
     if (inputEnabled && (!inputMoveOk || !inputClickOk)) {

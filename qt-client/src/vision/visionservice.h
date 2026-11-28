@@ -36,6 +36,60 @@ struct CaptureOutcome {
     QImage image;
 };
 
+// 一条候选命中（截图坐标，右下开区间）。UIA 与 OpenCV 两条来源统一成这一种形状，
+// 这样"选哪一个、是否歧义"只写一份。
+struct TargetCandidate {
+    QRect bbox;
+    double score = 0;
+    QString text;
+    QString source;
+    QString controlType;
+    QPoint center() const { return QPoint(bbox.left() + bbox.width() / 2, bbox.top() + bbox.height() / 2); }
+};
+
+// 歧义判据（P4 冻结）：第一名与**另一个视觉目标**的最强对手得分差 < 0.03 即视为歧义。
+// 同一个目标的重叠命中（UIA 父子节点、NMS 残留：中心重合或一个框有 ≥60% 面积被另一个盖住）
+// 不算竞争，否则一个按钮永远点不成。
+extern const double kAmbiguityScoreGap;
+
+enum class TargetPickStatus {
+    Picked,
+    NotFound,
+    Ambiguous,
+    InvalidPick,
+};
+
+struct TargetPickOutcome {
+    TargetPickStatus status = TargetPickStatus::NotFound;
+    // Picked 时被选中的下标；Ambiguous 时是第一名；-1 表示没有候选。
+    int index = -1;
+    // 歧义时位置不同的最强对手下标，其余情况 -1。
+    int competitor = -1;
+    QString message;
+};
+
+// 按 pick 选择要点击的候选。纯函数（不碰系统 API），便于把各分支与 0.03 边界钉在测试里。
+//
+// pick：unique（默认，命中多个不同位置的近似并列结果时判歧义）/ best（得分最高）/
+//       first（返回顺序第一个：UIA 是阅读顺序、图像是得分降序）/ index:N（第 N 个，1 起）。
+TargetPickOutcome pickTarget(const QVector<TargetCandidate> &candidates, const QString &pick);
+
+// 一次「定位 + 点击」的配置：定位来源二选一（text 或 needle），点击参数与 click 同义。
+struct ClickTargetOptions {
+    // 定位来源。useImage 为真时用 needle + image，否则用 text（UIA）。
+    bool useImage = false;
+    QImage needle;
+    TemplateOptions image;
+    TextQuery text;
+    // unique（默认）| best | first | index:N
+    QString pick = QStringLiteral("unique");
+    QString button = QStringLiteral("left");
+    bool doubleClick = false;
+    // 与 click 一致：可选点击前后的局部采样；click_target 默认开（规格要求）。
+    bool detectChange = true;
+    int settleMs = 250;
+};
+
 // VisionService 是客户端内所有"重操作"的唯一入口：
 //
 //   * 抓屏（screen.capture，后续 take_screenshot 的原生分支）；
@@ -69,6 +123,14 @@ public:
     bool clickWithOptions(const QString &sessionId, const QString &screenshotId, int x, int y,
                           const QString &button, bool doubleClick, bool detectChange, int settleMs,
                           const std::atomic_bool *cancelled, QJsonObject *data, QString *code, QString *message);
+
+    // 一次「找到就点」的事务：设备门 -> 抓一帧 -> 定位 -> 选择 -> 点击 -> 变化采样。
+    // 全程持门，定位与点击之间不会被别的会话插进来抓屏/点鼠标。
+    //
+    // 找不到 / 歧义时**一个 down 事件都不发**：失败返回 false 并写 code/message，
+    // 同时把现场（候选、得分、阈值）写进 *data，供上层放进错误信封。
+    bool clickTarget(const QString &sessionId, const ClickTargetOptions &options,
+                     const std::atomic_bool *cancelled, QJsonObject *data, QString *code, QString *message);
 
     // 一次完整的模板匹配：抓一帧（不落盘）-> OpenCV 灰度匹配 -> 换算成截图坐标 -> 组装 data。
     // needle 是模板（PNG/JPEG 解码后的 QImage）；region 用新这一帧的坐标。
@@ -125,6 +187,16 @@ public:
     const SnapshotStore &store() const { return store_; }
 
 private:
+    // 已持有设备门时的抓屏：设备门由调用方持有（click_target 要在同一把门下完成
+    // 抓屏 + 定位 + 点击，不能在中间放门）。capture() 就是「取门 + 这里」。
+    bool captureLocked(const QString &sessionId, const CaptureOptions &options,
+                       const std::atomic_bool *cancelled, CaptureOutcome *outcome, QString *code, QString *message);
+
+    // 已持有设备门时的点击（坐标换算、前后采样）。clickWithOptions 与 clickTarget 共用。
+    bool clickPointLocked(const QString &sessionId, const QString &screenshotId, int x, int y,
+                          const QString &button, bool doubleClick, bool detectChange, int settleMs,
+                          const std::atomic_bool *cancelled, QJsonObject *data, QString *code, QString *message);
+
     DeviceGate deviceGate_;
     SessionLimiter limiter_;
     SnapshotStore store_;

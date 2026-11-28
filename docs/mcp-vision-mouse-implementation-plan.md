@@ -242,7 +242,11 @@ MCP 工具 → agenttools 原生桌面调度 → platformclient
       `ButtonGuard` 保证任何可处理路径抬起按键，结果用 `released:true` 表示已确认释放，
       没确认就返回 `DRAG_NOT_RELEASED` 而不是报成功。
 - [x] 取消/超时/关闭会话都会走到 guard；但进程被强杀时 RAII 不会运行，不宣称绝对保证（已在文档写明）。
-- [ ] `click_target`：客户端内事务完成 find/pick/click；默认 unique 与 detect_change，歧义/不命中/过期/取消时没有任何 down 事件。
+- [x] `click_target`：客户端内事务完成 find/pick/click；默认 unique 与 detect_change，歧义/不命中/过期/取消时没有任何 down 事件。
+      实现：`VisionService::clickTarget`（全程持设备门：抓一帧 → 定位 → `pickTarget` → `clickPointLocked`），
+      歧义判据写在纯函数 `pickTarget` 里（第一名 vs **另一个视觉目标**的最强对手，差 < 0.03；
+      中心重合或一個框有 ≥60% 面积被另一个盖住的 UIA 父子节点 / NMS 残留不算竞争）。
+      失败信封带候选现场（需要 `envelopeError(..., data)` + Go 侧 `decodeNativeResult` 透传）。
 - [x] 结果保留 session/截图坐标/物理坐标/foreground_title；只在确认释放时返回 `released:true`。
 - [x] 工具描述写明验证码用 `ask_user` 交给用户；输入类工具另外注明提权窗口的限制。
 
