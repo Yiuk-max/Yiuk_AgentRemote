@@ -79,6 +79,21 @@ func (s *desktopState) newScreenshotID(sessionID string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
+// validScreenshotID 校验客户端上报的截图 id 形状：12 位小写 hex。
+// 原生抓屏的 id 由设备端生成，MCP 侧只校验形状，不重新生成。
+func validScreenshotID(id string) bool {
+	if len(id) != 12 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *desktopState) remember(sessionID string, ref screenshotRef) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

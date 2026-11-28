@@ -141,14 +141,17 @@ func (c *Core) pressKeys(ctx context.Context, raw json.RawMessage) (any, error) 
 	}, nil
 }
 
+// moveMouseInput 单独命名：原生分支与脚本分支都要把它传给结果构造函数。
+type moveMouseInput struct {
+	SessionID    string `json:"session_id"`
+	X            int    `json:"x"`
+	Y            int    `json:"y"`
+	SettleMS     int    `json:"settle_ms"`
+	ScreenshotID string `json:"screenshot_id"`
+}
+
 func (c *Core) moveMouse(ctx context.Context, raw json.RawMessage) (any, error) {
-	var input struct {
-		SessionID    string `json:"session_id"`
-		X            int    `json:"x"`
-		Y            int    `json:"y"`
-		SettleMS     int    `json:"settle_ms"`
-		ScreenshotID string `json:"screenshot_id"`
-	}
+	var input moveMouseInput
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return nil, &Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
@@ -159,6 +162,23 @@ func (c *Core) moveMouse(ctx context.Context, raw json.RawMessage) (any, error) 
 	if err != nil {
 		return nil, err
 	}
+	latest, _ := c.desktop.latest(input.SessionID)
+
+	// 原生优先：duration_ms 目前固定 0（瞬移），等 P4 给工具加参数后再透传。
+	arguments := map[string]any{
+		"x":             input.X,
+		"y":             input.Y,
+		"screenshot_id": latest.ID,
+		"duration_ms":   0,
+		"settle_ms":     input.SettleMS,
+	}
+	if nativeRaw, nativeErr := c.invokeNative(ctx, input.SessionID, nativeMoveOperation, arguments,
+		nativeInputTimeoutSeconds); nativeErr == nil {
+		return c.nativeMoveResult(input, latest.ID, screenX, screenY, nativeRaw)
+	} else if !isUnsupportedNative(nativeErr) {
+		return nil, nativeErr
+	}
+
 	script := strings.NewReplacer(
 		"{{X}}", strconv.Itoa(screenX), "{{Y}}", strconv.Itoa(screenY),
 		"{{SETTLE}}", strconv.Itoa(input.SettleMS),
@@ -169,7 +189,6 @@ func (c *Core) moveMouse(ctx context.Context, raw json.RawMessage) (any, error) 
 	if err := c.runDesktopJSON(ctx, input.SessionID, script, moveMouseTimeoutSeconds, &moved); err != nil {
 		return nil, err
 	}
-	latest, _ := c.desktop.latest(input.SessionID)
 	return map[string]any{
 		"session_id":       input.SessionID,
 		"x":                input.X,
@@ -179,5 +198,6 @@ func (c *Core) moveMouse(ctx context.Context, raw json.RawMessage) (any, error) 
 		"settle_ms":        input.SettleMS,
 		"screenshot_id":    latest.ID,
 		"foreground_title": moved.Foreground,
+		"input_source":     "script",
 	}, nil
 }
