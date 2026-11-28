@@ -144,6 +144,37 @@ int main(int argc, char **argv) {
     check(timeoutClock.elapsed() < 2500, QStringLiteral("timeout fires near the deadline, not after the handler"));
     check(dispatcher.activeCount() == 0, QStringLiteral("no job leaks after timeout"));
 
+    // 取消语义：等处理器收尾（最多 kCancelGraceMs）再回报，不提前宣称“已清理”。
+    dispatcher.registerOperation(QStringLiteral("test.stubborn"),
+                                 [](const QString &, const QJsonObject &arguments, const std::atomic_bool *) {
+        // 故意不理会取消标记：模拟“正在做不可中断的收尾”（例如等鼠标抬起）。
+        QThread::msleep(static_cast<unsigned long>(arguments.value(QStringLiteral("ms")).toInt()));
+        return NativeOperationDispatcher::envelopeOk(QJsonObject{{QStringLiteral("done"), true}});
+    });
+    QElapsedTimer stubbornClock;
+    stubbornClock.start();
+    const Outcome late = runAndWait(dispatcher, "session-1", "req-late", "test.stubborn",
+                                    QJsonObject{{QStringLiteral("ms"), 300}}, 10,
+                                    [&dispatcher]() { dispatcher.cancel("req-late"); });
+    check(late.status == QLatin1String("succeeded"),
+          QStringLiteral("a handler that finished before the grace reports succeeded, not cancelled"));
+    check(stubbornClock.elapsed() >= 250, QStringLiteral("cancel waits for the handler to clean up"));
+
+    // 处理器超过收尾宽限期：这时才报 cancelled（不让操作者一直等）。
+    QElapsedTimer graceClock;
+    graceClock.start();
+    const Outcome slow = runAndWait(dispatcher, "session-1", "req-grace", "test.stubborn",
+                                    QJsonObject{{QStringLiteral("ms"), 3200}}, 10,
+                                    [&dispatcher]() { dispatcher.cancel("req-grace"); });
+    check(slow.status == QLatin1String("cancelled"),
+          QStringLiteral("a handler that outlives the grace is reported as cancelled"));
+    check(slow.envelope.value(QStringLiteral("code")).toString() == QLatin1String("CANCELLED"),
+          QStringLiteral("grace-timeout envelope still carries CANCELLED"));
+    check(graceClock.elapsed() >= NativeOperationDispatcher::kCancelGraceMs - 100 &&
+              graceClock.elapsed() < 3200,
+          QStringLiteral("the grace deadline is what bounds the cancel reply"));
+    check(dispatcher.activeCount() == 0, QStringLiteral("no job leaks after the grace timeout"));
+
     // 超大信封：换成明确的错误，而不是发一个必然被截断的帧。
     const Outcome huge = runAndWait(dispatcher, "session-1", "req-huge", "test.huge", QJsonObject{}, 5);
     check(huge.envelope.value(QStringLiteral("code")).toString() == QLatin1String("NATIVE_RESULT_TOO_LARGE"),

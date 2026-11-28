@@ -14,7 +14,7 @@
 ; 同一台设备身份。需要彻底清除时由用户手动删除该目录。
 
 #define MyAppName "Yiuk Device Assist"
-#define MyAppVersion "0.1.8"
+#define MyAppVersion "0.1.9"
 #define MyAppPublisher "Yiuk"
 #define MyAppExeName "yiuk-device-assist.exe"
 

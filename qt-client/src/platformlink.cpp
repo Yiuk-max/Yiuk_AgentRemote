@@ -8,6 +8,10 @@ void MainWindow::startLocalBridge() {
     bridge = new LocalBridge([this](const QString &tool, const QJsonObject &input) {
         return invokeLocalTool(tool, input);
     }, this);
+    // 原生操作走异步通道：抓屏/OCR/等目标出现不能把 GUI 事件循环按住。
+    bridge->setNativeHandler([this](const QJsonObject &request, LocalBridge::NativeResponder respond) {
+        runLocalNative(request, respond);
+    });
     QString error;
     if (!bridge->start(&error)) {
         serviceState->setText("● 本机 MCP 桥接启动失败");
@@ -162,7 +166,12 @@ void MainWindow::initializePlatformClient() {
     // 原生分发器必须先于平台配置加载：注册时要把 capabilities 报给平台。
     setupNativeOperations();
     platform = new PlatformClient(this);
-    connect(platform, &PlatformClient::stateChanged, this, [this](const QString &state) { updatePlatformState(state); });
+    connect(platform, &PlatformClient::stateChanged, this, [this](const QString &state) {
+        updatePlatformState(state);
+        // 断线：原生操作的结果已经送不回去了，就地取消（平台侧早已按 result_unknown 收敛）。
+        // 这里不重放：重放会把一次已经生效的点击变成两次。
+        if (state == QLatin1String("disconnected") && nativeOps) nativeOps->cancelAll();
+    });
     connect(platform, &PlatformClient::credentialsRenewed, this,
             [this](const QString &password, int version) {
         temporaryPassword = password;

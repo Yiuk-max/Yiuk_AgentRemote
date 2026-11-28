@@ -155,6 +155,8 @@ void MainWindow::onPlatformSessionCreated(const QJsonObject &session) {
 void MainWindow::onPlatformCloseRequested(const QString &sessionId) {
     appendActivity(sessionId, "平台已请求结束会话", ActivityKind::Session);
     cancelSessionCommands(sessionId, "cancelled");
+    // 原生操作也要停：会话没了，它们的截图与输入都不该继续。
+    if (nativeOps) nativeOps->cancelSession(sessionId);
     if (vision) vision->forgetSession(sessionId);
     QJsonObject session = sessions.value(sessionId);
     session.insert("status", "closed");

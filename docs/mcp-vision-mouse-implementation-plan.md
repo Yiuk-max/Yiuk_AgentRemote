@@ -162,9 +162,18 @@ MCP 工具 → agenttools 原生桌面调度 → platformclient
 - [x] 端到端验证（真实 Qt ↔ 真实 Go 平台）：`yiuk-platform-interop` 以 `YIUK_INTEROP_NATIVE=1` 运行，
       设备上报 `capabilities:["screen.capture"]`，平台 `native_submitted` → 客户端分发器真实抓屏 →
       `command_finished succeeded`，会话正常关闭（平台日志三帧齐全）。
-- [ ] 把 native 纳入取消、会话关闭/过期、断线、退出清理。取消须等设备实际收尾才报告已清理；网络断线仍按 result_unknown，不伪报 released。
-- [ ] **下一步**：本机 bridge 增加异步完成机制与有界 native 请求体；保持 loopback+token，再校验会话，
-      不为 vision 开未鉴权端口。注意：本机 bridge 只服务"没有平台"的本地后端，平台链路已可用。
+- [x] 把 native 纳入取消、会话关闭/过期、断线、退出清理。
+      取消现在**等处理器收尾**（最多 `kCancelGraceMs = 2000`）再回报：处理器先完成就照实说
+      `succeeded`，超过宽限才报 `cancelled`，不再“先喊已取消、鼠标键还按着”。
+      会话关闭/过期 → `cancelSession`；平台断线 → `cancelAll`（不重放，避免一次点击变两次）；退出 → 析构里 `cancelAll` + 有界等待。
+      测试：`yiuk-nativeops-test` 新增“完成早于宽限报 succeeded / 超过宽限报 cancelled / 宽限就是上限”三条。
+- [x] 本机 bridge：新增 `POST /native` **异步**通道（`LocalBridge::setNativeHandler` + 一次性订阅
+      `NativeOperationDispatcher::finished`），抓屏 30ms / OCR 300ms / 等目标 20s 都不再按住 GUI 线程；
+      请求体上限按通道分开（普通工具 32 KiB，原生操作 128 KiB + 4 KiB 余量，与平台
+      `native_argument_max_bytes` 对齐），超限先把体读掉再回 413（否则客户端只看到连接被重置）；
+      仍是 loopback + Bearer token，并**再校验会话**（存在 → 已批准 → 能力存在）。
+      Go 侧 `localbridge.Client` 实现 `NativeInvoker`，没有平台时 find/click_target/drag 也能用。
+      测试：`yiuk-localbridge-test`（token/404/两个上限/异步回包 15 条）+ `internal/localbridge` 3 个 Go 用例。
 
 **门禁**：模拟设备覆盖批准/拒绝/关闭/过期、越权、重复请求、跨会话 ID、限额、能力缺失、取消/断线/迟到结果；原有命令、上传下载与询问测试不退化。
 
@@ -284,13 +293,24 @@ Windows 的 UIPI 会静默丢弃非提权进程投递的合成输入——这与
 
 ### P6：完整回归与发布
 
-- [ ] 新增 `qt-client/tests/vision_*` 单元/素材测试与普通桌面 fixture；在 `internal/platformclient/vision_qt_test.go` 经本地平台和真实 Qt 跑全链路。
-- [ ] 真机测试用 `YIUK_VISION_QT_EXE` 等显式变量开启；输入前断言 fixture 是前台，否则跳过且报告未验收，不自动激活其他应用。普通 `go test ./...` 不注入键鼠。
-- [ ] `go test ./...`、`go vet ./...`、相关包 race；Windows CMake/CTest 与 Go↔Qt 互操作；CI 添加可复现的固定版本 OpenCV 缓存与 Qt 工具链。
+- [x] 新增 Qt 侧测试：`yiuk-vision-test`（快照/节流/设备门/UIA/OpenCV/参数解析/OCR）、
+      `yiuk-click-target-test`（真窗口 + 真 UIA + 真 SendInput + OCR）、`yiuk-localbridge-test`。
+      **未做**独立的 `internal/platformclient/vision_qt_test.go`：全链路改由 `yiuk-platform-interop`
+      覆盖（真实 Qt ↔ 真实 Go 平台，见 §4.5），Go 侧单测用假设备。
+- [x] 真机测试必须显式运行（`yiuk-click-target-test` 单独一个可执行文件，`ctest` 里配了 `SKIP_RETURN_CODE 2`）：
+      拿不到前台窗口时打印 `SKIP …` 并返回 2，**不**去激活别的应用；`go test ./...` 全程不注入键鼠。
+- [x] `go test ./...` / `go vet ./...` / 相关包 `-race`；Windows `ctest`（5 个用例，含真机项按 SKIP）；
+      Go↔Qt 互操作；CI 新增 `windows-qt` job：Qt 6.11.1（MinGW 13.1 工具链，`install-qt-action` 缓存）
+      + OpenCV 4.12.0 静态构建按版本号缓存 + `ctest`。**注意**：这条 job 还没有在 GitHub 上跑绿过，
+      首次 push 后要看结果再修（本机等价命令：`cmake -DYIUK_BUILD_TESTS=ON` + `ctest`）。
 - [ ] Edge → 抖音收藏夹回归须经设备所有者授权，遇人机验证用 ask_user 请本人在设备上完成。对照 P0 记录误点、调用次数、耗时、三端内存，不依赖外站任务替代 fixture 自动验收。
 - [ ] 更新 `README.md`、`docs/README.md`、工具说明、`docs/development.md`、`mcpSetupPromptText()`（`src/platformlink.cpp`）；更新实际存在的 `catalog_test.go` / `registry_test.go` / `schema_test.go`、`server_test.go` 及 backend 注册检查，不寻找不存在的 tools_test.go。
-- [ ] 新建第三方许可清单，附 OpenCV 许可与构建启用依赖的许可；同步 CMake 版本、安装脚本版本、最低平台/Qt/MCP 版本。
-- [ ] 绿色包/可选安装器在无开发 PATH 的机器启动验证，检查 Qt/MinGW/OpenCV/helper 运行依赖；发布说明给出体积变化、性能数据、未支持语言与回滚办法。
+- [x] 新建 [`third-party.md`](third-party.md)：发布包里带什么、许可证、版本钉在哪儿；
+      同步 CMake / 安装脚本版本到 **0.1.9**。
+- [x] 绿色包 0.1.9 已重打：`ReleaseYiukDeviceAssist-0.1.9-win64`（82 MB）+ zip（35.7 MB）+ sha256；
+      在**不含 Qt/MinGW 的 PATH** 下启动成功（标题 `Yiuk Device Assist 0.1.9`、`data` 就地创建）。
+      体积变化：0.1.8 → 0.1.9 目录 +6 MB（OpenCV 静态库 + OCR 代码）。
+      **未做**：安装器（ISCC）重打与真机安装/卸载回归。
 
 ## 4. 依赖顺序与提交边界
 

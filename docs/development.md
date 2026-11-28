@@ -153,6 +153,17 @@ fixture 打印 `FIXTURE OK clicks=1 hover=1 ...` 才算通过。加 `YIUK_INTERO
 （fixture 用 `--expect-clicks 4`）再验证 `detect_change` 的真机判定。
 完整命令见[本机开发环境](local-dev.md) §5.4；`click_target` 的独立验收见 §5.5。
 
+一次跑完全部 Qt 测试（CI 用的就是这条）：
+
+```sh
+cd qt-client/build-qt && ctest --output-on-failure
+```
+
+GitHub Actions 的 `windows-qt` job 会装 Qt 6.11.1（MinGW 13.1 工具链）、按版本号缓存
+OpenCV 4.12.0 的静态构建，然后 `cmake -DYIUK_BUILD_TESTS=ON` + `ctest`。
+真机项（`yiuk-click-target-test`）在 runner 上没有前台窗口，会打印 `SKIP` 并返回 2，
+CTest 里记为 SKIP 而不是失败。
+
 `take_screenshot` 有两条实现路径：设备客户端上报 `screen.capture` 能力时走原生
 （客户端抓屏 + 落盘，MCP 用既有 `download_file` 取图，结果里 `capture_source=native`），
 否则回退到 `scripts.go` 里的 PowerShell 抓屏（`capture_source=script`）。原生路径的临时截图
@@ -185,7 +196,7 @@ go run ./cmd/device-sim -addr host:29564 -password '<player-password>' \
 只有一个 Windows x64 绿色目录（无安装器），目录里放三个 exe 与 Qt 运行库，再压 zip：
 
 ```sh
-VERSION=0.1.8
+VERSION=0.1.9
 BUILD=qt-client/build-qt
 OUT=release/YiukDeviceAssist-$VERSION-win64
 

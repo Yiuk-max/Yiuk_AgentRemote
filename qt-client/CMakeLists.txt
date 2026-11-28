@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(YiukDeviceAssist VERSION 0.1.8 LANGUAGES CXX)
+project(YiukDeviceAssist VERSION 0.1.9 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -235,6 +235,21 @@ if(YIUK_BUILD_TESTS)
     if(WIN32)
         target_link_libraries(yiuk-input-fixture PRIVATE user32 gdi32)
     endif()
+
+    # 本机 MCP 桥：token、两个通道、请求体上限与原生操作的异步回包（不碰屏幕）。
+    qt_add_executable(yiuk-localbridge-test tests/localbridge_test.cpp src/localbridge.cpp src/localbridge.h)
+    set_target_properties(yiuk-localbridge-test PROPERTIES WIN32_EXECUTABLE FALSE)
+    target_include_directories(yiuk-localbridge-test PRIVATE src)
+    target_link_libraries(yiuk-localbridge-test PRIVATE Qt6::Network)
+
+    # CTest：把不依赖"看着桌面"的测试接进来（CI 上 ctest 要能跑）。
+    # click-target 会真的动鼠标：拿不到前台窗口时它返回 2，CTest 按 SKIP 计（红色只在真失败时）。
+    enable_testing()
+    foreach(YIUK_CTEST_TARGET yiuk-vision-test yiuk-input-test yiuk-nativeops-test yiuk-localbridge-test)
+        add_test(NAME ${YIUK_CTEST_TARGET} COMMAND ${YIUK_CTEST_TARGET})
+    endforeach()
+    add_test(NAME yiuk-click-target-test COMMAND yiuk-click-target-test)
+    set_tests_properties(yiuk-click-target-test PROPERTIES SKIP_RETURN_CODE 2)
 
     # click_target 真机验收：真窗口 + 真 UIA + 真 SendInput，判据是窗口收到的点击事件。
     # 会真的动鼠标，所以只在 YIUK_BUILD_TESTS 里构建、且由人手动跑。

@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 
+#include "nativeops.h"
 #include "vision/apppaths.h"
 
 #include "powershellrunner.h"
@@ -324,4 +325,60 @@ QJsonObject MainWindow::cancelLocalCommand(const QJsonObject &input) {
     persistSessionState();
     refreshSessionsPage();
     return localToolSuccessResult(QJsonObject{{"request_id", requestId}, {"status", "cancelled"}});
+}
+
+// /native：本机桥的原生操作入口。
+//
+// 与平台链路共用同一个 NativeOperationDispatcher（同样的注册表、取消、超时、信封上限），
+// 差别只有三处：请求来自 loopback+token 的本地 HTTP、会话来自本地会话表、结果异步回包。
+// 校验顺序与平台一致：会话存在 → 已批准 → 能力存在 → 参数/去重交给 dispatcher。
+void MainWindow::runLocalNative(const QJsonObject &request,
+                                const std::function<void(const QJsonObject &)> &respond) {
+    const auto fail = [&respond](const QString &code, const QString &message, const QString &hint = QString()) {
+        QJsonObject envelope{{"ok", false}, {"code", code}, {"message", message}};
+        if (!hint.isEmpty()) envelope.insert("hint", hint);
+        respond(envelope);
+    };
+    if (!nativeOps) return fail(QStringLiteral("LOCAL_CLIENT_UNAVAILABLE"), QStringLiteral("原生操作不可用"));
+
+    const QString sessionId = request.value("session_id").toString();
+    const QString operation = request.value("operation").toString();
+    if (sessionId.isEmpty() || operation.isEmpty())
+        return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("session_id 与 operation 必填"));
+
+    expireSessionIfNeeded(sessionId);
+    if (!sessions.contains(sessionId))
+        return fail(QStringLiteral("SESSION_EXPIRED"), QStringLiteral("会话不存在或已过期"));
+    if (sessions.value(sessionId).value("status").toString() != QLatin1String("active"))
+        return fail(QStringLiteral("PERMISSION_DENIED"), QStringLiteral("设备所有者尚未批准此会话"));
+    if (!nativeOps->supports(operation))
+        return fail(QStringLiteral("UNSUPPORTED_OPERATION"),
+                    QStringLiteral("客户端未注册操作 %1").arg(operation),
+                    QStringLiteral("旧客户端没有这个能力；升级客户端后重试"));
+
+    const QJsonValue argumentsValue = request.value("arguments");
+    if (!argumentsValue.isUndefined() && !argumentsValue.isObject())
+        return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("arguments 必须是 JSON 对象"));
+    const QJsonObject arguments = argumentsValue.toObject();
+    const int timeoutSeconds = qBound(1, request.value("timeout_seconds").toInt(10), 25);
+    QString requestId = request.value("request_id").toString();
+    if (requestId.isEmpty()) requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+    // 一次性订阅：拿到这个 request_id 的终态就回包并断开，避免连接堆积。
+    auto connection = std::make_shared<QMetaObject::Connection>();
+    *connection = connect(
+        nativeOps, &NativeOperationDispatcher::finished, this,
+        [respond, connection, requestId](const QString &, const QString &finishedId, const QString &,
+                                         const QJsonObject &envelope) {
+            if (finishedId != requestId) return;
+            QObject::disconnect(*connection);
+            respond(envelope);
+        });
+
+    if (!nativeOps->start(sessionId, requestId, operation, arguments, timeoutSeconds)) {
+        QObject::disconnect(*connection);
+        return fail(QStringLiteral("INVALID_ARGUMENT"),
+                    QStringLiteral("原生操作请求无效，或这个 request_id 已经在执行/已完成"));
+    }
+    appendActivity(sessionId, QStringLiteral("本地 MCP 请求原生操作 %1").arg(operation), ActivityKind::Execute);
 }

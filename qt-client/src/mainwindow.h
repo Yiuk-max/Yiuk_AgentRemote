@@ -242,6 +242,8 @@ private:
     void startPlatformCommand(const QString &sessionId, const QString &requestId, const QString &command,
                                 const QString &workingDirectory, int timeoutSeconds);
     QJsonObject invokeLocalTool(const QString &tool, const QJsonObject &input);
+    // /native：原生操作的异步入口（会话校验 + 走 NativeOperationDispatcher + 回信封）。
+    void runLocalNative(const QJsonObject &request, const std::function<void(const QJsonObject &)> &respond);
     // 下面这几个是本机 bridge 的工具实现。它们看起来属于一个独立的 LocalToolHost，
     // 但实际上要动到 18 个 MainWindow 成员（sessions/tasks/commandRunners、托盘、
     // 审批弹窗、会话持久化、状态栏……）——抽类的代价是一个很肥的 host 接口，

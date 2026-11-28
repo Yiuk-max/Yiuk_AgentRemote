@@ -134,9 +134,21 @@ bool NativeOperationDispatcher::start(const QString &sessionId, const QString &r
 void NativeOperationDispatcher::cancel(const QString &requestId) {
     const auto job = jobs_.value(requestId);
     if (!job) return;
+    // 让处理器看到标记，但**先不结算**：拖动的按键、抓屏的 GDI 句柄都还没收尾，
+    // 这时候报“已取消”等于在说一句自己都不确定的话。处理器返回后再按它的结果收敛，
+    // 最多等 kCancelGraceMs。
     job->cancelled->store(true);
-    complete(job, QStringLiteral("cancelled"),
-             envelopeError(QStringLiteral("CANCELLED"), QStringLiteral("操作已被取消")));
+    if (job->cancelRequested) return;
+    job->cancelRequested = true;
+    auto *grace = new QTimer(this);
+    grace->setSingleShot(true);
+    job->cancelTimer = grace;
+    connect(grace, &QTimer::timeout, this, [this, job]() {
+        complete(job, QStringLiteral("cancelled"),
+                 envelopeError(QStringLiteral("CANCELLED"),
+                               QStringLiteral("操作已被取消（等待设备收尾超时）")));
+    });
+    grace->start(kCancelGraceMs);
 }
 
 void NativeOperationDispatcher::cancelSession(const QString &sessionId) {
@@ -158,6 +170,12 @@ void NativeOperationDispatcher::finishFromWorker(const QString &sessionId, const
                                                 const QJsonObject &envelope) {
     const auto job = jobs_.value(requestId);
     if (!job || job->sessionId != sessionId) return;  // 已被超时/取消结算
+    if (job->cancelRequested && !envelope.value(QStringLiteral("ok")).toBool()) {
+        // 处理器是在看到取消标记后停下的：清理已经做完了，现在才可以说 cancelled。
+        complete(job, QStringLiteral("cancelled"), envelope);
+        return;
+    }
+    // 取消来得太晚，处理器已经把活干完了：照实报 succeeded，不伪报取消。
     complete(job, QStringLiteral("succeeded"), envelope);
 }
 
@@ -173,6 +191,11 @@ void NativeOperationDispatcher::complete(const JobPtr &job, const QString &statu
         job->timer->stop();
         job->timer->deleteLater();
         job->timer = nullptr;
+    }
+    if (job->cancelTimer) {
+        job->cancelTimer->stop();
+        job->cancelTimer->deleteLater();
+        job->cancelTimer = nullptr;
     }
     job->cancelled->store(true);
 

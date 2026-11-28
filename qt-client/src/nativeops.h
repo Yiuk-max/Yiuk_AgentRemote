@@ -58,6 +58,8 @@ public:
     // 结果信封的大小上限：平台单帧 256 KiB，这里留足余量并保证不会把
     // 图片/长文本塞进 JSON。
     static constexpr int kMaxEnvelopeBytes = 32 * 1024;
+    // 取消后等处理器收尾的上限：过了这个点仍然没回，就先报 cancelled（不想让操作者干等）。
+    static constexpr int kCancelGraceMs = 2000;
 
     static QJsonObject envelopeOk(const QJsonObject &data);
     // data 是可选的现场信息（例如 click_target 的候选列表与得分）：失败也需要把
@@ -78,6 +80,10 @@ private:
         // 与 worker 共享的取消标记：超时/取消立刻能被处理器看到。
         std::shared_ptr<std::atomic_bool> cancelled = std::make_shared<std::atomic_bool>(false);
         QTimer *timer = nullptr;
+        // 取消/断线请求已到：等处理器真正收尾（最多 kCancelGraceMs）再回报，
+        // 而不是先喊 “已取消” 却让鼠标键还按着。
+        bool cancelRequested = false;
+        QTimer *cancelTimer = nullptr;
     };
 
     using JobPtr = std::shared_ptr<Job>;

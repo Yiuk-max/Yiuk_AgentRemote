@@ -11,5 +11,6 @@
 | [交接文档](handoff.md) | 当前进度、未提交改动、验证命令、下一步与未验证项 |
 | [Agent 询问设备用户](user-questions.md) | `ask_user` / `get_user_reply` 的状态语义 |
 | [开发与构建](development.md) | 环境、构建、测试、打包、部署、提交前检查 |
+| [第三方组件](third-party.md) | 发布包里带了什么、许可证、版本钉在哪儿 |
 | [本机开发环境](local-dev.md) | 这台机器上的路径、快捷命令、已知坑 |
 | [README](../README.md) | 产品定位与能力清单 |

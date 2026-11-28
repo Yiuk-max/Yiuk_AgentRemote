@@ -86,3 +86,74 @@ jobs:
           name: agentremote-linux-amd64
           path: dist/
           retention-days: 14
+
+  # Windows 客户端：Qt + MinGW 构建，跑 CTest（不需要真桌面；真机验收会自行 SKIP）。
+  #
+  # 为什么要放 CI：本机才能编译曾经是最大的盲区——Qt 侧改坏了要等人手动跑。
+  # OpenCV 的静态构建不进仓库（约 100 MB 中间产物），所以按版本号缓存在 runner 上，
+  # 缓存命中时只做配置，命中不了再花 ~2 分钟从源码构建。
+  windows-qt:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      QT_VERSION: 6.11.1
+      OPENCV_VERSION: 4.12.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Qt (MinGW) and the matching toolchain
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_mingw
+          tools: tools_mingw1310
+          cache: true
+
+      - name: Cache the static OpenCV build
+        uses: actions/cache@v4
+        with:
+          path: spike/vision/third_party/install-opencv
+          key: opencv-${{ env.OPENCV_VERSION }}-mingw1310-staticlist-core-imgproc-v1
+
+      - name: Build OpenCV (cache miss only)
+        shell: pwsh
+        run: |
+          if (Test-Path "spike/vision/third_party/install-opencv/x64/mingw/staticlib/OpenCVConfig.cmake") {
+            Write-Host "OpenCV static build restored from cache"
+            exit 0
+          }
+          git clone --depth 1 --branch $env:OPENCV_VERSION https://github.com/opencv/opencv.git spike/vision/third_party/opencv-src
+          cmake -S spike/vision/third_party/opencv-src -B spike/vision/third_party/build-opencv -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_LIST=core,imgproc -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF `
+            -DBUILD_EXAMPLES=OFF -DWITH_IPP=OFF -DWITH_OPENCL=OFF -DWITH_JPEG=OFF -DWITH_PNG=OFF `
+            -DWITH_TIFF=OFF -DWITH_WEBP=OFF -DWITH_PROTOBUF=OFF -DWITH_ADE=OFF -DCPU_DISPATCH=
+          cmake --build spike/vision/third_party/build-opencv --parallel
+          cmake --install spike/vision/third_party/build-opencv
+
+      - name: Configure
+        run: cmake -S qt-client -B qt-client/build-ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DYIUK_BUILD_TESTS=ON
+
+      - name: Build (client, panel, MCP helper and the tests)
+        run: cmake --build qt-client/build-ci --parallel
+
+      - name: CTest
+        timeout-minutes: 15
+        working-directory: qt-client/build-ci
+        run: ctest --output-on-failure
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-qt-test-logs
+          path: qt-client/build-ci/Testing/
+          retention-days: 7
+          if-no-files-found: ignore

@@ -10,11 +10,11 @@
 
 ## 1. 一句话状态
 
-**P0 完成、P1 95%（只差本机 bridge 异步化）、P2 完成、P3 完成（UIA 文本 + OpenCV 图像 + Windows OCR 兜底）、P4 完成（`move_mouse` 平滑移动、`drag`、`click_target`，含等目标出现）。**
+**P0–P4 完成（UIA 文本 + Windows OCR 兜底 + OpenCV 图像、`click_target` 含等目标出现）、P1 完成（本机 bridge 原生通道异步化）、P6 进行中（Windows CI + 0.1.9 绿色包已出，CI 待跑绿）。**
 
 客户端已有两套原生内核：`yiuk-vision`（GDI 抓屏 / 快照 / 节流 / 设备门 / UIA / OpenCV）与 `yiuk-input`（SendInput / 确定性轨迹 / 按键守卫 / 灰度变化检测）。`take_screenshot`、`click`、`move_mouse`、`find_on_screen`、`click_target`、`drag` 现在都优先走客户端原生通道，旧客户端自动回退脚本（`find_on_screen` / `click_target` / `drag` 除外，它们必须原生）。
 
-工作区干净（`git log -1 --oneline` 看最新提交）。
+**最新发布包：0.1.9**（`Release\YiukDeviceAssist-0.1.9-win64`，见 §5）。工作区干净（`git log -1 --oneline` 看最新提交）。
 
 ## 2. 能做什么
 
@@ -31,6 +31,11 @@
 | 交互 | `ask_user`、`get_user_reply` |
 
 结果里的 `capture_source`（`native`/`script`）与 `input_source`（`native`/`script`）说明这次走了哪条实现路径。
+
+**没有平台时也能用**：本机 bridge 的 `POST /native` 走同一个 `NativeOperationDispatcher`
+（同一份注册表/取消/超时/信封上限），只是传输换成 loopback + Bearer token 且**异步回包**；
+`localbridge.Client` 实现了 `NativeInvoker`，所以 `find_on_screen` / `click_target` / `drag`
+在无平台模式下同样可用。
 
 **等目标出现（两个工具都支持）**：`wait_until_found: true` + `timeout_seconds`。
 - `find_on_screen`：1–25 秒（默认 10），轮询在 MCP 侧，每 500ms 一个独立原生调用（每轮自己取/放设备门）；
@@ -105,7 +110,7 @@ go test ./... -count=1
 go test -race ./internal/agenttools/ ./internal/platformclient/ ./internal/platform/gateway/ -count=1
 ```
 
-### 4.2 Qt（不需要平台）
+### 4.2 Qt（不需要平台，CI 也跑这一套）
 
 ```powershell
 & "D:\QT\Tools\Ninja\ninja.exe" -C qt-client\build-qt
@@ -113,6 +118,10 @@ go test -race ./internal/agenttools/ ./internal/platformclient/ ./internal/platf
 .\qt-client\build-qt\yiuk-input-test.exe        # 轨迹/变化判据/采样
 .\qt-client\build-qt\yiuk-nativeops-test.exe    # 分发器能力/取消/超时/去重
 .\qt-client\build-qt\yiuk-click-target-test.exe # 真机：真窗口 + 真 UIA + 真 SendInput（会动鼠标）
+.\qt-client\build-qt\yiuk-localbridge-test.exe # 本机 MCP 桥：token / 两个通道 / 请求体上限 / 异步回包
+
+# 一次跑完（CI 用的就是这条；真机项拿不到前台窗口时 ctest 计为 SKIP）：
+cd qt-client\build-qt; ctest --output-on-failure
 ```
 
 ### 4.3 真实 Qt ↔ 真实 Go 平台（互操作）
@@ -170,6 +179,7 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 | 互操作（真实 Qt ↔ 真实 Go 平台） | `INTEROP EXIT=0`；平台审计 6 条 `native_submitted`：`screen.capture` ×2、`screen.release`、`vision.find`、`vision.click_target` ×2（含等待超时段） |
 | OCR（`yiuk-vision-test`，GDI 画字，不读桌面） | `zh-Hans-CN`、2 行、**29 ms**；归一化后命中「收 藏」与 `Settings`，词框并集落在画字位置 `(32,49) 78×39` |
 | OCR 端到端（`yiuk-click-target-test`，`source=ocr` + `region`） | 中文按钮「收藏 首页 设置」被 OCR 读到并点中：`source=ocr`、`clicks[5]==1`，其余按钮 0 次 |
+| 发布包 0.1.9 | `Release/YiukDeviceAssist-0.1.9-win64`（82 MB，目录）+ zip（35.7 MB）+ sha256；在**不含 Qt/MinGW 的 PATH** 下启动成功，标题 `Yiuk Device Assist 0.1.9`，`data` 就地创建 |
 | 绿色化 | `data\` 内出现配置/身份/`screenshots\`/`tmp\`；`data\tmp` 可见正在执行的 `.ps1`；C 盘旧目录不再写入 |
 
 ## 6. 踩过的坑（改输入/视觉前必读）
@@ -208,22 +218,21 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 | 非原生 Win32 目标（Qt/WPF）的 UIA 坐标 | 已验证 Qt 目标上报逻辑像素（见 §6.11），未做修正 |
 | 多显示器 / 混合 DPI / 负原点 | 未验证（P5） |
 | 模板管理（`vision.save_template`）、ROI 缓存 | 未实现（P5） |
-| Windows CI + OpenCV 静态构建缓存 | 未做（P6）；本机 exe 因 OpenCV 增加 ~5.7MB |
-| 本机 bridge 异步化 | 未做（P1 剩余，仅影响无平台 demo 后端） |
+| Windows CI | 已加 `windows-qt` job（Qt 6.11.1 + MinGW + OpenCV 4.12 缓存 + ctest），**还没在 GitHub 上跑绿过** |
+| 安装器（ISCC）重打 / 安装卸载回归 | 未做（绿色 zip 已重打，见 §5） |
 | UIA 命中率/耗时三场景实测 | 未做（探针只测了遍历耗时；空文档 0 节点约 320ms） |
 | 平台已知薄弱点 #3/#4/#5/#7/#8/#11 | 未修，见 `key-architecture.md` §4 |
 
 ## 8. 下一步（按顺序）
 
-1. **P5**：`vision.save_template`（从快照裁剪，配额与路径校验）、多显示器/混合 DPI、ROI 缓存；
+1. **P6 收尾**：把 `windows-qt` CI 第一次跑绿（安装器可选）、Edge→抖音回归需设备所有者授权。
+2. **P5**：`vision.save_template`（从快照裁剪，配额与路径校验）、多显示器/混合 DPI、ROI 缓存；
    OCR 目前每次全帧识别（2560×1600 约 200–400ms），可以先按 `region` 裁剪再识别。
-2. **P6**：Windows CI（Qt + OpenCV 固定版本缓存）、绿色包/安装器体积与启动验证、`Release\` 重新打包。
 
 ## 9. 交接检查清单
 
 - [ ] `gofmt -l .` 空、`go vet ./...` 干净、`go test ./...` 全绿
-- [ ] `yiuk-vision-test` / `yiuk-input-test` / `yiuk-nativeops-test` 输出 `OK`；
-      `yiuk-click-target-test` 输出 `CLICKTARGET OK`（会动鼠标）
+- [ ] `ctest --output-on-failure` 在 `qt-client\build-qt` 里 5/5 通过（真机项拿不到前台窗口时算 SKIP）
 - [ ] 互操作程序 `INTEROP EXIT=0`；平台审计有 6 条 `native_submitted`（`screen.capture` ×2、`screen.release`、`vision.find`、`vision.click_target` ×2）
 - [ ] 客户端启动后 `data\` 里有配置与身份，`%LOCALAPPDATA%` 旧目录不再被写
 - [ ] 没有残留的 `platform-core` / `platform-gateway` / `dev-redis` / `yiuk-input-fixture` 进程
