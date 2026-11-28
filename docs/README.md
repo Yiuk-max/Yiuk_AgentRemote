@@ -8,7 +8,7 @@
 | [视觉与鼠标目标](mcp-vision-mouse-plan.md) | 文字/图像定位、平滑移动、拖动与模板管理的目标及验收 |
 | [视觉与鼠标实施计划](mcp-vision-mouse-implementation-plan.md) | 代码差距、原生通道、快照统一、P0–P6 执行清单与门禁 |
 | [视觉/OCR P0 基线](../spike/vision/README.md) | 可复现的素材、基准、探针与实测结论（含 MinGW 工具链坑） |
-| [交接文档](handoff.md) | 当前进度、未提交改动、验证命令、下一步与未验证项 |
+| [交接文档](handoff.md) | 当前进度、行为契约、代码地图、验证命令、验收记录、坑、未做项与下一步 |
 | [Agent 询问设备用户](user-questions.md) | `ask_user` / `get_user_reply` 的状态语义 |
 | [开发与构建](development.md) | 环境、构建、测试、打包、部署、提交前检查 |
 | [第三方组件](third-party.md) | 发布包里带了什么、许可证、版本钉在哪儿 |
