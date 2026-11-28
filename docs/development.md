@@ -71,6 +71,12 @@ questions.cpp               询问框接线
 activity.cpp                活动面板入口：选择当前会话并同步给子进程
 activitypanel.{h,cpp}       面板子进程的启动、关闭与 stdin 协议
 panel/                      yiuk-activity-panel：原生 Win32 分层窗口（不依赖 Qt）
+vision/                     yiuk-vision 静态库：screengrab（GDI 抓屏/布局/缩放/编码）、
+                            snapshotstore（screenshot_id 与临时文件）、sessionlimiter
+                            （会话级互斥 + 500ms）、devicegate（进程级抓屏/输入互斥）、
+                            visionservice（原生抓屏唯一入口 + 临时文件回收）
+input/                      yiuk-input 静态库：SendInput 绝对坐标、确定性 ease-in-out 轨迹、
+                            按键安全释放（ButtonGuard）、点击前后的局部变化采样
 powershellrunner.{h,cpp}    PowerShell 任务执行
 apphelpers glyph titlebar   控件工厂、路径、图标、标题栏
 platformclient localbridge securestore   协议客户端、本机 bridge、DPAPI
@@ -115,6 +121,37 @@ qt-client/build-qt/yiuk-mcp.exe              MCP stdio 适配器（Go）
 go test ./...
 go test -race ./internal/platform/... ./internal/platformclient/...
 ```
+
+视觉/OCR 的 P0 基线（不注入键鼠、不需要平台）：
+
+```sh
+cmake -S spike/vision -B spike/vision/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build spike/vision/build
+spike/vision/build/make_fixtures.exe spike/vision/out/fixtures
+spike/vision/build/vision_selftest.exe          # NCC 参考实现一致性
+spike/vision/build/vision_bench.exe --manifest spike/vision/out/fixtures/manifest.json --out spike/vision/out/p0.json
+spike/vision/build/probe_uia.exe                # UIA COM 耗时
+spike/vision/build/probe_screen.exe 20          # GDI 抓屏/灰度/缩放耗时
+spike/vision/build/probe_winrt_ocr.exe          # OCR 语言包与识别耗时
+```
+
+细节、实测数据与已知工具链坑见 [`spike/vision/README.md`](../spike/vision/README.md)。
+MinGW 下调用 WinRT/UIA 需要 `-fno-devirtualize`（见[本机开发环境](local-dev.md) §6）。
+
+Qt 原生操作分发器与视觉内核（不需要平台，控制台运行）：
+
+```sh
+qt-client/build-qt/yiuk-nativeops-test.exe      # 能力/信封/取消/超时/超大结果/抓屏几何
+qt-client/build-qt/yiuk-vision-test.exe         # 快照回收/坐标基准/节流/缩放/编码 + 一次真实抓屏
+qt-client/build-qt/yiuk-input-test.exe          # 轨迹端点/单调性/可复现、变化判据、采样区域
+```
+
+`take_screenshot` 有两条实现路径：设备客户端上报 `screen.capture` 能力时走原生
+（客户端抓屏 + 落盘，MCP 用既有 `download_file` 取图，结果里 `capture_source=native`），
+否则回退到 `scripts.go` 里的 PowerShell 抓屏（`capture_source=script`）。原生路径的临时截图
+落在设备 `%LOCALAPPDATA%/Yiuk/DeviceAssist/screenshots`：MCP 读完图片后调用原生操作
+`screen.release` 删掉这一份（失败只影响磁盘占用），另有"每会话最多 5 张 / 会话结束全删 /
+每次抓屏清掉 5 分钟前的残留"三重兜底。
 
 Qt↔Go 互操作（需先启动平台服务）：
 
@@ -342,6 +379,7 @@ docker run -d --name yiuk-gateway --network yiuk --restart unless-stopped -e YIU
 
 - 不提交真实密码、TLS 私钥或其他凭证。
 - 平台服务完全内存化，重启后临时密码、会话、任务全部失效。
+- 原生截图临时文件由客户端回收（每会话最多 5 张、会话结束全删），服务端不记录截图路径。
 - 终态的任务与传输记录按 `terminal_record_retain_sec`（默认 900 秒）回收，保留输出总量受 `terminal_output_retain_bytes`（默认 64 MiB）限制；回收后 `get_command_result` 对老任务返回 `TASK_NOT_FOUND`。会话记录不回收，关闭后仍可查状态。
 - 每套部署使用独立的随机 `player_password`，不要与其他服务复用。
 - 管理端口由防火墙限制为可信运维终端。

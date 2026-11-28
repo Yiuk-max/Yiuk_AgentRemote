@@ -64,9 +64,23 @@
 | `auth_rate_per_min` / `register_rate_per_min` | 30 | 每 IP 每分钟认证 / 注册尝试 |
 | `observer_slow_client_buf` | 64 | 每连接发送队列长度 |
 | `command_max_len` / `working_directory_max_len` / `identifier_max_len` | 32 KiB / 4 KiB / 128 | 输入边界 |
+| `native_argument_max_bytes` | 128 KiB | 原生操作 `arguments` 上限（且 ≤ `max_frame_bytes / 2`） |
 | `unused_device_release_sec` / `offline_device_keep_sec` | 600 / 24h | 设备槽释放 / 离线保留 |
 | `terminal_record_retain_sec` / `terminal_output_retain_bytes` | 900 / 64 MiB | 终态记录与输出保留 |
 | `transfer.MaxChunkBytes` / `MaxChunks` | 96 KiB（解码后）/ 4096 | 单块与块数 |
+
+抓屏节流有两份实现，都不同时构成授权：客户端原生路径用
+`qt-client/src/vision/sessionlimiter.cpp`（会话级互斥 + 500ms 最小间隔，排队可取消），
+服务端 legacy 脚本路径用 `internal/agenttools/desktop_state.go` 里的同名规则。
+客户端另有进程级 `vision/devicegate.{h,cpp}`：抓屏与输入动作互斥，多会话共用一台设备时不会同时抢 CPU。
+原生截图的临时文件由客户端回收：每会话最多保留 5 张、会话结束全删、MCP 读完图片后发
+`screen.release` 删掉这一份，另外每次抓屏会清掉 5 分钟前不再被引用的残留文件。
+
+原生操作帧（`execute_native`）只接受白名单里的 `operation`（`screen.capture`、`screen.release`、
+`input.click`、`input.move`、`input.drag`、`vision.find`、`vision.click_target`、`vision.save_template`），
+与 `execute_command` 共用会话授权、任务限额、`request_id` 幂等与取消。设备自报的
+`capabilities` 只是**可用性声明**：它决定"这个操作能不能用"，绝不构成授权——
+授权仍然只由已批准的会话决定（不变式 4、5）。
 
 超限时**优先拒绝而不是排队**，错误码点名是哪个上限（`FILE_TOO_LARGE` / `TASK_LIMIT` / `TRANSFER_LIMIT` / `OUTPUT_TRUNCATED`）。
 
@@ -83,7 +97,7 @@
 | 5 | 上传无流控 | `platformclient.handleUploadFile` 一次性发完全部分块 | 32 MiB = 512 帧灌进深度 64 的队列，设备稍慢被判 `slow_client` 断开，重连后分块静默丢失 |
 | 7 | 设备连接可当 operator 发起会话 | `core.handleRequestSession` 只挡了“连自己” | 被攻破的设备客户端可以连别的设备 |
 | 8 | 输出截断后重复发最后一帧 | `core.handleCommandOutput` | 靠客户端 `sequence` 去重才没出错；第三方客户端会重复渲染 |
-| 9 | 操作者客户端单飞 | `platformclient.Client` 整个流式请求持 `requestMu` | 并发工具调用互相阻塞到超时；长任务应改用 `execute_command` + `get_command_result` |
+| 9 | ~~操作者客户端单飞~~（已修） | `platformclient/dispatch.go`：单读者 + `correlation_id → 等待通道` | 并发工具调用不再互相排队；写帧仍由 `writeMu` 串行，建连由 `connectMu` 单飞 |
 | 11 | 分流没有健康检查 | 部署层（DNAT 轮询） | 网关挂掉后新连接仍可能被分过去，只能靠客户端重连；多网关故障恢复慢一拍 |
 
 ## 5. 关联文档

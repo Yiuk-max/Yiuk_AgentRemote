@@ -17,6 +17,13 @@
 - **每个工具单次 ≤30 秒**。等待参数（`wait_seconds` / `timeout_seconds` / `wait_for_approval_seconds`）上限统一 25 秒；更久的等待由 Agent 多次调用。
 - **坐标基于最近一次截图**。`take_screenshot` 返回 12 位 `screenshot_id`；`click` / `move_mouse` 带上它可避免用过期基准，不匹配返回 `STALE_SCREENSHOT`。
 - **设备可以用名字指定**。`device_id` 或 `device_name` 二选一；name 先精确（大小写不敏感）再包含匹配，命中多个返回 `DEVICE_AMBIGUOUS` 和候选。平台是内存态，重启后 id 会变，所以名字更稳。
+- **抓屏与鼠标操作优先原生通道**。`take_screenshot` / `click` / `move_mouse` 在设备上报对应能力
+  （`screen.capture` / `input.click` / `input.move`）时由客户端执行，不再启动 PowerShell；
+  不可用时回退脚本。结果里的 `capture_source` / `input_source` 说明这次走了哪条路径。
+- **`take_screenshot` 优先原生通道**。设备上报 `screen.capture` 能力时由客户端抓屏并落盘，
+  MCP 用既有的 `download_file` 取图；不可用（旧客户端 / 本地 bridge）才回退 PowerShell 脚本。
+  结果里的 `capture_source`（`native` / `script`）说明这次走了哪条路径，返回字段与
+  `screenshot_id` 语义不变。
 - **错误自带现场**。失败回复带 `hint`（下一步建议）和 `data.devices`（最多 20 台在线设备）。
 - **schema 是唯一校验来源**。`validateInput` 直接把 `InputSchema` 交给 JSON Schema 校验器，不再手写一遍约束。
 - **分发走注册表**。agenttools 分本地工具（`localTools`）、组合工具（`composedTools`）、后端工具（`BackendTools()`）三层；`TestEveryToolHasExactlyOneHandler` 与 `TestEveryBackendToolHasAHandler` 拦“加了工具忘实现”。

@@ -72,6 +72,7 @@ E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-device-assist.exe
   sessions.json           会话与任务历史（删掉可复位「会话记录」页）
   activity-panel.state    活动面板位置尺寸（删掉面板回到屏幕居中默认大小）
   downloads\              远端文件默认落盘目录
+  screenshots\            原生抓屏的临时截图（每会话最多 5 张，会话结束自动删除）
 ```
 
 旧的 `%APPDATA%\Yiuk\DeviceAssist\` 仍会被读取，本机 `device.json`（设备码）还在那边：`{"device_id":"556604822"}`。
@@ -171,7 +172,16 @@ $h = (Get-Process yiuk-activity-panel).MainWindowHandle
 3. **PowerShell 5.1 按 ANSI 读无 BOM 的 .ps1**：脚本里出现中文会变成乱码字符串，进而把参数传给子进程也一起坏。临时脚本要么只写 ASCII，要么存成 UTF-8 with BOM；给面板传中文参数建议走上面 §5.3 的写法。
 4. **125% 缩放**：客户端与活动面板都是 Per-Monitor V2 DPI 感知，按物理像素工作；从 PowerShell（DPI 未感知）取到的窗口矩形是虚拟化坐标，`CopyFromScreen` 抓到的是 2048×1280 的重采样桌面，像素级核对要按 `×1.25` 换算回物理坐标。
 5. **`*.exe` / `*.dll` / `*.log` / `*.ps1` / `tmp-*` / `/release/` 都在 `.gitignore` 里**：临时脚本别丢在仓库根目录，否则会被静默忽略。
-6. **Qt 构建依赖 `go`**：`go` 不在 `PATH` 时 CMake 只告警，`yiuk-mcp.exe` 不会生成，发布包里就会缺文件。
+6. **MinGW + WinRT/UIA 的虚调用坑**：GCC 13.1 在 `-O2/-O3` 会把“声明为纯虚的 WinRT/UIA 接口调用”
+   反优化成 `__cxa_pure_virtual`，运行时报 `0xC0000005` 且栈看起来是坏的（gdb 只给一个模块基址）。
+   给相关目标加 `-fno-devirtualize`，或按 vtable 索引显式调用；`spike/vision/src/probe_winrt_ocr.cpp`
+   是可复现的例子。另外 Windows SDK 的 `winrt/*.h` **不能**直接在 MinGW 下编译
+   （`Windows.Foundation.h` 与 `windows.foundation.h` 在大小写不敏感的文件系统上互相覆盖），
+   需要自己按 ABI 声明接口，IID 与 vtable 顺序从 SDK 头里抄。
+7. **视觉 P0 的复现目录**：`spike/vision/`（`out/`、`third_party/` 都不进仓库）。
+   OpenCV 静态构建产物在 `spike/vision/third_party/install-opencv/x64/mingw/staticlib`，
+   `-DOpenCV_DIR` 指向它即可；构建约 1.5 分钟。
+8. **Qt 构建依赖 `go`**：`go` 不在 `PATH` 时 CMake 只告警，`yiuk-mcp.exe` 不会生成，发布包里就会缺文件。
 
 ## 7. 复位与清理
 
@@ -181,6 +191,9 @@ Remove-Item "$env:LOCALAPPDATA\Yiuk\DeviceAssist\activity-panel.state"
 
 # 复位会话记录与连接状态
 Remove-Item "$env:LOCALAPPDATA\Yiuk\DeviceAssist\sessions.json"
+
+# 清掉原生抓屏残留的临时截图
+Remove-Item "$env:LOCALAPPDATA\Yiuk\DeviceAssist\screenshots" -Recurse -Force -ErrorAction SilentlyContinue
 
 # 结束残留进程
 Get-Process yiuk-device-assist,yiuk-activity-panel,yiuk-mcp -ErrorAction SilentlyContinue | Stop-Process -Force
