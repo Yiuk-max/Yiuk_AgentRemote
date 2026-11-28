@@ -12,7 +12,7 @@ func TestRegisterVerifyExpireAndRevoke(t *testing.T) {
 	password := "0123456789abcdef0123456789abcdef"
 
 	info, generated, err := m.Register(Registration{
-		ID: "device-1", Name: "desk", Platform: "windows", TemporaryPass: password, Mode: ModeApproval,
+		ID: "device-1", Name: "desk", Platform: "windows", TemporaryPass: password,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -20,7 +20,7 @@ func TestRegisterVerifyExpireAndRevoke(t *testing.T) {
 	if generated != "" {
 		t.Fatal("provided password should not be echoed")
 	}
-	if info.Mode != ModeApproval || info.PasswordVersion != 1 {
+	if info.PasswordVersion != 1 {
 		t.Fatalf("unexpected info: %#v", info)
 	}
 
@@ -96,14 +96,14 @@ func TestUpdatePasswordRejectsStaleVersion(t *testing.T) {
 	if _, _, err := m.Register(Registration{ID: "d", TemporaryPass: "0123456789abcdef0123456789abcdef", PasswordVersion: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := m.UpdatePassword("d", "fedcba9876543210fedcba9876543210", 2, ModeDirect, time.Minute); !errors.Is(err, ErrStaleVersion) {
+	if _, _, err := m.UpdatePassword("d", "fedcba9876543210fedcba9876543210", 2, time.Minute); !errors.Is(err, ErrStaleVersion) {
 		t.Fatalf("got %v, want ErrStaleVersion", err)
 	}
-	info, _, err := m.UpdatePassword("d", "fedcba9876543210fedcba9876543210", 3, ModeDirect, time.Minute)
+	info, _, err := m.UpdatePassword("d", "fedcba9876543210fedcba9876543210", 3, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.PasswordVersion != 3 || info.Mode != ModeDirect {
+	if info.PasswordVersion != 3 {
 		t.Fatalf("unexpected updated info: %#v", info)
 	}
 }

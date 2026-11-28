@@ -46,7 +46,7 @@ func main() {
 	// 配置压到最小；注册限流也压到 4，便于触发一次 RATE_LIMITED。
 	cfg := config.Default()
 	cfg.AllowInsecure = true
-	cfg.PlayerPassword = playerPassword
+	cfg.OperatorPassword = playerPassword
 	cfg.MaxDevices = 16
 	cfg.RegisterRatePerMin = 4
 	cfg.UnusedDeviceReleaseSec = 1
@@ -132,7 +132,7 @@ func main() {
 	limited.auth(playerPassword)
 	limited.send(protocol.Message{
 		Type: protocol.TypeRegisterDevice, DeviceID: "444555666", DeviceName: "rate-limited",
-		Platform: "windows", Mode: protocol.ModeApproval, TemporaryPassword: deviceA,
+		Platform: "windows", TemporaryPassword: deviceA,
 	})
 	code := limited.recvError()
 	expect(code == "RATE_LIMITED", "registration over quota should be RATE_LIMITED, got %q", code)
@@ -158,14 +158,14 @@ func countDevices(operator *client) int {
 }
 
 func (c *client) auth(password string) {
-	c.send(protocol.Message{Type: protocol.TypeAuthenticatePlayer, IdentityType: "player", PlayerPassword: password})
+	c.send(protocol.Message{Type: protocol.TypeAuthenticateOperator, IdentityType: "player", OperatorPassword: password})
 	c.recv(protocol.TypeAuthenticated)
 }
 
 func (c *client) register(id, password string) protocol.Message {
 	c.send(protocol.Message{
 		Type: protocol.TypeRegisterDevice, DeviceID: id, DeviceName: "smoke-device",
-		Platform: "windows", Mode: protocol.ModeApproval, TemporaryPassword: password,
+		Platform: "windows", TemporaryPassword: password,
 	})
 	return c.recv(protocol.TypeDeviceRegistered)
 }

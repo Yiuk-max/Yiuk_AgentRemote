@@ -79,8 +79,7 @@ QWidget *MainWindow::createHomePage() {
         }
         temporaryPassword = generateTemporaryPassword(32);
         ++passwordVersion;
-        const QString mode = platform->config().mode.isEmpty() ? QStringLiteral("approval") : platform->config().mode;
-        platform->updateTemporaryPassword(temporaryPassword, passwordVersion, mode, platform->config().ttlSeconds);
+        platform->updateTemporaryPassword(temporaryPassword, passwordVersion, platform->config().ttlSeconds);
         showStatusMessage("正在手动更新连接密码", 1800);
     });
 

@@ -1,10 +1,5 @@
 package core
 
-// 这里负责把消息发给接入层（gateway）投递出去，或者把响应回显给请求方
-
-// 出站消息统一走 send：编码一次，交给 Link 投递。
-// 投递失败（连接已断、队列满被踢）返回 false，调用方按“设备不可用”处理，
-// 不谎报成功。
 import (
 	"agentremote/internal/platform/audit"
 	"agentremote/internal/platform/protocol"
@@ -12,7 +7,9 @@ import (
 	"agentremote/internal/platform/session"
 )
 
-// send 把一帧消息编码并交给接入层投递。
+// 出站消息统一走 send：编码一次，交给 Link 投递。
+// 投递失败（连接已断、队列满被踢）返回 false，调用方按“设备不可用”处理，
+// 不谎报成功。
 func (s *Service) send(connectionID string, message protocol.Message) bool {
 	if connectionID == "" || s.link == nil {
 		return false

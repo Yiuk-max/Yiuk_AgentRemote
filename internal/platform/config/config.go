@@ -1,6 +1,6 @@
 // config 包定义了内存中平台服务器的配置
 // 平台服务器使用独立配置节，便于按部署隔离玩家密码、端口和限制。
-// YAML → 结构体 + ApplyDefaults/Validate + 派生 TTL 方法
+// YAML → 结构体（先铺默认值再覆盖）+ Validate + 派生 TTL 方法
 package config
 
 import (
@@ -15,11 +15,11 @@ import (
 
 const examplePassword = "REPLACE_WITH_A_LONG_RANDOM_PLAYER_SECRET"
 
-// MinPlayerPasswordLen 是 player_password 的最小长度
+// MinOperatorPasswordLen 是操作者密码（配置键 player_password）的最小长度
 // validation.允许短于推荐长度的密码，但在启动时记录为警告
 const (
-	MinPlayerPasswordLen         = 8
-	RecommendedPlayerPasswordLen = 16
+	MinOperatorPasswordLen         = 8
+	RecommendedOperatorPasswordLen = 16
 )
 
 // 服务器配置.所有字段都映射到 YAML 文件的 `platform:` 部分
@@ -31,7 +31,8 @@ type Config struct {
 	// 是否允许明文传输TCP.测试可以明文方便调试。生产环境应使用TLS。
 	AllowInsecure bool `yaml:"allow_insecure"`
 
-	PlayerPassword string `yaml:"player_password"`
+	// 配置键沿用 player_password（已部署的 configs 不能因为改名而失效）。
+	OperatorPassword string `yaml:"player_password"`
 
 	MaxConnections       int `yaml:"max_connections"`         // 服务器最大连接数
 	MaxDevices           int `yaml:"max_devices"`             // 服务器最大设备数
@@ -87,184 +88,94 @@ type Config struct {
 // 硬编码的配置默认值
 func Default() Config {
 	return Config{
-		Listen:                 ":25664",
-		MaxConnections:         1024,
-		MaxDevices:             1024,
-		MaxSessions:            2048,
-		MaxSessionsPerDevice:   8,
-		MaxTasksPerSession:     2,
-		SessionTimeoutSec:      600,
-		ApprovalTimeoutSec:     120,
-		TempPasswordTTLSec:     600,
-		HeartbeatTimeoutSec:    45,
-		HandshakeTimeoutSec:    10,
-		MaxOutputBytes:         2 << 20,  //2 MiB
-		MaxDownloadBytes:       32 << 20, //32 MiB
-		MaxUploadBytes:         32 << 20,
-		MaxFrameBytes:          256 << 10, //256 KiB
-		AuthRatePerMin:         30,
-		RegisterRatePerMin:     30,
-		UnusedDeviceReleaseSec: 600,
-		TemporaryPasswordMin:   60,
-		TemporaryPasswordMax:   24 * 3600, //24h
-		OfflineDeviceKeepSec:   24 * 3600,
-		CloseReasonMaxLen:      256,
-		PurposeMaxLen:          512,
-		CommandMaxLen:          32768, //32 KiB
-		WorkingDirMaxLen:       4096,  //4 KiB
-		IdentifierMaxLen:       128,
-		ObserverSlowClientBuf:  64,
-		LogFile:                "platform.log",
-		CoreGRPCListen:         ":25670",
-		CoreGRPCAddr:           "127.0.0.1:25670",
-		GatewayGRPCListen:      ":25671",
-		GatewayGRPCAddr:        "127.0.0.1:25671",
-		GatewayID:              "gw-1",
-		RedisAddr:              "127.0.0.1:6379",
-		RedisDB:                0,
-		RouteTTLSec:            30,
-		TerminalRecordRetainSec:     900,      // 15 分钟，够 Agent 回来取结果
-		TerminalOutputRetainBytes:   64 << 20, // 常驻输出上限 64 MiB
-	}
-}
-
-// 用默认值填充0值字段。必须在 Validate 之前调用。
-func (c *Config) ApplyDefaults() {
-	d := Default()
-	if c.Listen == "" {
-		c.Listen = d.Listen
-	}
-	if c.MaxConnections == 0 {
-		c.MaxConnections = d.MaxConnections
-	}
-	if c.MaxDevices == 0 {
-		c.MaxDevices = d.MaxDevices
-	}
-	if c.MaxSessions == 0 {
-		c.MaxSessions = d.MaxSessions
-	}
-	if c.MaxSessionsPerDevice == 0 {
-		c.MaxSessionsPerDevice = d.MaxSessionsPerDevice
-	}
-	if c.MaxTasksPerSession == 0 {
-		c.MaxTasksPerSession = d.MaxTasksPerSession
-	}
-	if c.SessionTimeoutSec == 0 {
-		c.SessionTimeoutSec = d.SessionTimeoutSec
-	}
-	if c.ApprovalTimeoutSec == 0 {
-		c.ApprovalTimeoutSec = d.ApprovalTimeoutSec
-	}
-	if c.TempPasswordTTLSec == 0 {
-		c.TempPasswordTTLSec = d.TempPasswordTTLSec
-	}
-	if c.HeartbeatTimeoutSec == 0 {
-		c.HeartbeatTimeoutSec = d.HeartbeatTimeoutSec
-	}
-	if c.HandshakeTimeoutSec == 0 {
-		c.HandshakeTimeoutSec = d.HandshakeTimeoutSec
-	}
-	if c.MaxOutputBytes == 0 {
-		c.MaxOutputBytes = d.MaxOutputBytes
-	}
-	if c.MaxDownloadBytes == 0 {
-		c.MaxDownloadBytes = d.MaxDownloadBytes
-	}
-	if c.MaxUploadBytes == 0 {
-		c.MaxUploadBytes = d.MaxUploadBytes
-	}
-	if c.MaxFrameBytes == 0 {
-		c.MaxFrameBytes = d.MaxFrameBytes
-	}
-	if c.AuthRatePerMin == 0 {
-		c.AuthRatePerMin = d.AuthRatePerMin
-	}
-	if c.RegisterRatePerMin == 0 {
-		c.RegisterRatePerMin = d.RegisterRatePerMin
-	}
-	if c.UnusedDeviceReleaseSec == 0 {
-		c.UnusedDeviceReleaseSec = d.UnusedDeviceReleaseSec
-	}
-	if c.TemporaryPasswordMin == 0 {
-		c.TemporaryPasswordMin = d.TemporaryPasswordMin
-	}
-	if c.TemporaryPasswordMax == 0 {
-		c.TemporaryPasswordMax = d.TemporaryPasswordMax
-	}
-	if c.OfflineDeviceKeepSec == 0 {
-		c.OfflineDeviceKeepSec = d.OfflineDeviceKeepSec
-	}
-	if c.CloseReasonMaxLen == 0 {
-		c.CloseReasonMaxLen = d.CloseReasonMaxLen
-	}
-	if c.PurposeMaxLen == 0 {
-		c.PurposeMaxLen = d.PurposeMaxLen
-	}
-	if c.CommandMaxLen == 0 {
-		c.CommandMaxLen = d.CommandMaxLen
-	}
-	if c.WorkingDirMaxLen == 0 {
-		c.WorkingDirMaxLen = d.WorkingDirMaxLen
-	}
-	if c.IdentifierMaxLen == 0 {
-		c.IdentifierMaxLen = d.IdentifierMaxLen
-	}
-	if c.ObserverSlowClientBuf == 0 {
-		c.ObserverSlowClientBuf = d.ObserverSlowClientBuf
-	}
-	if c.CoreGRPCListen == "" {
-		c.CoreGRPCListen = d.CoreGRPCListen
-	}
-	if c.CoreGRPCAddr == "" {
-		c.CoreGRPCAddr = d.CoreGRPCAddr
-	}
-	if c.GatewayGRPCListen == "" {
-		c.GatewayGRPCListen = d.GatewayGRPCListen
-	}
-	if c.GatewayGRPCAddr == "" {
-		c.GatewayGRPCAddr = d.GatewayGRPCAddr
-	}
-	if c.GatewayID == "" {
-		c.GatewayID = d.GatewayID
-	}
-	if c.RedisAddr == "" {
-		c.RedisAddr = d.RedisAddr
-	}
-	if c.RouteTTLSec == 0 {
-		c.RouteTTLSec = d.RouteTTLSec
-	}
-	if c.TerminalRecordRetainSec == 0 {
-		c.TerminalRecordRetainSec = d.TerminalRecordRetainSec
-	}
-	if c.TerminalOutputRetainBytes == 0 {
-		c.TerminalOutputRetainBytes = d.TerminalOutputRetainBytes
-	}
-	if c.LogFile == "" {
-		c.LogFile = d.LogFile
+		Listen:                    ":25664",
+		MaxConnections:            1024,
+		MaxDevices:                1024,
+		MaxSessions:               2048,
+		MaxSessionsPerDevice:      8,
+		MaxTasksPerSession:        2,
+		SessionTimeoutSec:         600,
+		ApprovalTimeoutSec:        120,
+		TempPasswordTTLSec:        600,
+		HeartbeatTimeoutSec:       45,
+		HandshakeTimeoutSec:       10,
+		MaxOutputBytes:            2 << 20,  //2 MiB
+		MaxDownloadBytes:          32 << 20, //32 MiB
+		MaxUploadBytes:            32 << 20,
+		MaxFrameBytes:             256 << 10, //256 KiB
+		AuthRatePerMin:            30,
+		RegisterRatePerMin:        30,
+		UnusedDeviceReleaseSec:    600,
+		TemporaryPasswordMin:      60,
+		TemporaryPasswordMax:      24 * 3600, //24h
+		OfflineDeviceKeepSec:      24 * 3600,
+		CloseReasonMaxLen:         256,
+		PurposeMaxLen:             512,
+		CommandMaxLen:             32768, //32 KiB
+		WorkingDirMaxLen:          4096,  //4 KiB
+		IdentifierMaxLen:          128,
+		ObserverSlowClientBuf:     64,
+		LogFile:                   "platform.log",
+		CoreGRPCListen:            ":25670",
+		CoreGRPCAddr:              "127.0.0.1:25670",
+		GatewayGRPCListen:         ":25671",
+		GatewayGRPCAddr:           "127.0.0.1:25671",
+		GatewayID:                 "gw-1",
+		RedisAddr:                 "127.0.0.1:6379",
+		RedisDB:                   0,
+		RouteTTLSec:               30,
+		TerminalRecordRetainSec:   900,      // 15 分钟，够 Agent 回来取结果
+		TerminalOutputRetainBytes: 64 << 20, // 常驻输出上限 64 MiB
 	}
 }
 
 // Load 读取并验证包含 `platform:` 部分的 YAML 文件。
+//
+// 默认值先铺满结构体，再让 YAML 覆盖：这样新增字段只需改 Default()，
+// 不会出现「加了字段但忘了在填充函数里补一行」的漏配。
 func Load(path string) (Config, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, err
 	}
+	// 先解成节点，才能区分「没有 platform: 段」和「有但全是空值」。
+	var document yaml.Node
+	if err := yaml.Unmarshal(b, &document); err != nil {
+		return Config{}, fmt.Errorf("parse platform config: %w", err)
+	}
+	if !hasMappingKey(&document, "platform") {
+		return Config{}, errors.New("platform config is missing the platform section")
+	}
+
+	c := Default()
 	var file struct {
 		Platform *Config `yaml:"platform"`
 	}
-	if err := yaml.Unmarshal(b, &file); err != nil { // 解析 YAML
+	file.Platform = &c
+	if err := document.Decode(&file); err != nil {
 		return Config{}, fmt.Errorf("parse platform config: %w", err)
 	}
-	if file.Platform == nil { // 检查是否存在 platform 部分
-		return Config{}, errors.New("platform config is missing the platform section")
-	}
-	c := *file.Platform
-	c.ApplyDefaults()                    // 填充默认值
-	if err := c.Validate(); err != nil { // 验证配置
+	if err := c.Validate(); err != nil {
 		return Config{}, err
 	}
 	return c, nil
+}
+
+// hasMappingKey 报告顶层文档里是否真的有这个键。
+func hasMappingKey(document *yaml.Node, key string) bool {
+	root := document
+	if root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
+		root = root.Content[0]
+	}
+	if root.Kind != yaml.MappingNode {
+		return false
+	}
+	for index := 0; index+1 < len(root.Content); index += 2 {
+		if root.Content[index].Value == key {
+			return true
+		}
+	}
+	return false
 }
 
 // ----------------------------拒绝不安全和不一致的字段-----------------------------
@@ -279,11 +190,11 @@ func (c Config) Validate() error {
 	if (c.TLSCert == "") != (c.TLSKey == "") {
 		return errors.New("tls_cert and tls_key must be set together")
 	}
-	if invalidPassword(c.PlayerPassword) {
+	if invalidPassword(c.OperatorPassword) {
 		return errors.New("player_password must be a non-example secret")
 	}
-	if len(c.PlayerPassword) < MinPlayerPasswordLen {
-		return fmt.Errorf("player_password must be at least %d characters", MinPlayerPasswordLen)
+	if len(c.OperatorPassword) < MinOperatorPasswordLen {
+		return fmt.Errorf("player_password must be at least %d characters", MinOperatorPasswordLen)
 	}
 	if c.MaxConnections < 1 || c.MaxConnections > 1_000_000 {
 		return errors.New("max_connections must be between 1 and 1000000")

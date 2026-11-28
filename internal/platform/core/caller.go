@@ -19,6 +19,8 @@ type Role string
 
 const (
 	RoleAnonymous Role = ""
-	RolePlayer    Role = "player"
-	RoleDevice    Role = "device"
+	// 线上的角色字面量仍是 "player"（旧客户端与路由表按它判断），
+	// 代码里统一叫 operator，两者指同一个身份。
+	RoleOperator Role = "player"
+	RoleDevice   Role = "device"
 )

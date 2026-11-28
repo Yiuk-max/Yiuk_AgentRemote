@@ -11,7 +11,15 @@ import (
 	"agentremote/internal/platform/transfer"
 )
 
-// 申请会话
+// handleRequestSession 申请一个会话：带当前临时密码进来的直接批准，不带则转审批。
+//
+// 授权模型只有一条：**临时密码就是授权凭证**。设备所有者把密码交给谁，
+// 就等于允许谁在这个密码的有效期内建立会话；没有密码的申请转成审批请求，
+// 由所有者在客户端上点批准。这里没有“设备侧开关”之类的第二道闸，
+// 限制风险靠的是密码 TTL、活动面板可见性和所有者随时终止。
+//
+// TODO(薄弱点 #7，见 docs/key-architecture.md §4)：这里只挡了“设备请求自己”，
+// 没挡“设备连接当 operator 去请求别的设备”。
 func (s *Service) handleRequestSession(caller *Caller, message protocol.Message) error {
 	if err := s.validateID("device_id", message.DeviceID); err != nil {
 		return newProtocolError("INVALID_ARGUMENT", err.Error())
@@ -27,14 +35,14 @@ func (s *Service) handleRequestSession(caller *Caller, message protocol.Message)
 	if !ok {
 		return s.deviceProtocolError(device.ErrDeviceNotFound)
 	}
-	mode := device.ModeApproval
+	passwordVerified := false
 	if message.TemporaryPassword != "" {
 		info, err = s.devices.VerifyPassword(message.DeviceID, message.TemporaryPassword)
 		if err != nil {
 			s.audit.Warn("temporary_password_rejected", "device", audit.RedactID(message.DeviceID), "code", auditErrorCode(err))
 			return s.deviceProtocolError(err)
 		}
-		mode = device.ModeDirect
+		passwordVerified = true
 	}
 	deviceConnectionID, ok := s.devices.OnlineConnection(info.ID)
 	// 设备表里的在线连接可能是崩溃前残留的：直接问接入层这条连接还在不在。
@@ -50,19 +58,16 @@ func (s *Service) handleRequestSession(caller *Caller, message protocol.Message)
 		OperatorSource:       caller.RemoteAddr,
 		Purpose:              message.Purpose,
 		Permissions:          message.Permissions,
-		// Possessing the current temporary password explicitly authorizes direct mode;
-		// without it, create an approval request regardless of the target's configured mode.
-		Mode: mode,
+		PasswordVerified:     passwordVerified,
 	})
 	if err != nil {
 		return s.sessionProtocolError(err)
 	}
 	s.devices.AddSession(info.ID, sessionRecord.ID)
 	sessionInfo := protocolSessionInfo(sessionRecord)
-	s.audit.Event("session_created", "session", audit.RedactID(sessionRecord.ID), "device", audit.RedactID(sessionRecord.DeviceID), "mode", string(sessionRecord.Mode), "status", string(sessionRecord.Status))
+	s.audit.Event("session_created", "session", audit.RedactID(sessionRecord.ID), "device", audit.RedactID(sessionRecord.DeviceID), "status", string(sessionRecord.Status))
 
-	// The device must always learn that a session exists, even in direct mode,
-	// so its owner UI can show and stop it.
+	// 即使已经直接批准，设备也必须知道这个会话存在，否则所有者既看不到也停不掉。
 	if sessionRecord.Status == session.StatusPendingApproval {
 		s.send(sessionRecord.DeviceConnectionID, protocol.Message{
 			Type:      protocol.TypeSessionRequest,
@@ -83,7 +88,6 @@ func (s *Service) handleRequestSession(caller *Caller, message protocol.Message)
 	})
 }
 
-// 批准会话
 func (s *Service) handleApproveSession(caller *Caller, message protocol.Message) error {
 	if caller.Role != RoleDevice {
 		return newProtocolError("NOT_DEVICE", "only the target device can approve a session")
@@ -132,7 +136,6 @@ func (s *Service) handleApproveSession(caller *Caller, message protocol.Message)
 	})
 }
 
-// 拒绝会话
 func (s *Service) handleRejectSession(caller *Caller, message protocol.Message) error {
 	if caller.Role != RoleDevice {
 		return newProtocolError("NOT_DEVICE", "only the target device can reject a session")

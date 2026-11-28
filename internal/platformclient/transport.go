@@ -1,6 +1,11 @@
 package platformclient
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -12,11 +17,6 @@ import (
 	"agentremote/internal/agenttools"
 	"agentremote/internal/platform/protocol"
 	"agentremote/internal/platform/transport"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/hex"
 )
 
 // connectIfNeeded 复用现有连接，或建立认证连接并启动消息接收和心跳协程。
@@ -120,7 +120,7 @@ func (c *Client) dialAndAuthenticate() (transport.Conn, string, error) {
 		return nil, "", &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not reach platform: " + err.Error()}
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	authRequest := protocol.Message{Version: protocol.Version, BusinessType: protocol.BusinessAgentAssist, Type: protocol.TypeAuthenticatePlayer, IdentityType: "player", PlayerPassword: c.config.PlayerPassword}
+	authRequest := protocol.Message{Version: protocol.Version, BusinessType: protocol.BusinessAgentAssist, Type: protocol.TypeAuthenticateOperator, IdentityType: "player", OperatorPassword: c.config.OperatorPassword}
 	authData, err := c.codec.Encode(authRequest)
 	if err != nil || conn.WriteMessage(authData) != nil {
 		_ = conn.Close()

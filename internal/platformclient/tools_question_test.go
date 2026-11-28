@@ -1,20 +1,21 @@
 package platformclient_test
 
 import (
-	"agentremote/internal/agenttools"
-	"agentremote/internal/platform/protocol"
-	"agentremote/internal/platformclient"
 	"context"
 	"encoding/json"
 	"testing"
 	"time"
+
+	"agentremote/internal/agenttools"
+	"agentremote/internal/platform/protocol"
+	"agentremote/internal/platformclient"
 )
 
 func TestQuestionToolsRoundTrip(t *testing.T) {
 	address := startPlatform(t)
 	device := dialFakeDevice(t, address)
 	device.register("question-tools")
-	backend, err := platformclient.New(platformclient.Config{Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5})
+	backend, err := platformclient.New(platformclient.Config{Address: address, OperatorPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,8 +66,8 @@ func TestQuestionToolsRoundTrip(t *testing.T) {
 func TestWaitSecondsLongPolling(t *testing.T) {
 	address := startPlatform(t)
 	device := dialFakeDevice(t, address)
-	device.registerWithMode("wait-device", protocol.ModeApproval)
-	backend, err := platformclient.New(platformclient.Config{Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5})
+	device.register("wait-device")
+	backend, err := platformclient.New(platformclient.Config{Address: address, OperatorPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5})
 	if err != nil {
 		t.Fatal(err)
 	}

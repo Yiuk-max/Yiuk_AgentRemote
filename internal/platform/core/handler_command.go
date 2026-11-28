@@ -85,7 +85,10 @@ func (s *Service) handleExecuteCommand(caller *Caller, message protocol.Message)
 	})
 }
 
-// 处理命令执行输出
+// handleCommandOutput 处理设备回传的输出分块。
+//
+// TODO(薄弱点 #8，见 docs/key-architecture.md §4)：输出被截断后这里仍会重复
+// 下发最后一帧，目前只靠客户端的 sequence 去重才没出错；第三方客户端会重复渲染。
 func (s *Service) handleCommandOutput(caller *Caller, message protocol.Message) error {
 	// 校验-----------------------------------------------------
 	if caller.Role != RoleDevice {

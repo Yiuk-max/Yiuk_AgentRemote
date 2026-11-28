@@ -2,10 +2,10 @@ package platformclient
 
 import (
 	"context"
+	"encoding/json"
 
 	"agentremote/internal/agenttools"
 	"agentremote/internal/platform/protocol"
-	"encoding/json"
 )
 
 // handleListDevices 请求当前操作端可见的设备列表。

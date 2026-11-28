@@ -486,7 +486,6 @@ void PlatformClient::dispatchPlatformMessage(const QJsonObject &message) {
             {QStringLiteral("device_id"), config_.deviceId},
             {QStringLiteral("device_name"), config_.deviceName},
             {QStringLiteral("platform"), QStringLiteral("windows")},
-            {QStringLiteral("mode"), config_.mode},
             {QStringLiteral("temporary_password"), config_.temporaryPassword},
             {QStringLiteral("password_version"), config_.passwordVersion},
             {QStringLiteral("expires_at"), QDateTime::currentSecsSinceEpoch() + config_.ttlSeconds},
@@ -506,8 +505,6 @@ void PlatformClient::dispatchPlatformMessage(const QJsonObject &message) {
         const int previousPasswordVersion = config_.passwordVersion;
         if (!serverPassword.isEmpty())
             config_.temporaryPassword = serverPassword;
-        if (message.value(QStringLiteral("mode")).isString())
-            config_.mode = message.value(QStringLiteral("mode")).toString();
         if (message.value(QStringLiteral("password_version")).isDouble())
             config_.passwordVersion = message.value(QStringLiteral("password_version")).toInt();
         const bool serverRotatedPassword = !serverPassword.isEmpty() ||
@@ -518,8 +515,7 @@ void PlatformClient::dispatchPlatformMessage(const QJsonObject &message) {
         } else if (rotatePasswordOnFirstRegistration_) {
             rotatePasswordOnFirstRegistration_ = false;
             pendingTemporaryPassword_ = makeTemporaryPassword();
-            updateTemporaryPassword(pendingTemporaryPassword_, config_.passwordVersion + 1,
-                                    config_.mode, config_.ttlSeconds);
+            updateTemporaryPassword(pendingTemporaryPassword_, config_.passwordVersion + 1, config_.ttlSeconds);
         }
         reconnectAttempts_ = 0;
         setState(QStringLiteral("connected"));
@@ -762,12 +758,11 @@ void PlatformClient::sendFileUploadResult(const QString &sessionId, const QStrin
                      {QStringLiteral("result_known"), resultKnown}});
 }
 
-void PlatformClient::updateTemporaryPassword(const QString &password, int version, const QString &mode, int ttlSeconds) {
+void PlatformClient::updateTemporaryPassword(const QString &password, int version, int ttlSeconds) {
     pendingTemporaryPassword_ = password;
     QJsonObject message{{QStringLiteral("type"), QStringLiteral("update_temporary_password")},
                         {QStringLiteral("temporary_password"), password},
-                        {QStringLiteral("password_version"), version},
-                        {QStringLiteral("mode"), mode}};
+                        {QStringLiteral("password_version"), version}};
     if (ttlSeconds > 0) message.insert(QStringLiteral("expires_at"), QDateTime::currentSecsSinceEpoch() + ttlSeconds);
     sendProtocolMessage(message);
 }

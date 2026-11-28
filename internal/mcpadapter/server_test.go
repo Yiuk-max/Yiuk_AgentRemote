@@ -6,9 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
-
 	"agentremote/internal/agenttools"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type backendFunc func(context.Context, agenttools.Request) (any, error)

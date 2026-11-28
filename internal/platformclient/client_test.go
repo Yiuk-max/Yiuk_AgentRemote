@@ -21,9 +21,8 @@ import (
 	"agentremote/internal/platform/core"
 	"agentremote/internal/platform/gateway"
 	"agentremote/internal/platform/protocol"
-	"agentremote/internal/platformclient"
-
 	"agentremote/internal/platform/transport"
+	"agentremote/internal/platformclient"
 	"github.com/gorilla/websocket"
 )
 
@@ -41,7 +40,7 @@ func startPlatform(t *testing.T) string {
 	cfg := config.Default()
 	cfg.Listen = "127.0.0.1:0"
 	cfg.AllowInsecure = true
-	cfg.PlayerPassword = playerPassword
+	cfg.OperatorPassword = playerPassword
 	cfg.MaxOutputBytes = 1 << 20
 	cfg.HeartbeatTimeoutSec = 30
 	if err := cfg.Validate(); err != nil {
@@ -126,16 +125,12 @@ func matches(got string, want []string) bool {
 }
 
 func (d *fakeDevice) register(id string) {
-	d.registerWithMode(id, protocol.ModeDirect)
-}
-
-func (d *fakeDevice) registerWithMode(id, mode string) {
 	d.t.Helper()
-	d.send(protocol.Message{Type: protocol.TypeAuthenticatePlayer, IdentityType: "player", PlayerPassword: playerPassword})
+	d.send(protocol.Message{Type: protocol.TypeAuthenticateOperator, IdentityType: "player", OperatorPassword: playerPassword})
 	d.recv(protocol.TypeAuthenticated)
 	d.send(protocol.Message{
 		Type: protocol.TypeRegisterDevice, DeviceID: id, DeviceName: "fake", Platform: "windows",
-		Mode: mode, TemporaryPassword: devicePassword,
+		TemporaryPassword: devicePassword,
 	})
 	d.recv(protocol.TypeDeviceRegistered)
 }
@@ -159,7 +154,7 @@ func TestPlatformClientDirectSessionFlow(t *testing.T) {
 	device.register("device-1")
 
 	backend, err := platformclient.New(platformclient.Config{
-		Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
+		Address: address, OperatorPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -262,7 +257,7 @@ func TestPlatformClientHeartbeatsIdleConnection(t *testing.T) {
 				return
 			}
 			switch m.Type {
-			case protocol.TypeAuthenticatePlayer:
+			case protocol.TypeAuthenticateOperator:
 				response, _ := codec.Encode(protocol.Message{Version: protocol.Version, Type: protocol.TypeAuthenticated, ConnectionID: "conn-heartbeat"})
 				_ = conn.WriteMessage(response)
 			case protocol.TypePing:
@@ -277,7 +272,7 @@ func TestPlatformClientHeartbeatsIdleConnection(t *testing.T) {
 	}()
 
 	backend, err := platformclient.New(platformclient.Config{
-		Address: "ws://" + ln.Addr().String(), PlayerPassword: playerPassword, AllowPlaintext: true,
+		Address: "ws://" + ln.Addr().String(), OperatorPassword: playerPassword, AllowPlaintext: true,
 		TimeoutSeconds: 5, HeartbeatIntervalSeconds: 1,
 	})
 	if err != nil {
@@ -307,7 +302,7 @@ func TestPlatformClientHeartbeatsIdleConnection(t *testing.T) {
 func TestPlatformClientCloseSessionIsIdempotent(t *testing.T) {
 	address := startPlatform(t)
 	backend, err := platformclient.New(platformclient.Config{
-		Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
+		Address: address, OperatorPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -332,7 +327,7 @@ func TestPlatformClientRequestWithoutPasswordCreatesApprovalSession(t *testing.T
 	device.register("device-2")
 
 	backend, err := platformclient.New(platformclient.Config{
-		Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
+		Address: address, OperatorPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -373,7 +368,7 @@ func TestPlatformClientRunCommand(t *testing.T) {
 	device.register("device-run")
 
 	backend, err := platformclient.New(platformclient.Config{
-		Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 10,
+		Address: address, OperatorPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 10,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -437,7 +432,7 @@ func TestPlatformClientDownloadsFileWithReadFilePermission(t *testing.T) {
 	device.register("device-files")
 
 	backend, err := platformclient.New(platformclient.Config{
-		Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
+		Address: address, OperatorPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -534,7 +529,7 @@ func runUploadTool(t *testing.T, contents []byte) {
 	device.register("device-upload")
 
 	backend, err := platformclient.New(platformclient.Config{
-		Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
+		Address: address, OperatorPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -633,7 +628,7 @@ func runUploadTool(t *testing.T, contents []byte) {
 func TestPlatformClientUploadFileRejectsInvalidLocalPath(t *testing.T) {
 	address := startPlatform(t)
 	backend, err := platformclient.New(platformclient.Config{
-		Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
+		Address: address, OperatorPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -662,10 +657,10 @@ func TestPlatformClientUploadFileRejectsInvalidLocalPath(t *testing.T) {
 func TestPlatformClientRunCommandPasswordCreatesDirectSession(t *testing.T) {
 	address := startPlatform(t)
 	device := dialFakeDevice(t, address)
-	device.registerWithMode("device-approval", protocol.ModeApproval)
+	device.register("device-approval")
 
 	backend, err := platformclient.New(platformclient.Config{
-		Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 10,
+		Address: address, OperatorPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 10,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -706,7 +701,7 @@ func TestPlatformClientRunCommandPasswordCreatesDirectSession(t *testing.T) {
 	}
 	data := result.data.(map[string]any)
 	if data["authorization"] != protocol.StatusApproved || data["status"] != string(protocol.TaskSucceeded) {
-		t.Fatalf("unexpected direct-mode result: %#v", data)
+		t.Fatalf("unexpected result for a password-borne session: %#v", data)
 	}
 	if stdout, _ := data["stdout"].(string); stdout != "ok\n" {
 		t.Fatalf("stdout = %q", stdout)

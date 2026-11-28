@@ -70,21 +70,21 @@ func TestLoadRequiresPlatformSection(t *testing.T) {
 func TestValidateRejectsInconsistentLimits(t *testing.T) {
 	cfg := Default()
 	cfg.AllowInsecure = true
-	cfg.PlayerPassword = "a-very-long-player-password"
+	cfg.OperatorPassword = "a-very-long-player-password"
 	cfg.MaxSessionsPerDevice = cfg.MaxSessions + 1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected limit validation error")
 	}
 	cfg = Default()
 	cfg.AllowInsecure = true
-	cfg.PlayerPassword = "a-very-long-player-password"
+	cfg.OperatorPassword = "a-very-long-player-password"
 	cfg.ApprovalTimeoutSec = cfg.SessionTimeoutSec + 1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected approval timeout validation error")
 	}
 	cfg = Default()
 	cfg.AllowInsecure = true
-	cfg.PlayerPassword = "a-very-long-player-password"
+	cfg.OperatorPassword = "a-very-long-player-password"
 	cfg.CloseReasonMaxLen = -1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected close reason validation error")
@@ -96,14 +96,14 @@ func TestValidateRejectsInconsistentLimits(t *testing.T) {
 	}
 }
 
-func TestPlayerPasswordLengthFloor(t *testing.T) {
+func TestOperatorPasswordLengthFloor(t *testing.T) {
 	cfg := Default()
 	cfg.AllowInsecure = true
-	cfg.PlayerPassword = "short"
+	cfg.OperatorPassword = "short"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected too-short player password to be rejected")
 	}
-	cfg.PlayerPassword = "Yiuk29564"
+	cfg.OperatorPassword = "Yiuk29564"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("8-character password should be accepted with a warning: %v", err)
 	}

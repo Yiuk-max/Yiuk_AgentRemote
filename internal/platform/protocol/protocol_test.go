@@ -51,3 +51,18 @@ func TestCodecRejectsEmptyMessage(t *testing.T) {
 		t.Fatal("expected empty message error")
 	}
 }
+
+// 旧客户端（A' 之前）还会在注册帧里带 "mode" 字段。这个字段已经从契约里删掉了，
+// 但服务端必须仍然接受这些帧：删字段不能变成一次强制升级。
+func TestCodecIgnoresFieldsRemovedFromTheContract(t *testing.T) {
+	legacy := []byte(`{"version":1,"business_type":"agent-assist","type":"register_device",
+		"device_id":"111222333","device_name":"old-client","platform":"windows",
+		"mode":"approval","temporary_password":"0123456789abcdef0123456789abcdef"}`)
+	message, err := NewCodec(4096).Decode(legacy)
+	if err != nil {
+		t.Fatalf("a legacy frame with an unknown field must still decode: %v", err)
+	}
+	if message.DeviceID != "111222333" || message.Type != TypeRegisterDevice {
+		t.Fatalf("unexpected decode result: %#v", message)
+	}
+}

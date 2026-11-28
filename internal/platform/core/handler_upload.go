@@ -1,7 +1,5 @@
 package core
 
-// 文件上传：操作者把本地文件推送到目标设备。平台只校验权限、分块序号与累计
-// 字节数，不保存文件内容；分块按操作者 → 平台 → 设备的顺序转发。
 import (
 	"errors"
 	"strings"
@@ -12,7 +10,8 @@ import (
 	"agentremote/internal/platform/transfer"
 )
 
-// 处理文件上传请求
+// 文件上传：操作者把本地文件推送到目标设备。平台只校验权限、分块序号与累计
+// 字节数，不保存文件内容；分块按操作者 → 平台 → 设备的顺序转发。
 func (s *Service) handleUploadFile(caller *Caller, message protocol.Message) error {
 	if err := s.validateID("session_id", message.SessionID); err != nil {
 		return newProtocolError("INVALID_ARGUMENT", err.Error())

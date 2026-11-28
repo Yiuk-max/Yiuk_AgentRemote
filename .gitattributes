@@ -1,0 +1,14 @@
+# 统一行尾：仓库与工作树一律 LF。
+# 不加这条时，core.autocrlf=true 的 Windows 工作树是 CRLF，gofmt 会把整个
+# 文件重写成 LF，于是 gofmt -l 变成「所有文件都未格式化」的假报警，这条检查
+# 实际等于没有。
+* text=auto eol=lf
+
+# 二进制：不做换行转换，也不做文本 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.zip binary

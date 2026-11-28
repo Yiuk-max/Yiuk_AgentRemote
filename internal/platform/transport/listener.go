@@ -1,7 +1,6 @@
 // 创建平台TLS 监听，只有测试时才允许明文传输
 package transport
 
-// 这里封装了一个 TCP 或 TLS 监听器给 WebSocketListener 使用
 import (
 	"crypto/tls"
 	"errors"

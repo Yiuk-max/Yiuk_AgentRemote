@@ -40,18 +40,17 @@ jobs:
       - name: Test
         run: go test -count=1 ./...
 
-      # gofmt 只做提示不判失败：仓库里还有历史文件没格式化，
-      # 这条线先用来"看得见"，等清理干净了再去掉 if: always() 的告警语义。
-      - name: gofmt (advisory)
-        if: always()
+      # gofmt 是硬性检查：仓库已统一为 LF（见 .gitattributes），
+      # 所以 gofmt -l 在 CI 与本地都应该零输出。
+      - name: gofmt
         run: |
-          unformatted=$(gofmt -l . | grep -v '^vendor/' || true)
+          unformatted=$(gofmt -l . || true)
           if [ -n "$unformatted" ]; then
-            echo "::warning::以下文件未通过 gofmt"
+            echo "::error::以下文件未通过 gofmt，请本地执行 gofmt -w"
             echo "$unformatted"
-          else
-            echo "所有 Go 文件都通过 gofmt"
+            exit 1
           fi
+          echo "所有 Go 文件都通过 gofmt"
 
   # 产出可直接部署的 linux/amd64 二进制，避免在 2C2G 的服务器上编译。
   # 服务器上下载方式见 SERVER.md（用 GitHub API 取 run 的 artifact）。

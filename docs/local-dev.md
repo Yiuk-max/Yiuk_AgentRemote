@@ -2,7 +2,6 @@
 
 > **仅限本机开发环境。** 本文记录这台机器上具体的工具链路径、快捷命令、本机数据目录和踩过的坑，用来少走路；通用环境要求与跨机器流程以[开发与构建](development.md)为准。换机器时请从那份文档开始。
 
-最后核对：2026-10-22，工具链 Qt 6.11.1 / MinGW 13.1.0 / Go 1.27.3 / CMake 4.3.1。
 
 ## 1. 这台机器上有什么
 
@@ -123,9 +122,9 @@ E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-platform-interop.exe
 ### 5.2 命令行链路
 
 ```powershell
-go run ./cmd/smoke -addr 127.0.0.1:25664 -password '<player-password>' -ca tmp-tls/server.crt -mode approval
+go run ./cmd/smoke -addr 127.0.0.1:25664 -password '<player-password>' -ca tmp-tls/server.crt
 go run ./cmd/device-sim -addr 127.0.0.1:25664 -password '<player-password>' `
-  -device-id 111222333 -temporary-password '<32+ chars>' -ca tmp-tls/server.crt -mode approval
+  -device-id 111222333 -temporary-password '<32+ chars>' -ca tmp-tls/server.crt
 ```
 
 ### 5.3 活动面板（不连平台也能看效果）
@@ -189,5 +188,3 @@ Get-Process yiuk-device-assist,yiuk-activity-panel,yiuk-mcp -ErrorAction Silentl
 
 发布产物在 `release\`（不进仓库，见[打包发布](development.md#5-打包发布)）。
 
-MCP 没配就该先配 MCP，不要自己造客户端
-会话（session）归属于「一次 operator 连接」，不是密码

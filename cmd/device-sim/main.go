@@ -9,7 +9,7 @@
 // Usage:
 //
 //	device-sim -addr host:port -password <player-password> -device-id 123456789 \
-//	           -temporary-password <32+ chars> [-ca ca.pem | -insecure] [-mode approval|direct]
+//	           -temporary-password <32+ chars> [-ca ca.pem | -insecure]
 package main
 
 import (
@@ -39,7 +39,6 @@ func main() {
 	temporary := flag.String("temporary-password", "", "device temporary password (>=32 chars)")
 	caFile := flag.String("ca", "", "CA certificate file")
 	insecure := flag.Bool("insecure", false, "skip certificate verification")
-	mode := flag.String("mode", "approval", "authorization mode: direct or approval")
 	uploadDir := flag.String("upload-dir", "", "directory for received uploads (default: <temp>/yiuk-device-sim)")
 	flag.Parse()
 	if *uploadDir == "" {
@@ -92,10 +91,10 @@ func main() {
 		}
 	}
 
-	send(protocol.Message{Type: protocol.TypeAuthenticatePlayer, IdentityType: "player", PlayerPassword: *password})
+	send(protocol.Message{Type: protocol.TypeAuthenticateOperator, IdentityType: "player", OperatorPassword: *password})
 	send(protocol.Message{
 		Type: protocol.TypeRegisterDevice, DeviceID: *deviceID, DeviceName: "device-sim",
-		Platform: "windows", Mode: *mode, TemporaryPassword: *temporary,
+		Platform: "windows", TemporaryPassword: *temporary,
 	})
 
 	stop := make(chan struct{})
@@ -125,8 +124,8 @@ func main() {
 		case protocol.TypeAuthenticated:
 			logf("authenticated connection=%s", short(msg.ConnectionID))
 		case protocol.TypeDeviceRegistered:
-			logf("registered device=%s mode=%s version=%d expires=%s",
-				msg.DeviceID, msg.Mode, msg.PasswordVersion,
+			logf("registered device=%s version=%d expires=%s",
+				msg.DeviceID, msg.PasswordVersion,
 				time.Unix(msg.ExpiresAt, 0).Format(time.RFC3339))
 		case protocol.TypeHeartbeatAck:
 			logf("heartbeat active_sessions=%d", msg.ActiveSessions)

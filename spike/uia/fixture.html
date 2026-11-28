@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>YiukSpikeFixture</title>
+<style>
+  body { font-family: "Segoe UI", sans-serif; margin: 0; }
+  .bar { display: flex; gap: 8px; padding: 8px; background: #222; color: #eee; }
+  .bar button { padding: 6px 12px; }
+  .tabs { display: flex; gap: 4px; padding: 6px; background: #333; }
+  .tab[aria-selected="true"] { background: #4a6; }
+  .tab { padding: 6px 14px; background: #444; color: #fff; }
+  main { padding: 12px; }
+  .level { border-left: 2px solid #ddd; padding-left: 6px; }
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid #ccc; padding: 3px 8px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <button id="back">后退</button>
+  <button id="forward">前进</button>
+  <button id="refresh">刷新</button>
+  <input id="omnibox" aria-label="地址和搜索栏" value="file:///fixture" size="50">
+  <button id="star">将此页面添加到收藏夹</button>
+  <button id="favorites">收藏夹</button>
+  <button id="more">设置及其他</button>
+</div>
+<div class="tabs" role="tablist" aria-label="标签页栏">
+  <div class="tab" role="tab" aria-selected="true">标签一</div>
+  <div class="tab" role="tab">标签二</div>
+  <div class="tab" role="tab">标签三</div>
+</div>
+<main>
+  <h1>UIA spike fixture</h1>
+  <p>已知名字的控件：地址和搜索栏（输入框）、收藏夹（按钮）、设置及其他（按钮）、标签页栏（tablist）、在页面中搜索（输入框）。</p>
+  <p><input id="search" type="search" aria-label="在页面中搜索" placeholder="在页面中搜索"></p>
+  <div class="level" data-level="13"><div class="level" data-level="12"><div class="level" data-level="11"><div class="level" data-level="10"><div class="level" data-level="9"><div class="level" data-level="8"><div class="level" data-level="7"><div class="level" data-level="6"><div class="level" data-level="5"><div class="level" data-level="4"><div class="level" data-level="3"><div class="level" data-level="2"><div class="level" data-level="1"><div class="level" data-level="0"></div></div></div></div></div></div></div></div></div></div></div></div></div></div>
+  <table>
+    <thead><tr><th>名称</th><th>大小</th><th>修改日期</th></tr></thead>
+    <tbody>
+      <tr><td>文件 1.txt</td><td>0 KB</td><td>2024-03-01</td></tr>
+      <tr><td>文件 2.txt</td><td>37 KB</td><td>2024-03-02</td></tr>
+      <tr><td>文件 3.txt</td><td>74 KB</td><td>2024-03-03</td></tr>
+      <tr><td>文件 4.txt</td><td>111 KB</td><td>2024-03-04</td></tr>
+      <tr><td>文件 5.txt</td><td>148 KB</td><td>2024-03-05</td></tr>
+      <tr><td>文件 6.txt</td><td>185 KB</td><td>2024-03-06</td></tr>
+      <tr><td>文件 7.txt</td><td>222 KB</td><td>2024-03-07</td></tr>
+      <tr><td>文件 8.txt</td><td>259 KB</td><td>2024-03-08</td></tr>
+      <tr><td>文件 9.txt</td><td>296 KB</td><td>2024-03-09</td></tr>
+      <tr><td>文件 10.txt</td><td>333 KB</td><td>2024-03-10</td></tr>
+      <tr><td>文件 11.txt</td><td>370 KB</td><td>2024-03-11</td></tr>
+      <tr><td>文件 12.txt</td><td>407 KB</td><td>2024-03-12</td></tr>
+      <tr><td>文件 13.txt</td><td>444 KB</td><td>2024-03-13</td></tr>
+      <tr><td>文件 14.txt</td><td>481 KB</td><td>2024-03-14</td></tr>
+      <tr><td>文件 15.txt</td><td>518 KB</td><td>2024-03-15</td></tr>
+      <tr><td>文件 16.txt</td><td>555 KB</td><td>2024-03-16</td></tr>
+      <tr><td>文件 17.txt</td><td>592 KB</td><td>2024-03-17</td></tr>
+      <tr><td>文件 18.txt</td><td>629 KB</td><td>2024-03-18</td></tr>
+      <tr><td>文件 19.txt</td><td>666 KB</td><td>2024-03-19</td></tr>
+      <tr><td>文件 20.txt</td><td>703 KB</td><td>2024-03-20</td></tr>
+      <tr><td>文件 21.txt</td><td>740 KB</td><td>2024-03-21</td></tr>
+      <tr><td>文件 22.txt</td><td>777 KB</td><td>2024-03-22</td></tr>
+      <tr><td>文件 23.txt</td><td>814 KB</td><td>2024-03-23</td></tr>
+      <tr><td>文件 24.txt</td><td>851 KB</td><td>2024-03-24</td></tr>
+      <tr><td>文件 25.txt</td><td>888 KB</td><td>2024-03-25</td></tr>
+      <tr><td>文件 26.txt</td><td>925 KB</td><td>2024-03-26</td></tr>
+      <tr><td>文件 27.txt</td><td>962 KB</td><td>2024-03-27</td></tr>
+      <tr><td>文件 28.txt</td><td>999 KB</td><td>2024-03-28</td></tr>
+      <tr><td>文件 29.txt</td><td>1036 KB</td><td>2024-03-01</td></tr>
+      <tr><td>文件 30.txt</td><td>1073 KB</td><td>2024-03-02</td></tr>
+      <tr><td>文件 31.txt</td><td>1110 KB</td><td>2024-03-03</td></tr>
+      <tr><td>文件 32.txt</td><td>1147 KB</td><td>2024-03-04</td></tr>
+      <tr><td>文件 33.txt</td><td>1184 KB</td><td>2024-03-05</td></tr>
+      <tr><td>文件 34.txt</td><td>1221 KB</td><td>2024-03-06</td></tr>
+      <tr><td>文件 35.txt</td><td>1258 KB</td><td>2024-03-07</td></tr>
+      <tr><td>文件 36.txt</td><td>1295 KB</td><td>2024-03-08</td></tr>
+      <tr><td>文件 37.txt</td><td>1332 KB</td><td>2024-03-09</td></tr>
+      <tr><td>文件 38.txt</td><td>1369 KB</td><td>2024-03-10</td></tr>
+      <tr><td>文件 39.txt</td><td>1406 KB</td><td>2024-03-11</td></tr>
+      <tr><td>文件 40.txt</td><td>1443 KB</td><td>2024-03-12</td></tr>
+      <tr><td>文件 41.txt</td><td>1480 KB</td><td>2024-03-13</td></tr>
+      <tr><td>文件 42.txt</td><td>1517 KB</td><td>2024-03-14</td></tr>
+      <tr><td>文件 43.txt</td><td>1554 KB</td><td>2024-03-15</td></tr>
+      <tr><td>文件 44.txt</td><td>1591 KB</td><td>2024-03-16</td></tr>
+      <tr><td>文件 45.txt</td><td>1628 KB</td><td>2024-03-17</td></tr>
+      <tr><td>文件 46.txt</td><td>1665 KB</td><td>2024-03-18</td></tr>
+      <tr><td>文件 47.txt</td><td>1702 KB</td><td>2024-03-19</td></tr>
+      <tr><td>文件 48.txt</td><td>1739 KB</td><td>2024-03-20</td></tr>
+      <tr><td>文件 49.txt</td><td>1776 KB</td><td>2024-03-21</td></tr>
+      <tr><td>文件 50.txt</td><td>1813 KB</td><td>2024-03-22</td></tr>
+      <tr><td>文件 51.txt</td><td>1850 KB</td><td>2024-03-23</td></tr>
+      <tr><td>文件 52.txt</td><td>1887 KB</td><td>2024-03-24</td></tr>
+      <tr><td>文件 53.txt</td><td>1924 KB</td><td>2024-03-25</td></tr>
+      <tr><td>文件 54.txt</td><td>1961 KB</td><td>2024-03-26</td></tr>
+      <tr><td>文件 55.txt</td><td>1998 KB</td><td>2024-03-27</td></tr>
+      <tr><td>文件 56.txt</td><td>2035 KB</td><td>2024-03-28</td></tr>
+      <tr><td>文件 57.txt</td><td>2072 KB</td><td>2024-03-01</td></tr>
+      <tr><td>文件 58.txt</td><td>2109 KB</td><td>2024-03-02</td></tr>
+      <tr><td>文件 59.txt</td><td>2146 KB</td><td>2024-03-03</td></tr>
+      <tr><td>文件 60.txt</td><td>2183 KB</td><td>2024-03-04</td></tr>
+      <tr><td>文件 61.txt</td><td>2220 KB</td><td>2024-03-05</td></tr>
+      <tr><td>文件 62.txt</td><td>2257 KB</td><td>2024-03-06</td></tr>
+      <tr><td>文件 63.txt</td><td>2294 KB</td><td>2024-03-07</td></tr>
+      <tr><td>文件 64.txt</td><td>2331 KB</td><td>2024-03-08</td></tr>
+      <tr><td>文件 65.txt</td><td>2368 KB</td><td>2024-03-09</td></tr>
+      <tr><td>文件 66.txt</td><td>2405 KB</td><td>2024-03-10</td></tr>
+      <tr><td>文件 67.txt</td><td>2442 KB</td><td>2024-03-11</td></tr>
+      <tr><td>文件 68.txt</td><td>2479 KB</td><td>2024-03-12</td></tr>
+      <tr><td>文件 69.txt</td><td>2516 KB</td><td>2024-03-13</td></tr>
+      <tr><td>文件 70.txt</td><td>2553 KB</td><td>2024-03-14</td></tr>
+      <tr><td>文件 71.txt</td><td>2590 KB</td><td>2024-03-15</td></tr>
+      <tr><td>文件 72.txt</td><td>2627 KB</td><td>2024-03-16</td></tr>
+      <tr><td>文件 73.txt</td><td>2664 KB</td><td>2024-03-17</td></tr>
+      <tr><td>文件 74.txt</td><td>2701 KB</td><td>2024-03-18</td></tr>
+      <tr><td>文件 75.txt</td><td>2738 KB</td><td>2024-03-19</td></tr>
+      <tr><td>文件 76.txt</td><td>2775 KB</td><td>2024-03-20</td></tr>
+      <tr><td>文件 77.txt</td><td>2812 KB</td><td>2024-03-21</td></tr>
+      <tr><td>文件 78.txt</td><td>2849 KB</td><td>2024-03-22</td></tr>
+      <tr><td>文件 79.txt</td><td>2886 KB</td><td>2024-03-23</td></tr>
+      <tr><td>文件 80.txt</td><td>2923 KB</td><td>2024-03-24</td></tr>
+      <tr><td>文件 81.txt</td><td>2960 KB</td><td>2024-03-25</td></tr>
+      <tr><td>文件 82.txt</td><td>2997 KB</td><td>2024-03-26</td></tr>
+      <tr><td>文件 83.txt</td><td>3034 KB</td><td>2024-03-27</td></tr>
+      <tr><td>文件 84.txt</td><td>3071 KB</td><td>2024-03-28</td></tr>
+      <tr><td>文件 85.txt</td><td>3108 KB</td><td>2024-03-01</td></tr>
+      <tr><td>文件 86.txt</td><td>3145 KB</td><td>2024-03-02</td></tr>
+      <tr><td>文件 87.txt</td><td>3182 KB</td><td>2024-03-03</td></tr>
+      <tr><td>文件 88.txt</td><td>3219 KB</td><td>2024-03-04</td></tr>
+      <tr><td>文件 89.txt</td><td>3256 KB</td><td>2024-03-05</td></tr>
+      <tr><td>文件 90.txt</td><td>3293 KB</td><td>2024-03-06</td></tr>
+      <tr><td>文件 91.txt</td><td>3330 KB</td><td>2024-03-07</td></tr>
+      <tr><td>文件 92.txt</td><td>3367 KB</td><td>2024-03-08</td></tr>
+      <tr><td>文件 93.txt</td><td>3404 KB</td><td>2024-03-09</td></tr>
+      <tr><td>文件 94.txt</td><td>3441 KB</td><td>2024-03-10</td></tr>
+      <tr><td>文件 95.txt</td><td>3478 KB</td><td>2024-03-11</td></tr>
+      <tr><td>文件 96.txt</td><td>3515 KB</td><td>2024-03-12</td></tr>
+      <tr><td>文件 97.txt</td><td>3552 KB</td><td>2024-03-13</td></tr>
+      <tr><td>文件 98.txt</td><td>3589 KB</td><td>2024-03-14</td></tr>
+      <tr><td>文件 99.txt</td><td>3626 KB</td><td>2024-03-15</td></tr>
+      <tr><td>文件 100.txt</td><td>3663 KB</td><td>2024-03-16</td></tr>
+      <tr><td>文件 101.txt</td><td>3700 KB</td><td>2024-03-17</td></tr>
+      <tr><td>文件 102.txt</td><td>3737 KB</td><td>2024-03-18</td></tr>
+      <tr><td>文件 103.txt</td><td>3774 KB</td><td>2024-03-19</td></tr>
+      <tr><td>文件 104.txt</td><td>3811 KB</td><td>2024-03-20</td></tr>
+      <tr><td>文件 105.txt</td><td>3848 KB</td><td>2024-03-21</td></tr>
+      <tr><td>文件 106.txt</td><td>3885 KB</td><td>2024-03-22</td></tr>
+      <tr><td>文件 107.txt</td><td>3922 KB</td><td>2024-03-23</td></tr>
+      <tr><td>文件 108.txt</td><td>3959 KB</td><td>2024-03-24</td></tr>
+      <tr><td>文件 109.txt</td><td>3996 KB</td><td>2024-03-25</td></tr>
+      <tr><td>文件 110.txt</td><td>4033 KB</td><td>2024-03-26</td></tr>
+      <tr><td>文件 111.txt</td><td>4070 KB</td><td>2024-03-27</td></tr>
+      <tr><td>文件 112.txt</td><td>4107 KB</td><td>2024-03-28</td></tr>
+      <tr><td>文件 113.txt</td><td>4144 KB</td><td>2024-03-01</td></tr>
+      <tr><td>文件 114.txt</td><td>4181 KB</td><td>2024-03-02</td></tr>
+      <tr><td>文件 115.txt</td><td>4218 KB</td><td>2024-03-03</td></tr>
+      <tr><td>文件 116.txt</td><td>4255 KB</td><td>2024-03-04</td></tr>
+      <tr><td>文件 117.txt</td><td>4292 KB</td><td>2024-03-05</td></tr>
+      <tr><td>文件 118.txt</td><td>4329 KB</td><td>2024-03-06</td></tr>
+      <tr><td>文件 119.txt</td><td>4366 KB</td><td>2024-03-07</td></tr>
+      <tr><td>文件 120.txt</td><td>4403 KB</td><td>2024-03-08</td></tr>
+    </tbody>
+  </table>
+</main>
+<script>
+  // Feedback that a UIA Invoke really ran: the window title changes, which the
+  // probe can observe without reading the page through the accessibility tree.
+  document.querySelectorAll("button").forEach(function (button) {
+    button.addEventListener("click", function () {
+      document.title = "YiukSpikeFixture clicked:" + button.textContent.trim();
+      var label = document.createElement("p");
+      label.textContent = "clicked " + button.textContent.trim();
+      document.body.appendChild(label);
+    });
+  });
+</script>
+</body>
+</html>

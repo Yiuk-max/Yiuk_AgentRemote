@@ -14,7 +14,7 @@ func TestDeviceNameWorksOverThePlatform(t *testing.T) {
 	address := startPlatform(t)
 	device := dialFakeDevice(t, address)
 	device.register("555666777")
-	backend, err := platformclient.New(platformclient.Config{Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5})
+	backend, err := platformclient.New(platformclient.Config{Address: address, OperatorPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5})
 	if err != nil {
 		t.Fatal(err)
 	}

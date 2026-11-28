@@ -14,11 +14,10 @@ import (
 	"agentremote/internal/platform/gateway"
 	"agentremote/internal/platform/protocol"
 	"agentremote/internal/platform/transport"
-
 	"github.com/gorilla/websocket"
 )
 
-const testPlayerPassword = "test-player-password-1234567890"
+const testOperatorPassword = "test-player-password-1234567890"
 const testDevicePassword = "0123456789abcdef0123456789abcdef"
 
 type testClient struct {
@@ -32,7 +31,7 @@ func startServer(t *testing.T, mutate func(*config.Config)) (string, *gateway.Se
 	cfg := config.Default()
 	cfg.Listen = "127.0.0.1:0"
 	cfg.AllowInsecure = true
-	cfg.PlayerPassword = testPlayerPassword
+	cfg.OperatorPassword = testOperatorPassword
 	cfg.MaxOutputBytes = 1024
 	cfg.HeartbeatTimeoutSec = 30
 	cfg.HandshakeTimeoutSec = 5
@@ -142,15 +141,15 @@ func (c *testClient) expectNone(d time.Duration) {
 
 func (c *testClient) auth(password string) {
 	c.t.Helper()
-	c.send(protocol.Message{Type: protocol.TypeAuthenticatePlayer, IdentityType: "player", PlayerPassword: password})
+	c.send(protocol.Message{Type: protocol.TypeAuthenticateOperator, IdentityType: "player", OperatorPassword: password})
 	c.recv(protocol.TypeAuthenticated)
 }
 
-func (c *testClient) register(deviceID, password, mode string) protocol.Message {
+func (c *testClient) register(deviceID, password string) protocol.Message {
 	c.t.Helper()
 	c.send(protocol.Message{
 		Type: protocol.TypeRegisterDevice, DeviceID: deviceID, DeviceName: "test-device",
-		Platform: "windows", Mode: mode, TemporaryPassword: password,
+		Platform: "windows", TemporaryPassword: password,
 	})
 	return c.recv(protocol.TypeDeviceRegistered)
 }
@@ -170,8 +169,8 @@ func matches(got string, want []string) bool {
 func TestApprovalSessionCommandFlow(t *testing.T) {
 	address, _ := startServer(t, nil)
 	device := dialClient(t, address)
-	device.auth(testPlayerPassword)
-	registered := device.register("device-1", testDevicePassword, protocol.ModeApproval)
+	device.auth(testOperatorPassword)
+	registered := device.register("device-1", testDevicePassword)
 	if registered.Status != "" {
 		t.Fatalf("unexpected registration status: %#v", registered)
 	}
@@ -182,7 +181,7 @@ func TestApprovalSessionCommandFlow(t *testing.T) {
 	}
 
 	operator := dialClient(t, address)
-	operator.auth(testPlayerPassword)
+	operator.auth(testOperatorPassword)
 	operator.send(protocol.Message{Type: protocol.TypeListDevices})
 	list := operator.recv(protocol.TypeDeviceList)
 	if len(list.Devices) != 1 || list.Devices[0].DeviceID != "device-1" || !list.Devices[0].Online {
@@ -267,11 +266,11 @@ func TestApprovalSessionCommandFlow(t *testing.T) {
 func TestDirectModeAndOperatorBinding(t *testing.T) {
 	address, _ := startServer(t, nil)
 	device := dialClient(t, address)
-	device.auth(testPlayerPassword)
-	device.register("device-direct", testDevicePassword, protocol.ModeDirect)
+	device.auth(testOperatorPassword)
+	device.register("device-direct", testDevicePassword)
 
 	operator1 := dialClient(t, address)
-	operator1.auth(testPlayerPassword)
+	operator1.auth(testOperatorPassword)
 	operator1.send(protocol.Message{
 		Type: protocol.TypeRequestSession, DeviceID: "device-direct", TemporaryPassword: testDevicePassword,
 		Purpose: "direct help", Permissions: []string{"execute_command"},
@@ -284,7 +283,7 @@ func TestDirectModeAndOperatorBinding(t *testing.T) {
 	device.recv(protocol.TypeSessionStatus)
 
 	operator2 := dialClient(t, address)
-	operator2.auth(testPlayerPassword)
+	operator2.auth(testOperatorPassword)
 	operator2.send(protocol.Message{
 		Type: protocol.TypeExecuteCommand, SessionID: sessionID, RequestID: "stolen", Command: "whoami",
 	})
@@ -309,8 +308,8 @@ func TestExpiredDevicePasswordCanRecoverWithSameDeviceID(t *testing.T) {
 	})
 
 	first := dialClient(t, address)
-	first.auth(testPlayerPassword)
-	registered := first.register("device-expired", testDevicePassword, protocol.ModeApproval)
+	first.auth(testOperatorPassword)
+	registered := first.register("device-expired", testDevicePassword)
 	if registered.PasswordVersion != 1 {
 		t.Fatalf("initial password version = %d, want 1", registered.PasswordVersion)
 	}
@@ -318,8 +317,8 @@ func TestExpiredDevicePasswordCanRecoverWithSameDeviceID(t *testing.T) {
 	time.Sleep(1100 * time.Millisecond)
 
 	reconnect := dialClient(t, address)
-	reconnect.auth(testPlayerPassword)
-	recovered := reconnect.register("device-expired", testDevicePassword, protocol.ModeApproval)
+	reconnect.auth(testOperatorPassword)
+	recovered := reconnect.register("device-expired", testDevicePassword)
 	if recovered.TemporaryPassword == "" {
 		t.Fatal("server did not issue a replacement password")
 	}
@@ -328,7 +327,7 @@ func TestExpiredDevicePasswordCanRecoverWithSameDeviceID(t *testing.T) {
 	}
 
 	operator := dialClient(t, address)
-	operator.auth(testPlayerPassword)
+	operator.auth(testOperatorPassword)
 	operator.send(protocol.Message{Type: protocol.TypeListDevices})
 	devices := operator.recv(protocol.TypeDeviceList)
 	if len(devices.Devices) != 1 || devices.Devices[0].DeviceID != "device-expired" || !devices.Devices[0].Online {
@@ -341,14 +340,14 @@ func TestConflictingDeviceIDGetsAssignedNewCode(t *testing.T) {
 	address, _ := startServer(t, nil)
 
 	owner := dialClient(t, address)
-	owner.auth(testPlayerPassword)
-	if registered := owner.register("111222333", testDevicePassword, protocol.ModeApproval); registered.DeviceID != "111222333" {
+	owner.auth(testOperatorPassword)
+	if registered := owner.register("111222333", testDevicePassword); registered.DeviceID != "111222333" {
 		t.Fatalf("owner device id = %q, want the requested id", registered.DeviceID)
 	}
 
 	other := dialClient(t, address)
-	other.auth(testPlayerPassword)
-	assigned := other.register("111222333", "fedcba9876543210fedcba9876543210", protocol.ModeApproval)
+	other.auth(testOperatorPassword)
+	assigned := other.register("111222333", "fedcba9876543210fedcba9876543210")
 	if assigned.DeviceID == "111222333" {
 		t.Fatal("a mismatched password must not take over an existing device id")
 	}
@@ -357,7 +356,7 @@ func TestConflictingDeviceIDGetsAssignedNewCode(t *testing.T) {
 	}
 
 	operator := dialClient(t, address)
-	operator.auth(testPlayerPassword)
+	operator.auth(testOperatorPassword)
 	operator.send(protocol.Message{Type: protocol.TypeListDevices})
 	devices := operator.recv(protocol.TypeDeviceList)
 	if len(devices.Devices) != 2 {
@@ -374,8 +373,8 @@ func TestRegistrationRateLimitedPerIP(t *testing.T) {
 
 	for attempt := 0; attempt < 2; attempt++ {
 		client := dialClient(t, address)
-		client.auth(testPlayerPassword)
-		registered := client.register("device-1", testDevicePassword, protocol.ModeApproval)
+		client.auth(testOperatorPassword)
+		registered := client.register("device-1", testDevicePassword)
 		if registered.DeviceID != "device-1" {
 			t.Fatalf("attempt %d device id = %q, want device-1", attempt, registered.DeviceID)
 		}
@@ -385,17 +384,17 @@ func TestRegistrationRateLimitedPerIP(t *testing.T) {
 	}
 
 	limited := dialClient(t, address)
-	limited.auth(testPlayerPassword)
+	limited.auth(testOperatorPassword)
 	limited.send(protocol.Message{
 		Type: protocol.TypeRegisterDevice, DeviceID: "device-1", DeviceName: "test-device",
-		Platform: "windows", Mode: protocol.ModeApproval, TemporaryPassword: testDevicePassword,
+		Platform: "windows", TemporaryPassword: testDevicePassword,
 	})
 	if errMsg := limited.recv(protocol.TypeError); errMsg.Code != "RATE_LIMITED" {
 		t.Fatalf("code = %s, want RATE_LIMITED", errMsg.Code)
 	}
 }
 
-func TestWrongPlayerPasswordAndAuthRequired(t *testing.T) {
+func TestWrongOperatorPasswordAndAuthRequired(t *testing.T) {
 	address, _ := startServer(t, nil)
 
 	anonymous := dialClient(t, address)
@@ -406,7 +405,7 @@ func TestWrongPlayerPasswordAndAuthRequired(t *testing.T) {
 	}
 
 	bad := dialClient(t, address)
-	bad.send(protocol.Message{Type: protocol.TypeAuthenticatePlayer, IdentityType: "player", PlayerPassword: "wrong"})
+	bad.send(protocol.Message{Type: protocol.TypeAuthenticateOperator, IdentityType: "player", OperatorPassword: "wrong"})
 	errMsg = bad.recv(protocol.TypeError)
 	if errMsg.Code != "BAD_PASSWORD" {
 		t.Fatalf("bad password code = %s, want BAD_PASSWORD", errMsg.Code)
@@ -416,11 +415,11 @@ func TestWrongPlayerPasswordAndAuthRequired(t *testing.T) {
 func TestTemporaryPasswordRotationRevokesSessions(t *testing.T) {
 	address, _ := startServer(t, nil)
 	device := dialClient(t, address)
-	device.auth(testPlayerPassword)
-	device.register("device-rotate", testDevicePassword, protocol.ModeApproval)
+	device.auth(testOperatorPassword)
+	device.register("device-rotate", testDevicePassword)
 
 	operator := dialClient(t, address)
-	operator.auth(testPlayerPassword)
+	operator.auth(testOperatorPassword)
 	operator.send(protocol.Message{
 		Type: protocol.TypeRequestSession, DeviceID: "device-rotate",
 		Purpose: "rotate", Permissions: []string{"execute_command"},
@@ -436,8 +435,7 @@ func TestTemporaryPasswordRotationRevokesSessions(t *testing.T) {
 
 	newPassword := strings.Repeat("n", 32)
 	device.send(protocol.Message{
-		Type: protocol.TypeUpdateTemporaryPassword, TemporaryPassword: newPassword, PasswordVersion: 2, Mode: protocol.ModeApproval,
-	})
+		Type: protocol.TypeUpdateTemporaryPassword, TemporaryPassword: newPassword, PasswordVersion: 2})
 	updated := device.recv(protocol.TypeTemporaryPasswordUpdated)
 	if updated.PasswordVersion != 2 {
 		t.Fatalf("password version = %d, want 2", updated.PasswordVersion)
@@ -457,7 +455,7 @@ func TestTemporaryPasswordRotationRevokesSessions(t *testing.T) {
 
 	// The old password no longer works; the new one does.
 	operator2 := dialClient(t, address)
-	operator2.auth(testPlayerPassword)
+	operator2.auth(testOperatorPassword)
 	operator2.send(protocol.Message{
 		Type: protocol.TypeRequestSession, DeviceID: "device-rotate", TemporaryPassword: testDevicePassword,
 		Purpose: "old", Permissions: []string{"execute_command"},
@@ -477,11 +475,11 @@ func TestTemporaryPasswordRotationRevokesSessions(t *testing.T) {
 func TestFileDownloadRequiresReadFilePermissionAndStreamsChunks(t *testing.T) {
 	address, _ := startServer(t, func(cfg *config.Config) { cfg.MaxDownloadBytes = 1024 })
 	device := dialClient(t, address)
-	device.auth(testPlayerPassword)
-	device.register("device-files", testDevicePassword, protocol.ModeDirect)
+	device.auth(testOperatorPassword)
+	device.register("device-files", testDevicePassword)
 
 	operator := dialClient(t, address)
-	operator.auth(testPlayerPassword)
+	operator.auth(testOperatorPassword)
 	operator.send(protocol.Message{
 		Type: protocol.TypeRequestSession, DeviceID: "device-files", TemporaryPassword: testDevicePassword,
 		Purpose: "commands only", Permissions: []string{"execute_command"},
@@ -528,11 +526,11 @@ func TestFileDownloadRequiresReadFilePermissionAndStreamsChunks(t *testing.T) {
 func TestFileUploadRequiresWriteFilePermissionAndForwardsChunks(t *testing.T) {
 	address, _ := startServer(t, func(cfg *config.Config) { cfg.MaxUploadBytes = 1024 })
 	device := dialClient(t, address)
-	device.auth(testPlayerPassword)
-	device.register("device-upload", testDevicePassword, protocol.ModeDirect)
+	device.auth(testOperatorPassword)
+	device.register("device-upload", testDevicePassword)
 
 	operator := dialClient(t, address)
-	operator.auth(testPlayerPassword)
+	operator.auth(testOperatorPassword)
 	operator.send(protocol.Message{
 		Type: protocol.TypeRequestSession, DeviceID: "device-upload", TemporaryPassword: testDevicePassword,
 		Purpose: "read only", Permissions: []string{"read_file"},
@@ -601,10 +599,10 @@ otes.md` {
 func TestOutputTruncation(t *testing.T) {
 	address, _ := startServer(t, func(c *config.Config) { c.MaxOutputBytes = 1024 })
 	device := dialClient(t, address)
-	device.auth(testPlayerPassword)
-	device.register("device-output", testDevicePassword, protocol.ModeDirect)
+	device.auth(testOperatorPassword)
+	device.register("device-output", testDevicePassword)
 	operator := dialClient(t, address)
-	operator.auth(testPlayerPassword)
+	operator.auth(testOperatorPassword)
 	operator.send(protocol.Message{
 		Type: protocol.TypeRequestSession, DeviceID: "device-output", TemporaryPassword: testDevicePassword,
 		Purpose: "output", Permissions: []string{"execute_command"},
@@ -636,11 +634,11 @@ func TestOutputTruncation(t *testing.T) {
 func TestApprovalSharesTemporaryPassword(t *testing.T) {
 	address, _ := startServer(t, nil)
 	device := dialClient(t, address)
-	device.auth(testPlayerPassword)
-	device.register("device-pwd", testDevicePassword, protocol.ModeApproval)
+	device.auth(testOperatorPassword)
+	device.register("device-pwd", testDevicePassword)
 
 	operator := dialClient(t, address)
-	operator.auth(testPlayerPassword)
+	operator.auth(testOperatorPassword)
 
 	requestSession := func(purpose string) string {
 		t.Helper()

@@ -1,10 +1,5 @@
 package edge_test
 
-// P2 的路由行为：
-//   - 网关把"连接挂在本节点"写进 Redis，core 靠路由找到它再投递
-//   - 路由查不到且没有兜底地址时，投递必须失败（不能假装送到了）
-//   - 连接关闭后，连接与设备路由都要被清掉
-
 import (
 	"context"
 	"errors"
@@ -22,12 +17,16 @@ import (
 	"agentremote/internal/platform/protocol"
 	"agentremote/internal/platform/registry"
 	"agentremote/internal/platform/transport"
-
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 )
+
+// 本文件：P2 的路由行为——
+//   - 网关把“连接挂在本节点”写进 Redis，core 靠路由找到它再投递
+//   - 路由查不到且没有兜底地址时，投递必须失败（不能假装送到了）
+//   - 连接关闭后，连接与设备路由都要被清掉
 
 // 不需要 Redis 的场景下，路由查不到就必须报错，而不是当成投递成功。
 type missingResolver struct{}
@@ -66,7 +65,7 @@ func TestTwoProcessFlowViaRedisRoutes(t *testing.T) {
 	cfg := config.Default()
 	cfg.Listen = "127.0.0.1:0"
 	cfg.AllowInsecure = true
-	cfg.PlayerPassword = testPlayerPassword
+	cfg.OperatorPassword = testOperatorPassword
 	cfg.HandshakeTimeoutSec = 5
 	cfg.HeartbeatTimeoutSec = 30
 	cfg.MaxOutputBytes = 1 << 20
@@ -147,7 +146,6 @@ func TestTwoProcessFlowViaRedisRoutes(t *testing.T) {
 		DeviceName:        "redis-route-device",
 		Platform:          "windows",
 		TemporaryPassword: testDevicePassword,
-		Mode:              protocol.ModeDirect,
 	})
 	registered := device.expect(protocol.TypeDeviceRegistered)
 	if registered.DeviceID != testDeviceID {
@@ -219,7 +217,7 @@ func dialAndAuthenticate(t *testing.T, address string) (*testClient, string) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	client := &testClient{t: t, conn: conn}
-	client.send(protocol.Message{Type: protocol.TypeAuthenticatePlayer, IdentityType: "player", PlayerPassword: testPlayerPassword})
+	client.send(protocol.Message{Type: protocol.TypeAuthenticateOperator, IdentityType: "player", OperatorPassword: testOperatorPassword})
 	authenticated := client.expect(protocol.TypeAuthenticated)
 	if authenticated.ConnectionID == "" {
 		t.Fatal("authenticated reply has no connection_id")

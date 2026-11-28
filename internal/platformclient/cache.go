@@ -1,10 +1,10 @@
 package platformclient
 
 import (
+	"encoding/base64"
 	"strings"
 
 	"agentremote/internal/platform/protocol"
-	"encoding/base64"
 )
 
 // commandResultCache 保存命令执行期间收到的输出块及最终状态。
@@ -231,7 +231,6 @@ func sessionToolResult(message protocol.Message) map[string]any {
 			"session_id":      message.Session.SessionID,
 			"device_id":       message.Session.DeviceID,
 			"status":          message.Session.Status,
-			"mode":            message.Session.Mode,
 			"purpose":         message.Session.Purpose,
 			"permissions":     message.Session.Permissions,
 			"expires_at":      message.Session.ExpiresAt,

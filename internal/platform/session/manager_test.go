@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"testing"
 	"time"
-
-	"agentremote/internal/platform/device"
 )
 
 func newTestManager(now *time.Time) *Manager {
@@ -21,7 +19,7 @@ func TestSessionWithoutRequestedPermissionsGrantsAll(t *testing.T) {
 
 	sessionRecord, err := m.Create("all", CreateRequest{
 		DeviceID: "d1", OperatorConnectionID: "op1", DeviceConnectionID: "dev1",
-		Purpose: "help", Mode: device.ModeDirect,
+		Purpose: "help", PasswordVerified: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -38,7 +36,7 @@ func TestSessionWithoutRequestedPermissionsGrantsAll(t *testing.T) {
 	// 显式请求部分权限仍然被尊重（兼容旧客户端与旧会话）。
 	limited, err := m.Create("limited", CreateRequest{
 		DeviceID: "d1", OperatorConnectionID: "op1", DeviceConnectionID: "dev1",
-		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, Mode: device.ModeDirect,
+		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, PasswordVerified: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +52,7 @@ func TestDirectAndApprovalSessionLifecycle(t *testing.T) {
 
 	direct, err := m.Create("direct", CreateRequest{
 		DeviceID: "d1", OperatorConnectionID: "op1", DeviceConnectionID: "dev1",
-		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, Mode: device.ModeDirect,
+		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, PasswordVerified: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +66,7 @@ func TestDirectAndApprovalSessionLifecycle(t *testing.T) {
 
 	pending, err := m.Create("pending", CreateRequest{
 		DeviceID: "d1", OperatorConnectionID: "op2", DeviceConnectionID: "dev1",
-		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, Mode: device.ModeApproval,
+		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, PasswordVerified: false,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +114,7 @@ func TestAuthorizeBindsOperatorPermissionAndExpiry(t *testing.T) {
 	m := newTestManager(&now)
 	if _, err := m.Create("s", CreateRequest{
 		DeviceID: "d1", OperatorConnectionID: "op1", DeviceConnectionID: "dev1",
-		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, Mode: device.ModeDirect,
+		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, PasswordVerified: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -142,14 +140,14 @@ func TestLimitsInterruptAndRevoke(t *testing.T) {
 	for i, id := range []string{"a", "b"} {
 		if _, err := m.Create(id, CreateRequest{
 			DeviceID: "d1", OperatorConnectionID: "op1", DeviceConnectionID: "dev1",
-			Purpose: "help", Permissions: []string{PermissionExecuteCommand}, Mode: device.ModeDirect,
+			Purpose: "help", Permissions: []string{PermissionExecuteCommand}, PasswordVerified: true,
 		}); err != nil {
 			t.Fatalf("create %d: %v", i, err)
 		}
 	}
 	if _, err := m.Create("c", CreateRequest{
 		DeviceID: "d1", OperatorConnectionID: "op1", DeviceConnectionID: "dev1",
-		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, Mode: device.ModeDirect,
+		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, PasswordVerified: true,
 	}); !errors.Is(err, ErrSessionLimit) {
 		t.Fatalf("got %v, want ErrSessionLimit", err)
 	}
@@ -172,7 +170,7 @@ func TestRejectAndRevoke(t *testing.T) {
 	m := newTestManager(&now)
 	if _, err := m.Create("p", CreateRequest{
 		DeviceID: "d1", OperatorConnectionID: "op1", DeviceConnectionID: "dev1",
-		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, Mode: device.ModeApproval,
+		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, PasswordVerified: false,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -193,13 +191,13 @@ func TestApproveAndRejectRejectExpiredPendingSession(t *testing.T) {
 	m := newTestManager(&now)
 	if _, err := m.Create("p1", CreateRequest{
 		DeviceID: "d1", OperatorConnectionID: "op1", DeviceConnectionID: "dev1",
-		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, Mode: device.ModeApproval,
+		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, PasswordVerified: false,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.Create("p2", CreateRequest{
 		DeviceID: "d1", OperatorConnectionID: "op1", DeviceConnectionID: "dev1",
-		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, Mode: device.ModeApproval,
+		Purpose: "help", Permissions: []string{PermissionExecuteCommand}, PasswordVerified: false,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +222,7 @@ func TestSessionQuotaCountsOnlyOpenSessions(t *testing.T) {
 	create := func(id string) error {
 		_, err := m.Create(id, CreateRequest{
 			DeviceID: "d1", OperatorConnectionID: "op1", DeviceConnectionID: "dev1",
-			Purpose: "help", Mode: device.ModeDirect,
+			Purpose: "help", PasswordVerified: true,
 		})
 		return err
 	}
@@ -259,7 +257,7 @@ func TestApproveRecordsOperatorPassword(t *testing.T) {
 	m := newTestManager(&now)
 	if _, err := m.Create("p", CreateRequest{
 		DeviceID: "d1", OperatorConnectionID: "op1", DeviceConnectionID: "dev1",
-		Purpose: "help", Mode: device.ModeApproval,
+		Purpose: "help", PasswordVerified: false,
 	}); err != nil {
 		t.Fatal(err)
 	}

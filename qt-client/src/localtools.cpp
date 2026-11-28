@@ -24,26 +24,51 @@ QJsonObject MainWindow::deviceRecord() const {
 }
 
 
+QJsonObject MainWindow::localListDevices(const QJsonObject &) {
+    return localToolSuccessResult(QJsonArray{deviceRecord()});
+}
+
+QJsonObject MainWindow::localDeviceStatus(const QJsonObject &input) {
+    if (input.value("device_id").toString() != deviceId()) return localToolErrorResult("DEVICE_NOT_FOUND", "只能连接当前设备");
+    QJsonObject status = deviceRecord();
+    status.insert("active_sessions", sessions.size());
+    return localToolSuccessResult(status);
+}
+
+QJsonObject MainWindow::localCloseSession(const QJsonObject &input) {
+    return closeSessionAndStopTasks(input.value("session_id").toString());
+}
+
+// 本机 bridge 的工具分发。走表而不是 if 链：新增工具只要加一行，
+// 而成员函数指针的错误（名字打错、签名不符）在编译期就会报出来。
 QJsonObject MainWindow::invokeLocalTool(const QString &tool, const QJsonObject &input) {
     if (!bridge || !bridge->isListening()) return localToolErrorResult("LOCAL_CLIENT_UNAVAILABLE", "本机 Qt 客户端桥接未启动");
-    if (tool == "list_devices") return localToolSuccessResult(QJsonArray{deviceRecord()});
-    if (tool == "get_device_status") {
-        if (input.value("device_id").toString() != deviceId()) return localToolErrorResult("DEVICE_NOT_FOUND", "只能连接当前设备");
-        QJsonObject status = deviceRecord();
-        status.insert("active_sessions", sessions.size());
-        return localToolSuccessResult(status);
+
+    using LocalTool = QJsonObject (MainWindow::*)(const QJsonObject &);
+    static const QHash<QString, LocalTool> tools = [] {
+        QHash<QString, LocalTool> table;
+        table.insert(QStringLiteral("list_devices"), &MainWindow::localListDevices);
+        table.insert(QStringLiteral("get_device_status"), &MainWindow::localDeviceStatus);
+        table.insert(QStringLiteral("request_connection"), &MainWindow::createLocalSessionRequest);
+        table.insert(QStringLiteral("close_session"), &MainWindow::localCloseSession);
+        table.insert(QStringLiteral("execute_command"), &MainWindow::startLocalCommand);
+        table.insert(QStringLiteral("get_command_result"), &MainWindow::localCommandResultFromCursor);
+        table.insert(QStringLiteral("cancel_command"), &MainWindow::cancelLocalCommand);
+        table.insert(QStringLiteral("download_file"), &MainWindow::downloadLocalFile);
+        table.insert(QStringLiteral("upload_file"), &MainWindow::uploadLocalFile);
+        table.insert(QStringLiteral("ask_user"), &MainWindow::askLocalUser);
+        table.insert(QStringLiteral("get_user_reply"), &MainWindow::getLocalUserReply);
+        return table;
+    }();
+
+    // get_session_status 只看参数里的 session_id，与其它工具的参数形态不同，
+    // 单独适配一下，表的签名才能保持统一。
+    if (tool == QStringLiteral("get_session_status")) {
+        return localSessionStatusResult(input.value("session_id").toString());
     }
-    if (tool == "request_connection") return createLocalSessionRequest(input);
-    if (tool == "get_session_status") return localSessionStatusResult(input.value("session_id").toString());
-    if (tool == "ask_user") return askLocalUser(input);
-    if (tool == "get_user_reply") return getLocalUserReply(input);
-    if (tool == "execute_command") return startLocalCommand(input);
-    if (tool == "download_file") return downloadLocalFile(input);
-    if (tool == "upload_file") return uploadLocalFile(input);
-    if (tool == "get_command_result") return localCommandResultFromCursor(input);
-    if (tool == "cancel_command") return cancelLocalCommand(input);
-    if (tool == "close_session") return closeSessionAndStopTasks(input.value("session_id").toString());
-    return localToolErrorResult("UNKNOWN_TOOL", "未支持的工具");
+    const LocalTool handler = tools.value(tool, nullptr);
+    if (handler == nullptr) return localToolErrorResult("UNKNOWN_TOOL", "未支持的工具");
+    return (this->*handler)(input);
 }
 
 
@@ -274,7 +299,7 @@ QJsonObject MainWindow::startLocalCommand(const QJsonObject &input) {
 }
 
 
-QJsonObject MainWindow::localCommandResultFromCursor(const QJsonObject &input) const {
+QJsonObject MainWindow::localCommandResultFromCursor(const QJsonObject &input) {
     const QString requestId = input.value("request_id").toString();
     if (!tasks.contains(requestId) || tasks.value(requestId).value("session_id").toString() != input.value("session_id").toString())
         return localToolErrorResult("TASK_NOT_FOUND", "任务不存在或不属于该会话");

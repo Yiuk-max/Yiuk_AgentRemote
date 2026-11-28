@@ -3,16 +3,12 @@
 // 后端重启后会话直接丢失
 package session
 
-// Session lifecycle: requested -> pending_approval -> approved -> active -> closed
-// 授权状态机、权限集合、设备/操作者绑定、过期
 import (
 	"errors"
 	"fmt"
 	"sort"
 	"sync"
 	"time"
-
-	"agentremote/internal/platform/device"
 )
 
 // session lifecycle state.
@@ -59,7 +55,6 @@ type Session struct {
 	OperatorSource       string              //记录的操作者IP地址，供所有者查看
 	Purpose              string              //操作者提交的会话用途说明，会显示在授权请求中。
 	Permissions          map[string]struct{} //本会话获准的权限集合；命令执行、文件读取和文件写入分别授权
-	Mode                 device.Mode         //设备配置的授权模式：approval 需要所有者批准，direct 跳过逐次批准
 	Status               Status              //会话生命周期状态
 	CreatedAt            time.Time           //会话创建时间
 	ExpiresAt            time.Time           // 会话过期时间；审批等待阶段和批准后的会话使用各自的时限
@@ -73,31 +68,31 @@ type Session struct {
 }
 
 // Clone 返回一个副本，调用者可以在不持有管理器锁的情况下读取
-func (sessionRecord *Session) Clone() *Session {
-	if sessionRecord == nil {
+func (s *Session) Clone() *Session {
+	if s == nil {
 		return nil
 	}
-	snapshot := *sessionRecord
-	snapshot.Permissions = make(map[string]struct{}, len(sessionRecord.Permissions))
-	for permission := range sessionRecord.Permissions {
+	snapshot := *s
+	snapshot.Permissions = make(map[string]struct{}, len(s.Permissions))
+	for permission := range s.Permissions {
 		snapshot.Permissions[permission] = struct{}{}
 	}
 	return &snapshot
 }
 
-// 报告会话是否授予某个权限
-func (sessionRecord *Session) HasPermission(permission string) bool {
-	if sessionRecord == nil {
+// HasPermission 报告会话是否授予某个权限。
+func (s *Session) HasPermission(permission string) bool {
+	if s == nil {
 		return false
 	}
-	_, ok := sessionRecord.Permissions[permission]
+	_, ok := s.Permissions[permission]
 	return ok
 }
 
-// 以一种顺序返回权限列表
-func (sessionRecord *Session) PermissionList() []string {
-	permissions := make([]string, 0, len(sessionRecord.Permissions))
-	for permission := range sessionRecord.Permissions {
+// PermissionList 返回权限名切片；顺序不确定（map 遍历）。
+func (s *Session) PermissionList() []string {
+	permissions := make([]string, 0, len(s.Permissions))
+	for permission := range s.Permissions {
 		permissions = append(permissions, permission)
 	}
 	sort.Strings(permissions)
@@ -113,7 +108,10 @@ type CreateRequest struct {
 	OperatorSource       string
 	Purpose              string
 	Permissions          []string
-	Mode                 device.Mode
+	// PasswordVerified 报告调用方已用设备当前临时密码证明过身份。
+	// 为真时会话直接进入 approved（不必再等所有者批准）；为假则进入 pending_approval。
+	// 判定放在调用方，因为它才是刚验过密码的那一方。
+	PasswordVerified bool
 }
 
 // Manager 拥有所有会话的状态
@@ -154,7 +152,7 @@ func newManager(maxSessions, maxSessionsPerDevice int, sessionTTL, approvalTTL t
 	}
 }
 
-// Create 创建会话；直连模式立即批准，审批模式进入等待审批状态。
+// Create 创建会话：密码已验证的请求直接进入 approved，否则进入 pending_approval。
 func (m *Manager) Create(sessionID string, request CreateRequest) (*Session, error) {
 	if request.Purpose == "" {
 		return nil, ErrInvalidPurpose
@@ -163,11 +161,6 @@ func (m *Manager) Create(sessionID string, request CreateRequest) (*Session, err
 	if err != nil {
 		return nil, err
 	}
-	mode := request.Mode
-	if mode != device.ModeDirect && mode != device.ModeApproval {
-		mode = device.ModeApproval
-	}
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// 只数「还没结束」的会话。终态记录会一直留在内存里供查询，
@@ -200,12 +193,11 @@ func (m *Manager) Create(sessionID string, request CreateRequest) (*Session, err
 		OperatorSource:       request.OperatorSource,
 		Purpose:              request.Purpose,
 		Permissions:          permissions,
-		Mode:                 mode,
 		Status:               StatusRequested,
 		CreatedAt:            now,
 		LastActivity:         now,
 	}
-	if mode == device.ModeDirect {
+	if request.PasswordVerified {
 		sessionRecord.Status = StatusApproved
 		sessionRecord.ApprovedAt = now
 		sessionRecord.ExpiresAt = now.Add(m.sessionTTL)
@@ -294,6 +286,10 @@ func (m *Manager) Reject(sessionID, deviceConnectionID, reason string) (*Session
 // Authorize verifies that the operator connection owns an approved/active,
 // unexpired session with the requested permission.
 // 授权会验证操作员连接是否拥有一个已批准/有效且未过期的请求权限会话。
+//
+// TODO(薄弱点 #4，见 docs/key-architecture.md §4)：会话没有滑动续期，
+// 这里只写 LastActivity 不读它。timeout_seconds 最大 3600，但 janitor 按
+// session_timeout_sec（默认 600s）硬杀，长命令会在中途被切断。
 func (m *Manager) Authorize(sessionID, operatorConnectionID, permission string) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

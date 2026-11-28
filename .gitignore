@@ -35,6 +35,16 @@ device.json
 tmp-*
 *.ps1
 !deploy/*.sh
+# 例外：spike 脚本是仓库资产，不是临时调试文件。列表要逐个点名，.gitignore
+# 的例外不能重新包含被目录级规则排除的内容。
+!spike/uia/UiaProbe.ps1
+!spike/uia/Run-Spike.ps1
+!spike/uia/Pattern-Smoke.ps1
+!spike/uia/Open-Fixture.ps1
+
+# UIA spike 的原始结果（含这台机器的窗口标题，不进仓库）
+spike/uia/out/
+spike/uia/out-*/
 
 # Qt/CMake 构建树与 IDE 本地状态
 # 注意：.gitignore 对已跟踪文件无效，新增规则前先确认文件未被跟踪

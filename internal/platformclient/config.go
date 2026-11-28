@@ -1,6 +1,7 @@
 package platformclient
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -8,13 +9,12 @@ import (
 
 	"agentremote/internal/platform/protocol"
 	"agentremote/internal/userconfig"
-	"encoding/json"
 )
 
 const configFileName = "platform-client.json"
 
-// minPlayerPasswordLen 与服务端配置的密码最小长度一致，避免拒绝平台可接受的密码
-const minPlayerPasswordLen = 8
+// minOperatorPasswordLen 与服务端配置的密码最小长度一致，避免拒绝平台可接受的密码
+const minOperatorPasswordLen = 8
 
 // 心跳默认值：操作端连接在工具调用之间处于空闲状态；平台会在连接静默超过 heartbeat_timeout_sec（默认 45 秒）后将其关闭，因此心跳应在此期限内发送
 const (
@@ -27,7 +27,7 @@ const (
 // Config 配置与平台的操作端连接
 type Config struct {
 	Address            string `json:"address"`
-	PlayerPassword     string `json:"player_password"`
+	OperatorPassword   string `json:"player_password"`
 	TLSCAFile          string `json:"tls_ca,omitempty"`
 	InsecureSkipVerify bool   `json:"insecure_skip_verify,omitempty"`
 	// PinnedCertSHA256 是服务器证书 DER 字节的 SHA-256 小写十六进制值
@@ -70,8 +70,8 @@ func New(config Config) (*Client, error) {
 	if config.Address == "" {
 		return nil, errors.New("platform client address is required")
 	}
-	if len(config.PlayerPassword) < minPlayerPasswordLen {
-		return nil, fmt.Errorf("platform client player_password must be at least %d characters", minPlayerPasswordLen)
+	if len(config.OperatorPassword) < minOperatorPasswordLen {
+		return nil, fmt.Errorf("platform client player_password must be at least %d characters", minOperatorPasswordLen)
 	}
 	if config.TimeoutSeconds <= 0 {
 		config.TimeoutSeconds = 30
@@ -82,11 +82,13 @@ func New(config Config) (*Client, error) {
 	if config.HeartbeatIntervalSeconds < minHeartbeatIntervalSeconds {
 		config.HeartbeatIntervalSeconds = minHeartbeatIntervalSeconds
 	}
-	return &Client{
+	client := &Client{
 		config:          config,
 		codec:           protocol.NewCodec(protocol.DefaultMaxMessageBytes),
 		cachedSessions:  make(map[string]protocol.SessionInfo),
 		cachedCommands:  make(map[string]*commandResultCache),
 		cachedDownloads: make(map[string]*downloadCache),
-	}, nil
+	}
+	client.toolHandlers = client.newToolHandlers()
+	return client, nil
 }

@@ -3,6 +3,14 @@
 // 它刻意不持有任何 socket 和连接表：所有出站帧都交给 Link，
 // 连接的身份由接入层（gateway）在每次处理时带进来。
 // 状态仍然是纯内存的，重启即丢弃。
+//
+// 文件分工：
+//
+//	handler*.go  按帧类型分发与业务处理（会话、命令、文件、询问）
+//	delivery.go  出站 send/encode 与状态通知
+//	convert.go   领域对象 → 协议帧
+//	errors.go    业务错误 → 稳定错误码 + 协议错误帧
+//	janitor.go   定期收敛过期会话、任务、传输与离线设备
 package core
 
 import (
@@ -63,7 +71,7 @@ func New(serverConfig config.Config, logger *slog.Logger, link Link) *Service {
 		tasks:         task.NewManager(serverConfig.MaxOutputBytes, serverConfig.MaxTasksPerSession),
 		downloads:     transfer.NewManager(serverConfig.MaxTasksPerSession),
 		uploads:       transfer.NewManager(serverConfig.MaxTasksPerSession),
-		auth:          auth.New(serverConfig.PlayerPassword, serverConfig.AuthRatePerMin),
+		auth:          auth.New(serverConfig.OperatorPassword, serverConfig.AuthRatePerMin),
 		registrations: baseauth.NewLimiter(serverConfig.RegisterRatePerMin, time.Minute),
 		audit:         audit.New(logger),
 		link:          link,

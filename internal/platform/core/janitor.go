@@ -1,7 +1,5 @@
 package core
 
-// 定期收敛过期会话、命令任务和文件传输，并清理过期的离线设备。
-// 定时器由 Service.Run 驱动。
 import (
 	"time"
 
@@ -11,7 +9,7 @@ import (
 	"agentremote/internal/platform/transfer"
 )
 
-// expireOperationsAndPruneDevices 结束过期操作并清理离线设备：
+// expireOperationsAndPruneDevices 结束过期操作并清理离线设备，由 Service.Run 的定时器驱动：
 // 1. 会话过期处理：检查所有会话是否过期，如果过期，则从设备中移除该会话，并向设备发送关闭会话的消息，同时将任务状态标记为取消
 // 2. 传输过期处理：检查所有文件传输任务是否过期，如果过期，则向操作端发送传输结果消息，并向设备发送取消文件下载的消息
 // 3. 任务过期处理：检查所有命令执行任务是否过期，如果过期，则向操作端发送任务结果消息，并向设备发送取消命令的消息

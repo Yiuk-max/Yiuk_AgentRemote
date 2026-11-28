@@ -2,7 +2,10 @@ package platformclient
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,9 +15,6 @@ import (
 
 	"agentremote/internal/agenttools"
 	"agentremote/internal/platform/protocol"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 )
 
 // maxUploadFileBytes 与服务端 max_upload_bytes 的默认值一致，避免传输平台会拒绝的文件
@@ -26,6 +26,10 @@ const uploadChunkBytes = 64 << 10
 
 // handleUploadFile 解析工具参数，将本地文件发送到目标设备。
 // 平台按顺序转发 base64 分块；设备将其写入 remote_path（为空时写入设备自己的 uploads 目录），并返回最终路径、大小和 SHA-256。
+//
+// TODO(薄弱点 #5，见 docs/key-architecture.md §4)：当前一次性发完所有分块，
+// 没有窗口/ack 流控。32 MiB = 512 帧灌进深度 64 的发送队列，设备稍慢就被
+// 判为 slow_client 断开，重连后分块静默丢失。应该反压操作者而不是断设备。
 func (c *Client) handleUploadFile(ctx context.Context, arguments json.RawMessage) (any, error) {
 	var input struct {
 		SessionID  string `json:"session_id"`

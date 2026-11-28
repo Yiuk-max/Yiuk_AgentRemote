@@ -2,11 +2,11 @@ package platformclient
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"agentremote/internal/agenttools"
 	"agentremote/internal/platform/protocol"
-	"encoding/json"
 )
 
 // handleExecuteCommand 解析工具参数并提交已授权会话中的 PowerShell 命令。

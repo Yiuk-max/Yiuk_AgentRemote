@@ -74,7 +74,7 @@ int main(int argc, char **argv) {
     saveYiukIdentity({{"device_id", "123456789"}, {"address", qEnvironmentVariable("YIUK_PLATFORM_ADDRESS")},
         {"player_password", SecureStore::protect(playerPassword)},
         {"temporary_password", SecureStore::protect("0123456789abcdef0123456789abcdef")},
-        {"mode", "direct"}, {"tls", false}});
+        {"tls", false}});
     MainWindow window;
     // Deliberately keep the main window hidden, to exercise tray-resident use.
     auto *device = window.findChild<PlatformClient *>();

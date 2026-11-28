@@ -1,6 +1,5 @@
 package core
 
-//handler负责消息分发，只负责处理重要的事务，其它分发给具体的handler去处理
 import (
 	"errors"
 	"sort"
@@ -22,8 +21,8 @@ func (s *Service) dispatch(caller *Caller, message protocol.Message) error {
 		return newFatalProtocolError("BAD_VERSION", "unsupported protocol version")
 	}
 	switch message.Type {
-	case protocol.TypeAuthenticatePlayer: //连接服务器使用服务
-		return s.handleAuthenticatePlayer(caller, message)
+	case protocol.TypeAuthenticateOperator: //连接服务器使用服务
+		return s.handleAuthenticateOperator(caller, message)
 	case protocol.TypePing: //发心跳检测
 		if caller.Role == RoleAnonymous {
 			return newFatalProtocolError("AUTH_REQUIRED", "authenticate before sending other messages")
@@ -91,7 +90,7 @@ func (s *Service) dispatch(caller *Caller, message protocol.Message) error {
 	}
 }
 
-func (s *Service) handleAuthenticatePlayer(caller *Caller, message protocol.Message) error {
+func (s *Service) handleAuthenticateOperator(caller *Caller, message protocol.Message) error {
 	if caller.Role != RoleAnonymous {
 		return newFatalProtocolError("ALREADY_AUTHENTICATED", "connection is already authenticated")
 	}
@@ -105,14 +104,14 @@ func (s *Service) handleAuthenticatePlayer(caller *Caller, message protocol.Mess
 	if message.IdentityType != "player" {
 		return newFatalProtocolError("BAD_IDENTITY", "identity_type must be player")
 	}
-	if err := s.auth.Authenticate(caller.RemoteAddr, message.PlayerPassword); err != nil {
+	if err := s.auth.Authenticate(caller.RemoteAddr, message.OperatorPassword); err != nil {
 		s.audit.Warn("player_auth_failed", "remote", caller.RemoteAddr, "code", auditErrorCode(err))
 		if errors.Is(err, auth.ErrRateLimited) {
 			return newFatalProtocolError("RATE_LIMITED", "too many authentication attempts")
 		}
 		return newFatalProtocolError("BAD_PASSWORD", "player password is incorrect")
 	}
-	caller.Role = RolePlayer
+	caller.Role = RoleOperator
 	caller.BusinessType = businessType
 	s.audit.Event("player_authenticated", "connection", audit.RedactID(caller.ConnectionID), "remote", caller.RemoteAddr)
 	return s.sendResponse(caller, message, protocol.Message{
@@ -123,9 +122,8 @@ func (s *Service) handleAuthenticatePlayer(caller *Caller, message protocol.Mess
 	})
 }
 
-// 处理注册设备
 func (s *Service) handleRegisterDevice(caller *Caller, message protocol.Message) error {
-	if caller.Role != RolePlayer {
+	if caller.Role != RoleOperator {
 		if caller.Role == RoleDevice {
 			return newProtocolError("ALREADY_REGISTERED", "connection already owns a device")
 		}
@@ -145,13 +143,6 @@ func (s *Service) handleRegisterDevice(caller *Caller, message protocol.Message)
 	}
 	if len(message.Platform) > 32 {
 		return newProtocolError("INVALID_ARGUMENT", "platform is too long")
-	}
-	mode := device.Mode(message.Mode)
-	if message.Mode == "" {
-		mode = device.ModeApproval
-	}
-	if mode != device.ModeDirect && mode != device.ModeApproval {
-		return newProtocolError("INVALID_ARGUMENT", "mode must be direct or approval")
 	}
 	if message.TemporaryPassword != "" && len(message.TemporaryPassword) < 32 {
 		return newProtocolError("WEAK_TEMPORARY_PASSWORD", "temporary password must be at least 32 characters")
@@ -185,7 +176,6 @@ func (s *Service) handleRegisterDevice(caller *Caller, message protocol.Message)
 		Platform:        message.Platform,
 		TemporaryPass:   message.TemporaryPassword,
 		PasswordVersion: message.PasswordVersion,
-		Mode:            mode,
 		TTL:             passwordTTL,
 	})
 	if err != nil {
@@ -205,14 +195,13 @@ func (s *Service) handleRegisterDevice(caller *Caller, message protocol.Message)
 		s.audit.Event("device_id_reassigned", "requested", audit.RedactID(message.DeviceID),
 			"assigned", audit.RedactID(info.ID), "connection", audit.RedactID(caller.ConnectionID))
 	}
-	s.audit.Event("device_registered", "device", audit.RedactID(info.ID), "connection", audit.RedactID(caller.ConnectionID), "mode", string(info.Mode))
+	s.audit.Event("device_registered", "device", audit.RedactID(info.ID), "connection", audit.RedactID(caller.ConnectionID))
 
 	deviceInfo := protocolDeviceInfo(info)
 	return s.sendResponse(caller, message, protocol.Message{
 		Type:              protocol.TypeDeviceRegistered,
 		DeviceID:          info.ID,
 		DeviceName:        info.Name,
-		Mode:              string(info.Mode),
 		PasswordVersion:   info.PasswordVersion,
 		ExpiresAt:         info.PasswordExpiresAt.Unix(),
 		TemporaryPassword: generatedPassword,
@@ -221,7 +210,6 @@ func (s *Service) handleRegisterDevice(caller *Caller, message protocol.Message)
 	})
 }
 
-// 处理心跳包
 func (s *Service) handleDeviceHeartbeat(caller *Caller, message protocol.Message) error {
 	if caller.Role != RoleDevice {
 		return newProtocolError("NOT_DEVICE", "only a registered device can send heartbeats")
@@ -238,17 +226,9 @@ func (s *Service) handleDeviceHeartbeat(caller *Caller, message protocol.Message
 	})
 }
 
-// 处理更新密码
 func (s *Service) handleUpdateTemporaryPassword(caller *Caller, message protocol.Message) error {
 	if caller.Role != RoleDevice {
 		return newProtocolError("NOT_DEVICE", "only a registered device can rotate its temporary password")
-	}
-	mode := device.Mode(message.Mode)
-	if message.Mode == "" {
-		mode = device.ModeApproval
-	}
-	if mode != device.ModeDirect && mode != device.ModeApproval {
-		return newProtocolError("INVALID_ARGUMENT", "mode must be direct or approval")
 	}
 	if message.TemporaryPassword != "" && len(message.TemporaryPassword) < 32 {
 		return newProtocolError("WEAK_TEMPORARY_PASSWORD", "temporary password must be at least 32 characters")
@@ -267,7 +247,7 @@ func (s *Service) handleUpdateTemporaryPassword(caller *Caller, message protocol
 		}
 		passwordTTL = requestedPasswordTTL
 	}
-	info, generatedPassword, err := s.devices.UpdatePassword(caller.DeviceID, message.TemporaryPassword, message.PasswordVersion, mode, passwordTTL)
+	info, generatedPassword, err := s.devices.UpdatePassword(caller.DeviceID, message.TemporaryPassword, message.PasswordVersion, passwordTTL)
 	if err != nil {
 		return s.deviceProtocolError(err)
 	}
@@ -278,7 +258,6 @@ func (s *Service) handleUpdateTemporaryPassword(caller *Caller, message protocol
 	return s.sendResponse(caller, message, protocol.Message{
 		Type:              protocol.TypeTemporaryPasswordUpdated,
 		DeviceID:          info.ID,
-		Mode:              string(info.Mode),
 		PasswordVersion:   info.PasswordVersion,
 		ExpiresAt:         info.PasswordExpiresAt.Unix(),
 		TemporaryPassword: generatedPassword,
@@ -287,7 +266,6 @@ func (s *Service) handleUpdateTemporaryPassword(caller *Caller, message protocol
 	})
 }
 
-// 获取设备列表
 func (s *Service) handleListDevices(caller *Caller, message protocol.Message) error {
 	infos := s.devices.List()
 	sort.Slice(infos, func(i, j int) bool { return infos[i].ID < infos[j].ID })

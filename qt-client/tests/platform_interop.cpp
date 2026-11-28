@@ -49,7 +49,6 @@ int main(int argc, char *argv[]) {
     deviceConfig.playerPassword = playerPassword;
     deviceConfig.deviceId = deviceId;
     deviceConfig.deviceName = QStringLiteral("qt-device");
-    deviceConfig.mode = QStringLiteral("approval");
     deviceConfig.temporaryPassword = devicePassword;
     deviceConfig.tls = useTls;
     deviceConfig.allowInsecure = insecure;
@@ -64,7 +63,6 @@ int main(int argc, char *argv[]) {
     operatorConfig.playerPassword = playerPassword;
     operatorConfig.deviceId = QStringLiteral("987654321");
     operatorConfig.deviceName = QStringLiteral("qt-operator");
-    operatorConfig.mode = QStringLiteral("approval");
     operatorConfig.temporaryPassword = QString::fromLatin1(kOperatorPassword);
     operatorConfig.tls = useTls;
     operatorConfig.allowInsecure = insecure;

@@ -1,17 +1,18 @@
 package gateway_test
 
 import (
-	"agentremote/internal/platform/protocol"
 	"testing"
+
+	"agentremote/internal/platform/protocol"
 )
 
 func TestUserQuestionRequiresApprovalAndDeviceBinding(t *testing.T) {
 	address, _ := startServer(t, nil)
 	device := dialClient(t, address)
-	device.auth(testPlayerPassword)
-	device.register("approval-question", testDevicePassword, protocol.ModeApproval)
+	device.auth(testOperatorPassword)
+	device.register("approval-question", testDevicePassword)
 	op := dialClient(t, address)
-	op.auth(testPlayerPassword)
+	op.auth(testOperatorPassword)
 	op.send(protocol.Message{Type: protocol.TypeRequestSession, DeviceID: "approval-question", Purpose: "approval needed"})
 	sid := op.recv(protocol.TypeSessionCreated).SessionID
 	device.recv(protocol.TypeSessionRequest)
@@ -24,8 +25,8 @@ func TestUserQuestionRequiresApprovalAndDeviceBinding(t *testing.T) {
 	op.recv(protocol.TypeUserQuestionAccepted)
 	device.recv(protocol.TypeAskUser)
 	otherDevice := dialClient(t, address)
-	otherDevice.auth(testPlayerPassword)
-	otherDevice.register("unrelated-question-device", testDevicePassword, protocol.ModeDirect)
+	otherDevice.auth(testOperatorPassword)
+	otherDevice.register("unrelated-question-device", testDevicePassword)
 	otherDevice.send(protocol.Message{Type: protocol.TypeUserReply, SessionID: sid, RequestID: "q", Status: "answered", AnswerSource: "text", Answer: "spoof"})
 	otherDevice.recv(protocol.TypeError)
 	op.send(protocol.Message{Type: protocol.TypeGetUserReply, SessionID: sid, RequestID: "q"})

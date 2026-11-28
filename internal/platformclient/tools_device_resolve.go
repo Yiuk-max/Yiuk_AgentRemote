@@ -84,7 +84,6 @@ func deviceCandidates(devices []protocol.DeviceInfo) []map[string]any {
 		candidates = append(candidates, map[string]any{
 			"device_id": device.DeviceID,
 			"name":      device.Name,
-			"mode":      device.Mode,
 		})
 	}
 	sort.Slice(candidates, func(i, j int) bool {

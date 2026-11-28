@@ -31,10 +31,10 @@ func TestCertPinVerifierAcceptsOnlyThePinnedCertificate(t *testing.T) {
 
 func TestNewAcceptsPasswordLengthThePlatformAllows(t *testing.T) {
 	// 服务端接受至少 8 个字符的玩家密码；客户端不能设置得更严格，否则有效部署会报 NOT_CONFIGURED
-	if _, err := New(Config{Address: "127.0.0.1:25664", PlayerPassword: "Yiuk29564"}); err != nil {
+	if _, err := New(Config{Address: "127.0.0.1:25664", OperatorPassword: "Yiuk29564"}); err != nil {
 		t.Fatalf("8-character password rejected: %v", err)
 	}
-	if _, err := New(Config{Address: "127.0.0.1:25664", PlayerPassword: "short"}); err == nil {
+	if _, err := New(Config{Address: "127.0.0.1:25664", OperatorPassword: "short"}); err == nil {
 		t.Fatal("password below the platform floor must be rejected")
 	}
 }

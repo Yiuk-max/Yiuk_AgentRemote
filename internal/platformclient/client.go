@@ -5,6 +5,7 @@ package platformclient
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,10 +17,16 @@ import (
 
 // Client 表示与平台保持的持久操作端连接
 type Client struct {
-	config Config
-	codec  protocol.Codec
+	config       Config
+	codec        protocol.Codec
+	toolHandlers map[string]toolHandler
 
-	requestMu sync.Mutex // 串行化请求交互和连接初始化
+	// requestMu 串行化请求交互和连接初始化。
+	//
+	// TODO(薄弱点 #9，见 docs/key-architecture.md §4)：一把锁意味着并发工具调用
+	// 会互相阻塞到超时。长任务已经走会话式 execute_command + get_command_result，
+	// 但两个并行工具调用仍会排队；应改成 per-request 的 pending map。
+	requestMu sync.Mutex
 
 	// writeMu 串行化帧写入，避免心跳 goroutine 与执行中的工具调用交错写入数据
 	writeMu sync.Mutex
@@ -59,36 +66,67 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// Invoke 按工具名称分发调用，并将原始 JSON 参数交给对应的平台操作。
+// toolHandler 是后端对单个工具的实现：拿原始 JSON 参数，返回结构化结果或业务错误。
+type toolHandler func(ctx context.Context, input json.RawMessage) (any, error)
+
+// Invoke 按工具名称分发调用。
+//
+// 分发走注册表而不是 switch：新增工具时只需要在 toolHandlers 里加一行，
+// TestEveryBackendToolHasAHandler 会检查「目录里有、这里没有」的漏项。
 func (c *Client) Invoke(ctx context.Context, request agenttools.Request) (any, error) {
-	switch request.Name {
-	case agenttools.AskUser, agenttools.GetUserReply:
-		return c.handleQuestion(ctx, request)
-	case agenttools.ListDevices:
-		return c.handleListDevices(ctx)
-	case agenttools.GetDeviceStatus:
-		return c.handleGetDeviceStatus(ctx, request.Input)
-	case agenttools.RequestConnection:
-		return c.handleRequestConnection(ctx, request.Input)
-	case agenttools.RunCommand:
-		return c.handleRunCommand(ctx, request.Input)
-	case agenttools.GetSessionStatus:
-		return c.handleGetSessionStatus(ctx, request.Input)
-	case agenttools.ExecuteCommand:
-		return c.handleExecuteCommand(ctx, request.Input)
-	case agenttools.GetCommandResult:
-		return c.handleGetCommandResult(ctx, request.Input)
-	case agenttools.DownloadFile:
-		return c.handleDownloadFile(ctx, request.Input)
-	case agenttools.UploadFile:
-		return c.handleUploadFile(ctx, request.Input)
-	case agenttools.CancelCommand:
-		return c.handleCancelCommand(ctx, request.Input)
-	case agenttools.CloseSession:
-		return c.handleCloseSession(ctx, request.Input)
-	default:
+	handler, ok := c.toolHandlers[request.Name]
+	if !ok {
 		return nil, &agenttools.Error{Code: "UNKNOWN_TOOL", Message: "unsupported tool"}
 	}
+	return handler(ctx, request.Input)
+}
+
+// newToolHandlers 把工具名映射到具体实现。两个询问工具共用 handleQuestion，
+// 由请求里的 Name 区分 ask_user 与 get_user_reply。
+func (c *Client) newToolHandlers() map[string]toolHandler {
+	handlers := map[string]toolHandler{
+		agenttools.ListDevices: func(ctx context.Context, _ json.RawMessage) (any, error) {
+			return c.handleListDevices(ctx)
+		},
+		agenttools.GetDeviceStatus: func(ctx context.Context, input json.RawMessage) (any, error) {
+			return c.handleGetDeviceStatus(ctx, input)
+		},
+		agenttools.RequestConnection: func(ctx context.Context, input json.RawMessage) (any, error) {
+			return c.handleRequestConnection(ctx, input)
+		},
+		agenttools.RunCommand: func(ctx context.Context, input json.RawMessage) (any, error) {
+			return c.handleRunCommand(ctx, input)
+		},
+		agenttools.GetSessionStatus: func(ctx context.Context, input json.RawMessage) (any, error) {
+			return c.handleGetSessionStatus(ctx, input)
+		},
+		agenttools.ExecuteCommand: func(ctx context.Context, input json.RawMessage) (any, error) {
+			return c.handleExecuteCommand(ctx, input)
+		},
+		agenttools.GetCommandResult: func(ctx context.Context, input json.RawMessage) (any, error) {
+			return c.handleGetCommandResult(ctx, input)
+		},
+		agenttools.DownloadFile: func(ctx context.Context, input json.RawMessage) (any, error) {
+			return c.handleDownloadFile(ctx, input)
+		},
+		agenttools.UploadFile: func(ctx context.Context, input json.RawMessage) (any, error) {
+			return c.handleUploadFile(ctx, input)
+		},
+		agenttools.CancelCommand: func(ctx context.Context, input json.RawMessage) (any, error) {
+			return c.handleCancelCommand(ctx, input)
+		},
+		agenttools.CloseSession: func(ctx context.Context, input json.RawMessage) (any, error) {
+			return c.handleCloseSession(ctx, input)
+		},
+	}
+	// 询问类工具要带上自己的名字，让 handleQuestion 知道该发哪种帧。
+	for _, name := range []string{agenttools.AskUser, agenttools.GetUserReply} {
+		toolName := name
+		handlers[toolName] = func(ctx context.Context, input json.RawMessage) (any, error) {
+			return c.handleQuestion(ctx, agenttools.Request{Name: toolName, Input: input})
+		}
+	}
+	return handlers
 }
 
 // sendRequest 使用客户端配置的默认超时发送请求，并等待匹配的响应。

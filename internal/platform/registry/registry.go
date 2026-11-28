@@ -123,11 +123,6 @@ func (r *Registry) RegisterGateway(ctx context.Context, gatewayID, instanceID, p
 	return r.client.Set(ctx, r.gatewayKey(gatewayID), instanceID+" "+pushAddr, r.ttl).Err()
 }
 
-// RenewGateway 续期一次网关存活键
-func (r *Registry) RenewGateway(ctx context.Context, gatewayID, instanceID, pushAddr string) error {
-	return r.RegisterGateway(ctx, gatewayID, instanceID, pushAddr)
-}
-
 // PutConn 登记一条连接属于哪个网关。
 func (r *Registry) PutConn(ctx context.Context, connectionID, gatewayID, instanceID string) error {
 	if r == nil || r.client == nil {

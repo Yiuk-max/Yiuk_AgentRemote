@@ -23,8 +23,7 @@ public:
         QString deviceName;         // 显示名称
         QString temporaryPassword;  // 32 位临时密码
         int passwordVersion = 1;
-        QString mode;               // "direct" 或 "approval"
-        int ttlSeconds = 24 * 60 * 60;
+            int ttlSeconds = 24 * 60 * 60;
         bool tls = true;
         bool allowInsecure = false; // 仅用于开发：跳过证书验证
         QString caFile;
@@ -69,7 +68,7 @@ public:
     void sendFileUploadResult(const QString &sessionId, const QString &requestId, const QString &status,
                               const QString &remotePath, const QString &fileName, qint64 fileSize,
                               const QString &sha256, bool resultKnown);
-    void updateTemporaryPassword(const QString &password, int version, const QString &mode, int ttlSeconds);
+    void updateTemporaryPassword(const QString &password, int version, int ttlSeconds);
     void requestSessionClose(const QString &sessionId);
     void requestCommandCancel(const QString &sessionId, const QString &requestId);
 

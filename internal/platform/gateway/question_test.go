@@ -1,23 +1,24 @@
 package gateway_test
 
 import (
-	"agentremote/internal/platform/protocol"
 	"testing"
 	"time"
+
+	"agentremote/internal/platform/protocol"
 )
 
 func TestUserQuestionFlowAndOwnership(t *testing.T) {
 	address, _ := startServer(t, nil)
 	device := dialClient(t, address)
-	device.auth(testPlayerPassword)
-	device.register("question-device", testDevicePassword, protocol.ModeDirect)
+	device.auth(testOperatorPassword)
+	device.register("question-device", testDevicePassword)
 	operator := dialClient(t, address)
-	operator.auth(testPlayerPassword)
+	operator.auth(testOperatorPassword)
 	operator.send(protocol.Message{Type: protocol.TypeRequestSession, DeviceID: "question-device", TemporaryPassword: testDevicePassword, Purpose: "question integration"})
 	sessionID := operator.recv(protocol.TypeSessionCreated).SessionID
 	device.recv(protocol.TypeSessionStatus)
 	attacker := dialClient(t, address)
-	attacker.auth(testPlayerPassword)
+	attacker.auth(testOperatorPassword)
 	ask := protocol.Message{Type: protocol.TypeAskUser, SessionID: sessionID, RequestID: "question-1", Question: "选择安装位置？", Options: []string{"默认", "D盘"}, TimeoutSeconds: 15}
 	attacker.send(ask)
 	if got := attacker.recv(protocol.TypeError); got.Code == "" {
@@ -106,10 +107,10 @@ func TestUserQuestionTimeoutAndDisconnect(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			address, _ := startServer(t, nil)
 			device := dialClient(t, address)
-			device.auth(testPlayerPassword)
-			device.register("timeout-device", testDevicePassword, protocol.ModeDirect)
+			device.auth(testOperatorPassword)
+			device.register("timeout-device", testDevicePassword)
 			operator := dialClient(t, address)
-			operator.auth(testPlayerPassword)
+			operator.auth(testOperatorPassword)
 			operator.send(protocol.Message{Type: protocol.TypeRequestSession, DeviceID: "timeout-device", TemporaryPassword: testDevicePassword, Purpose: "test"})
 			sid := operator.recv(protocol.TypeSessionCreated).SessionID
 			operator.send(protocol.Message{Type: protocol.TypeAskUser, SessionID: sid, RequestID: "q", Question: "继续？", TimeoutSeconds: 15})

@@ -32,7 +32,6 @@ func main() {
 	password := flag.String("password", "", "platform player password")
 	caFile := flag.String("ca", "", "CA certificate file")
 	insecure := flag.Bool("insecure", false, "skip certificate verification")
-	mode := flag.String("mode", "approval", "device authorization mode: direct or approval")
 	flag.Parse()
 	if *password == "" {
 		fail("missing -password")
@@ -82,48 +81,58 @@ func main() {
 	// 2. device registration
 	device.send(protocol.Message{
 		Type: protocol.TypeRegisterDevice, DeviceID: deviceID, DeviceName: "smoke-device",
-		Platform: "windows", Mode: *mode, TemporaryPassword: devicePassword,
+		Platform: "windows", TemporaryPassword: devicePassword,
 	})
 	registered := device.recv(protocol.TypeDeviceRegistered)
-	step("device registered", "device_id", registered.DeviceID, "mode", registered.Mode, "version", registered.PasswordVersion)
+	step("device registered", "device_id", registered.DeviceID, "version", registered.PasswordVersion)
 
 	// 3. operator lists devices
 	operator.send(protocol.Message{Type: protocol.TypeListDevices})
 	list := operator.recv(protocol.TypeDeviceList)
 	step("device listed", "count", len(list.Devices), "online", list.Devices[0].Online)
 
-	// 4. operator requests a session
-	// 注意：服务端把“出示临时密码”本身当作直接授权（handler_session.go），
-	// 会让 approval 模式的设备也直接放行、拿不到 session_request。所以只在
-	// direct 模式下携带临时密码，approval 模式保持无密码以走设备审批。
-	sessionRequest := protocol.Message{
+	// 4. 不带密码申请：进入待批准，由设备所有者点批准
+	operator.send(protocol.Message{
 		Type: protocol.TypeRequestSession, DeviceID: deviceID,
 		Purpose: "smoke test", Permissions: []string{"execute_command"},
-	}
-	if *mode == "direct" {
-		sessionRequest.TemporaryPassword = devicePassword
-	}
-	operator.send(sessionRequest)
+	})
 	created := operator.recv(protocol.TypeSessionCreated)
 	sessionID := created.SessionID
+	if created.Status != "pending_approval" {
+		fail("session without password should wait for approval, got %q", created.Status)
+	}
 	step("session created", "session", short(sessionID), "status", created.Status)
 
-	// 5. approval mode: device approves
-	if *mode == "approval" {
-		request := device.recv(protocol.TypeSessionRequest)
-		// 设备批准时自动带上自己的当前临时密码，平台核对后要把它转给操作者。
-		device.send(protocol.Message{
-			Type: protocol.TypeApproveSession, SessionID: request.SessionID, TemporaryPassword: devicePassword,
-		})
-		approved := operator.recvWhere(protocol.TypeSessionStatus, func(m protocol.Message) bool {
-			return m.TemporaryPassword != ""
-		})
-		if approved.TemporaryPassword != devicePassword {
-			fail("operator received temporary_password %q, want the device password", approved.TemporaryPassword)
-		}
-		device.recv(protocol.TypeSessionStatus)
-		step("session approved", "session", short(sessionID), "password_returned", true)
+	// 5. 设备批准；批准时带上自己的当前临时密码，平台核对后转给操作者，
+	// 让它在密码有效期内重连不必再打扰所有者。
+	request := device.recv(protocol.TypeSessionRequest)
+	device.send(protocol.Message{
+		Type: protocol.TypeApproveSession, SessionID: request.SessionID, TemporaryPassword: devicePassword,
+	})
+	approved := operator.recvWhere(protocol.TypeSessionStatus, func(m protocol.Message) bool {
+		return m.TemporaryPassword != ""
+	})
+	if approved.TemporaryPassword != devicePassword {
+		fail("operator received temporary_password %q, want the device password", approved.TemporaryPassword)
 	}
+	device.recv(protocol.TypeSessionStatus)
+	step("session approved", "session", short(sessionID), "password_returned", true)
+
+	// 5b. 带密码申请：临时密码本身就是授权凭证，直接批准，不惊动所有者。
+	operator.send(protocol.Message{
+		Type: protocol.TypeRequestSession, DeviceID: deviceID, Purpose: "direct smoke",
+		Permissions: []string{"execute_command"}, TemporaryPassword: devicePassword,
+	})
+	direct := operator.recv(protocol.TypeSessionCreated)
+	if direct.Status != "approved" {
+		fail("session with a valid temporary password should be approved at once, got %q", direct.Status)
+	}
+	operator.send(protocol.Message{Type: protocol.TypeCloseSession, SessionID: direct.SessionID})
+	operator.recv(protocol.TypeSessionStatus)
+	device.recvWhere(protocol.TypeCloseSession, func(m protocol.Message) bool {
+		return m.SessionID == direct.SessionID
+	})
+	step("password bypasses approval", "session", short(direct.SessionID), "status", direct.Status)
 
 	// 6. operator executes a command
 	requestID := randomHex(8)
@@ -178,7 +187,7 @@ func main() {
 	}
 	defer badConn.Close()
 	bad := &client{name: "bad-auth", conn: badConn, codec: protocol.NewCodec(protocol.DefaultMaxMessageBytes)}
-	bad.send(protocol.Message{Type: protocol.TypeAuthenticatePlayer, IdentityType: "player", PlayerPassword: "wrong-password-value"})
+	bad.send(protocol.Message{Type: protocol.TypeAuthenticateOperator, IdentityType: "player", OperatorPassword: "wrong-password-value"})
 	if code := bad.recvError(); code != "BAD_PASSWORD" {
 		fail("wrong password accepted: %s", code)
 	}
@@ -205,7 +214,7 @@ func main() {
 }
 
 func (c *client) auth(password string) {
-	c.send(protocol.Message{Type: protocol.TypeAuthenticatePlayer, IdentityType: "player", PlayerPassword: password})
+	c.send(protocol.Message{Type: protocol.TypeAuthenticateOperator, IdentityType: "player", OperatorPassword: password})
 	c.recv(protocol.TypeAuthenticated)
 }
 

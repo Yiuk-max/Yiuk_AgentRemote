@@ -3,7 +3,6 @@
 // 主要使用了墓碑机制来释放设备码，避免码空间被占满。墓碑保留原持有者的密码凭据，允许原持有者 reclaim
 package device
 
-//临时密码哈希（盐 + SHA-256）、版本、TTL、撤销、在线连接、心跳、并发会话计数
 import (
 	"crypto/rand"
 	"crypto/sha256"
@@ -18,14 +17,6 @@ import (
 	"time"
 )
 
-// 协助连接模式，approval or direct
-type Mode string
-
-const (
-	ModeDirect   Mode = "direct"
-	ModeApproval Mode = "approval"
-)
-
 // 错误码
 var (
 	ErrDeviceLimit    = errors.New("device limit reached")
@@ -35,7 +26,6 @@ var (
 	ErrPasswordExpiry = errors.New("temporary password has expired")
 	ErrPasswordRevoke = errors.New("temporary password has been revoked")
 	ErrStaleVersion   = errors.New("temporary password version is stale")
-	ErrInvalidMode    = errors.New("invalid authorization mode")
 	// ErrDeviceIDExhausted 只会在设备码空间真的用完时返回；9 位十进制在
 	// maxDevices 级别的规模下不可能触发，作为防御性错误保留。
 	ErrDeviceIDExhausted = errors.New("no free device id available")
@@ -45,7 +35,6 @@ type Info struct {
 	ID                string
 	Name              string
 	Platform          string
-	Mode              Mode
 	Online            bool
 	PasswordVersion   int
 	PasswordExpiresAt time.Time
@@ -61,7 +50,6 @@ type Registration struct {
 	Platform        string
 	TemporaryPass   string
 	PasswordVersion int
-	Mode            Mode
 	TTL             time.Duration
 }
 
@@ -87,7 +75,6 @@ type tombstone struct {
 	id         string
 	name       string
 	platform   string
-	mode       Mode
 	salt       []byte
 	hash       []byte
 	version    int
@@ -147,12 +134,6 @@ func (m *Manager) Register(registration Registration) (Info, string, error) {
 	registration.ID = strings.TrimSpace(registration.ID)
 	if registration.ID == "" {
 		return Info{}, "", errors.New("device id is required")
-	}
-	if registration.Mode == "" {
-		registration.Mode = ModeApproval
-	}
-	if registration.Mode != ModeDirect && registration.Mode != ModeApproval {
-		return Info{}, "", ErrInvalidMode
 	}
 	now := m.now()
 	passwordTTL := registration.TTL
@@ -232,7 +213,6 @@ func (m *Manager) Register(registration Registration) (Info, string, error) {
 	existing.info.ID = registration.ID
 	existing.info.Name = registration.Name
 	existing.info.Platform = registration.Platform
-	existing.info.Mode = registration.Mode
 	existing.info.PasswordVersion = version
 	existing.info.PasswordExpiresAt = now.Add(passwordTTL)
 	existing.info.LastHeartbeat = now
@@ -285,7 +265,6 @@ func (m *Manager) createDevice(registration Registration, requestedID string, cr
 		ID:                id,
 		Name:              registration.Name,
 		Platform:          registration.Platform,
-		Mode:              registration.Mode,
 		PasswordVersion:   version,
 		PasswordExpiresAt: now.Add(passwordTTL),
 		LastHeartbeat:     now,
@@ -329,16 +308,10 @@ func randomDeviceID() (string, error) {
 	return fmt.Sprintf("%09d", value.Int64()), nil
 }
 
-// UpdatePassword replaces the temporary password and mode. A stale version is
-// rejected so an old client cannot roll back a newer password.
-func (m *Manager) UpdatePassword(deviceID, password string, version int, mode Mode, passwordTTL time.Duration) (Info, string, error) {
+// UpdatePassword replaces the temporary password. A stale version is rejected
+// so an old client cannot roll back a newer password.
+func (m *Manager) UpdatePassword(deviceID, password string, version int, passwordTTL time.Duration) (Info, string, error) {
 	deviceID = strings.TrimSpace(deviceID)
-	if mode == "" {
-		mode = ModeApproval
-	}
-	if mode != ModeDirect && mode != ModeApproval {
-		return Info{}, "", ErrInvalidMode
-	}
 	now := m.now()
 	if passwordTTL <= 0 {
 		passwordTTL = m.defaultPasswordTTL
@@ -369,7 +342,6 @@ func (m *Manager) UpdatePassword(deviceID, password string, version int, mode Mo
 	deviceRecord.passwordSalt = salt
 	deviceRecord.passwordHash = hashPassword(salt, password)
 	deviceRecord.revoked = false
-	deviceRecord.info.Mode = mode
 	if version > 0 {
 		deviceRecord.info.PasswordVersion = version
 	} else {
@@ -519,17 +491,6 @@ func (m *Manager) RemoveSession(deviceID, sessionID string) {
 	}
 }
 
-// SessionCount returns the number of sessions currently associated with a
-// device.
-func (m *Manager) SessionCount(deviceID string) int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if deviceRecord := m.devices[deviceID]; deviceRecord != nil {
-		return len(deviceRecord.sessions)
-	}
-	return 0
-}
-
 // RemoveExpiredOfflineDevices moves offline devices whose password has been expired for
 // longer than the retention window into the tombstone set. It bounds memory without
 // persisting business state.
@@ -584,7 +545,6 @@ func (m *Manager) release(deviceRecord *device) {
 		id:         deviceRecord.info.ID,
 		name:       deviceRecord.info.Name,
 		platform:   deviceRecord.info.Platform,
-		mode:       deviceRecord.info.Mode,
 		salt:       deviceRecord.passwordSalt,
 		hash:       deviceRecord.passwordHash,
 		version:    deviceRecord.info.PasswordVersion,
@@ -623,11 +583,11 @@ func (m *Manager) TombstoneCount() int {
 	return len(m.tombstones)
 }
 
-func (deviceRecord *device) snapshot(now time.Time) Info {
-	info := deviceRecord.info
-	info.ActiveSessions = len(deviceRecord.sessions)
-	if !deviceRecord.info.PasswordExpiresAt.IsZero() && !now.Before(deviceRecord.info.PasswordExpiresAt) {
-		info.Online = deviceRecord.onlineConnectionID != ""
+func (d *device) snapshot(now time.Time) Info {
+	info := d.info
+	info.ActiveSessions = len(d.sessions)
+	if !d.info.PasswordExpiresAt.IsZero() && !now.Before(d.info.PasswordExpiresAt) {
+		info.Online = d.onlineConnectionID != ""
 	}
 	return info
 }

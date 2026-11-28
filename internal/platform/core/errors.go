@@ -1,6 +1,5 @@
 package core
 
-// 这里负责错误码的映射和协议错误的封装，有自定义错误码和协议错误码的映射，方便在审计日志中记录稳定的错误码
 import (
 	"errors"
 	"strings"
@@ -38,8 +37,6 @@ func (s *Service) deviceProtocolError(err error) error {
 		return newProtocolError("TEMPORARY_PASSWORD_REVOKED", "temporary password has been revoked")
 	case errors.Is(err, device.ErrStaleVersion):
 		return newProtocolError("STALE_PASSWORD_VERSION", "password version is stale")
-	case errors.Is(err, device.ErrInvalidMode):
-		return newProtocolError("INVALID_ARGUMENT", "invalid authorization mode")
 	case errors.Is(err, device.ErrDeviceIDExhausted):
 		// 9 位十进制空间耗尽：对客户端而言就是资源耗尽。
 		return newProtocolError("DEVICE_LIMIT", "no free device id available")

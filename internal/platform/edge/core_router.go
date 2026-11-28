@@ -1,13 +1,5 @@
 package edge
 
-// 路由寻址：core 需要知道"这条连接挂在哪个网关"，再去那个网关投递。
-//
-// Redis 里查不到路由时退回配置里的网关地址，这样单网关部署即使 Redis 抖动
-// 也不会把正在进行的协助打断；多网关时这条退路自然失效（连接不在那个网关上，
-// 投递会返回 ErrNoRoute，结果仍然是"设备不可用"，不会错投）。
-
-// Deliver 通过路由找到网关调用 deliver 把帧送过去；Alive 通过路由找到网关调用 alive 问连接是否还挂着。
-
 import (
 	"context"
 	"errors"
@@ -20,6 +12,12 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+// 本文件：路由寻址。core 需要知道“这条连接挂在哪个网关”，再去那个网关投递。
+//
+// Redis 里查不到路由时退回配置里的网关地址，这样单网关部署即使 Redis 抖动
+// 也不会把正在进行的协助打断；多网关时这条退路自然失效（连接不在那个网关上，
+// 投递会返回 ErrNoRoute，结果仍然是“设备不可用”，不会错投）。
 
 // lookupTimeout 是查一次路由的上限。路由查不到就当作不可投递，不无限等。
 const lookupTimeout = 2 * time.Second

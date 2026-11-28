@@ -3,23 +3,24 @@
 // 调用方将每个经过验证的块转发给接收端。
 package transfer
 
-// 文件传输的块序号连续性、累计字节和块数上限、Base64 校验。
 import (
+	"agentremote/internal/platform/jobs"
 	"encoding/base64"
 	"errors"
 	"sync"
 	"time"
 )
 
-// Status is the transfer lifecycle state.
-type Status string
+// Status 是 jobs.Status 的别名：状态集合与终态判定由 jobs 包统一维护。
+// 传输没有 timed_out 状态，但别名不妨碍它与任务共用同一套终态判定。
+type Status = jobs.Status
 
 const (
-	StatusRunning       Status = "running"
-	StatusSucceeded     Status = "succeeded"
-	StatusFailed        Status = "failed"
-	StatusCancelled     Status = "cancelled"
-	StatusResultUnknown Status = "result_unknown"
+	StatusRunning       = jobs.StatusRunning
+	StatusSucceeded     = jobs.StatusSucceeded
+	StatusFailed        = jobs.StatusFailed
+	StatusCancelled     = jobs.StatusCancelled
+	StatusResultUnknown = jobs.StatusResultUnknown
 )
 
 // MaxChunkBytes bounds one decoded chunk. The protocol frame limit already
@@ -63,11 +64,11 @@ type Transfer struct {
 	FinishedAt       time.Time
 }
 
-func (fileTransfer *Transfer) clone() *Transfer {
-	if fileTransfer == nil {
+func (t *Transfer) clone() *Transfer {
+	if t == nil {
 		return nil
 	}
-	snapshot := *fileTransfer
+	snapshot := *t
 	return &snapshot
 }
 
@@ -109,7 +110,7 @@ func (m *Manager) Start(sessionID, requestID, correlationID string, maxBytes int
 	}
 	unfinishedTransferCount := 0
 	for _, fileTransfer := range m.transfers {
-		if fileTransfer.SessionID == sessionID && !isTerminal(fileTransfer.Status) {
+		if fileTransfer.SessionID == sessionID && !fileTransfer.Status.Terminal() {
 			unfinishedTransferCount++
 		}
 	}
@@ -153,7 +154,7 @@ func (m *Manager) RecordChunk(sessionID, requestID string, sequence uint64, enco
 	if !ok || fileTransfer.SessionID != sessionID {
 		return nil, ErrNotFound
 	}
-	if isTerminal(fileTransfer.Status) {
+	if fileTransfer.Status.Terminal() {
 		return fileTransfer.clone(), ErrTerminal
 	}
 	if sequence != fileTransfer.NextSequence {
@@ -178,7 +179,7 @@ func (m *Manager) RecordChunk(sessionID, requestID string, sequence uint64, enco
 // Finish records the terminal transfer status. Terminal transfers are returned
 // unchanged so a device retry is idempotent.
 func (m *Manager) Finish(sessionID, requestID string, status Status, fileName string, fileSize int64, resultKnown bool) (*Transfer, error) {
-	if !isTerminal(status) {
+	if !status.Terminal() {
 		return nil, ErrInvalidStatus
 	}
 	m.mu.Lock()
@@ -187,7 +188,7 @@ func (m *Manager) Finish(sessionID, requestID string, status Status, fileName st
 	if !ok || fileTransfer.SessionID != sessionID {
 		return nil, ErrNotFound
 	}
-	if isTerminal(fileTransfer.Status) {
+	if fileTransfer.Status.Terminal() {
 		return fileTransfer.clone(), nil
 	}
 	if status == StatusSucceeded && fileSize != fileTransfer.TransferredBytes {
@@ -206,13 +207,13 @@ func (m *Manager) Finish(sessionID, requestID string, status Status, fileName st
 func (m *Manager) FinishSession(sessionID string, status Status) []*Transfer {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !isTerminal(status) {
+	if !status.Terminal() {
 		status = StatusResultUnknown
 	}
 	now := m.now()
 	var finishedTransfers []*Transfer
 	for _, fileTransfer := range m.transfers {
-		if fileTransfer.SessionID != sessionID || isTerminal(fileTransfer.Status) {
+		if fileTransfer.SessionID != sessionID || fileTransfer.Status.Terminal() {
 			continue
 		}
 		fileTransfer.Status = status
@@ -231,7 +232,7 @@ func (m *Manager) Expire() []*Transfer {
 	now := m.now()
 	var expiredTransfers []*Transfer
 	for _, fileTransfer := range m.transfers {
-		if isTerminal(fileTransfer.Status) || fileTransfer.Deadline.IsZero() || now.Before(fileTransfer.Deadline) {
+		if fileTransfer.Status.Terminal() || fileTransfer.Deadline.IsZero() || now.Before(fileTransfer.Deadline) {
 			continue
 		}
 		fileTransfer.Status = StatusResultUnknown
@@ -240,15 +241,6 @@ func (m *Manager) Expire() []*Transfer {
 		expiredTransfers = append(expiredTransfers, fileTransfer.clone())
 	}
 	return expiredTransfers
-}
-
-func isTerminal(status Status) bool {
-	switch status {
-	case StatusSucceeded, StatusFailed, StatusCancelled, StatusResultUnknown:
-		return true
-	default:
-		return false
-	}
 }
 
 // Reap 回收终态传输记录。
@@ -265,10 +257,7 @@ func (m *Manager) Reap(retain time.Duration) int {
 	now := m.now()
 	removed := 0
 	for requestID, fileTransfer := range m.transfers {
-		if !isTerminal(fileTransfer.Status) || fileTransfer.FinishedAt.IsZero() {
-			continue
-		}
-		if now.Sub(fileTransfer.FinishedAt) < retain {
+		if !jobs.Expired(fileTransfer.Status, fileTransfer.FinishedAt, now, retain) {
 			continue
 		}
 		delete(m.transfers, requestID)

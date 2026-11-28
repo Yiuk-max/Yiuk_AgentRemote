@@ -1,11 +1,5 @@
 package edge_test
 
-// 这个测试按拆分后的真实形态跑：core 与 gateway 各是一个 gRPC 端点，
-// 中间只传原始帧。它固定三件在纯进程内测试里看不到的事：
-//   - Alive：core 需要问 gateway 才知道某条连接还在不在
-//   - Deliver：core 的异步/回调帧通过 gateway 才能写到 socket
-//   - Detach：连接关闭后 core 收敛会话
-
 import (
 	"context"
 	"encoding/json"
@@ -22,16 +16,21 @@ import (
 	"agentremote/internal/platform/gateway"
 	"agentremote/internal/platform/protocol"
 	"agentremote/internal/platform/transport"
-
 	"github.com/gorilla/websocket"
 	"google.golang.org/grpc"
 )
 
+// 本文件：按拆分后的真实形态跑（core 与 gateway 各是一个 gRPC 端点，中间只传原始帧）。
+// 它固定三件在纯进程内测试里看不到的事：
+//   - Alive：core 需要问 gateway 才知道某条连接还在不在
+//   - Deliver：core 的异步/回调帧通过 gateway 才能写到 socket
+//   - Detach：连接关闭后 core 收敛会话
+
 const (
-	testPlayerPassword = "test-player-password-1234567890"
-	testDevicePassword = "0123456789abcdef0123456789abcdef"
-	testDeviceID       = "123456789"
-	readTimeout        = 5 * time.Second
+	testOperatorPassword = "test-player-password-1234567890"
+	testDevicePassword   = "0123456789abcdef0123456789abcdef"
+	testDeviceID         = "123456789"
+	readTimeout          = 5 * time.Second
 )
 
 // testClient 是一个最小的协议客户端，够用来驱动一次完整协助流程。
@@ -83,7 +82,7 @@ func TestTwoProcessFlow(t *testing.T) {
 	cfg := config.Default()
 	cfg.Listen = "127.0.0.1:0"
 	cfg.AllowInsecure = true
-	cfg.PlayerPassword = testPlayerPassword
+	cfg.OperatorPassword = testOperatorPassword
 	cfg.HandshakeTimeoutSec = 5
 	cfg.HeartbeatTimeoutSec = 30
 	cfg.MaxOutputBytes = 1 << 20
@@ -153,7 +152,7 @@ func TestTwoProcessFlow(t *testing.T) {
 	}
 	authenticate := func(client *testClient) {
 		t.Helper()
-		client.send(protocol.Message{Type: protocol.TypeAuthenticatePlayer, IdentityType: "player", PlayerPassword: testPlayerPassword})
+		client.send(protocol.Message{Type: protocol.TypeAuthenticateOperator, IdentityType: "player", OperatorPassword: testOperatorPassword})
 		client.expect(protocol.TypeAuthenticated)
 	}
 
@@ -168,7 +167,6 @@ func TestTwoProcessFlow(t *testing.T) {
 		DeviceName:        "edge-test-device",
 		Platform:          "windows",
 		TemporaryPassword: testDevicePassword,
-		Mode:              protocol.ModeDirect,
 	})
 	registered := device.expect(protocol.TypeDeviceRegistered)
 	if registered.DeviceID != testDeviceID {

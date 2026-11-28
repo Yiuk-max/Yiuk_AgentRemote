@@ -2,25 +2,16 @@ package agenttools
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
-	"time"
 )
-
-// 这一批补齐 GUI 自动化的基础原语：组合键、悬停、等待。
-// 组合键与悬停仍然走「已有 execute_command + get_command_result」的组合路径，
-// 只有 wait 完全在 MCP 本地完成，不占用设备命令通道。
 
 const (
 	pressKeysTimeoutSeconds = 30
 	moveMouseTimeoutSeconds = 15
-	maxWaitMilliseconds     = 25000
-	maxWaitForSeconds       = 25
-	waitForPollInterval     = 250 * time.Millisecond
 )
 
 // 修饰键与命名键只接受白名单，脚本里最终只出现数字 VK 码。
@@ -90,48 +81,6 @@ func keyCode(name string) (uint16, bool) {
 	}
 	return 0, false
 }
-
-const pressKeysScript = `# Yiuk: press_keys
-` + desktopPrelude + `$foreground = [YiukDesktop]::ForegroundTitle()
-$vks = [int[]]@({{VKS}})
-for ($i = 0; $i -lt {{REPEAT}}; $i++) {
-    [YiukDesktop]::PressCombo($vks)
-    if ($i -lt ({{REPEAT}} - 1)) { Start-Sleep -Milliseconds {{INTERVAL}} }
-}
-[pscustomobject]@{ sent = $true; foreground = $foreground } | ConvertTo-Json -Compress
-`
-
-const moveMouseScript = `# Yiuk: move_mouse
-` + desktopPrelude + `$foreground = [YiukDesktop]::ForegroundTitle()
-if (-not [YiukDesktop]::SetCursorPos({{X}}, {{Y}})) { throw 'SetCursorPos failed; the desktop may be locked or a secure desktop is active' }
-if ({{SETTLE}} -gt 0) { Start-Sleep -Milliseconds {{SETTLE}} }
-[pscustomobject]@{ x = {{X}}; y = {{Y}}; foreground = $foreground } | ConvertTo-Json -Compress
-`
-
-// 条件在 Go 侧校验，值以 base64 传入，避免引号和通配符影响 PowerShell 解析。
-const waitForScript = `# Yiuk: wait_for
-` + desktopPrelude + `$condition = '{{CONDITION}}'
-$value = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{{VALUE_BASE64}}'))
-$started = Get-Date
-$deadline = $started.AddSeconds({{TIMEOUT}})
-$matched = $false
-$evidence = ''
-while (-not $matched -and ((Get-Date) -lt $deadline)) {
-    if ($condition -eq 'window_title') {
-        $title = [YiukDesktop]::ForegroundTitle()
-        if ($title.IndexOf($value, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $matched = $true; $evidence = $title }
-    } elseif ($condition -eq 'process') {
-        $name = [System.IO.Path]::GetFileNameWithoutExtension($value)
-        $proc = Get-Process -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($null -ne $proc) { $matched = $true; $evidence = ($proc.ProcessName + '#' + $proc.Id) }
-    } else {
-        if (Test-Path -LiteralPath $value) { $matched = $true; $evidence = $value }
-    }
-    if (-not $matched) { Start-Sleep -Milliseconds 250 }
-}
-$elapsed = [int]((Get-Date) - $started).TotalMilliseconds
-[pscustomobject]@{ matched = $matched; timed_out = (-not $matched); elapsed_ms = $elapsed; evidence = $evidence } | ConvertTo-Json -Compress
-`
 
 // screenPoint 把「最近一次截图」的像素坐标换算成物理屏幕坐标，click 与 move_mouse 共用。
 func (c *Core) screenPoint(sessionID string, x, y int) (int, int, screenGeometry, error) {
@@ -231,64 +180,4 @@ func (c *Core) moveMouse(ctx context.Context, raw json.RawMessage) (any, error) 
 		"screenshot_id":    latest.ID,
 		"foreground_title": moved.Foreground,
 	}, nil
-}
-
-func (c *Core) waitFor(ctx context.Context, raw json.RawMessage) (any, error) {
-	var input struct {
-		SessionID string `json:"session_id"`
-		Condition string `json:"condition"`
-		Value     string `json:"value"`
-		Timeout   int    `json:"timeout_seconds"`
-	}
-	if err := json.Unmarshal(raw, &input); err != nil {
-		return nil, &Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
-	}
-	if input.Timeout == 0 {
-		input.Timeout = 10
-	}
-	script := strings.NewReplacer(
-		"{{CONDITION}}", input.Condition,
-		"{{VALUE_BASE64}}", base64.StdEncoding.EncodeToString([]byte(input.Value)),
-		"{{TIMEOUT}}", strconv.Itoa(input.Timeout),
-	).Replace(waitForScript)
-	// 设备侧最多轮询 timeout 秒，命令超时留 10 秒余量给提交与取回结果。
-	var result struct {
-		Matched   bool   `json:"matched"`
-		TimedOut  bool   `json:"timed_out"`
-		ElapsedMS int    `json:"elapsed_ms"`
-		Evidence  string `json:"evidence"`
-	}
-	if err := c.runDesktopJSON(ctx, input.SessionID, script, input.Timeout+10, &result); err != nil {
-		return nil, err
-	}
-	return map[string]any{
-		"session_id": input.SessionID,
-		"condition":  input.Condition,
-		"value":      input.Value,
-		"matched":    result.Matched,
-		"timed_out":  result.TimedOut,
-		"elapsed_ms": result.ElapsedMS,
-		"evidence":   result.Evidence,
-	}, nil
-}
-
-// wait 在 MCP 本地睡眠，不接触设备。被取消时返回实际等待时长，由调用方自行判断。
-func (c *Core) wait(ctx context.Context, raw json.RawMessage) (any, error) {
-	var input struct {
-		MS int `json:"ms"`
-	}
-	if err := json.Unmarshal(raw, &input); err != nil {
-		return nil, &Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
-	}
-	started := time.Now()
-	if input.MS > 0 {
-		timer := time.NewTimer(time.Duration(input.MS) * time.Millisecond)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			return map[string]any{"waited_ms": int(time.Since(started).Milliseconds()), "cancelled": true}, nil
-		}
-	}
-	return map[string]any{"waited_ms": int(time.Since(started).Milliseconds())}, nil
 }

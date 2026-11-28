@@ -1,7 +1,5 @@
 package gateway
 
-// 连接在认证前使用握手超时，认证后使用心跳超时。
-// 消息由接收协程交给业务层，发送队列与致命错误响应共用 writeMu 串行写入。
 import (
 	"context"
 	"errors"
@@ -12,6 +10,11 @@ import (
 	"agentremote/internal/platform/core"
 	"agentremote/internal/platform/transport"
 )
+
+// 本文件：一条连接的读写循环。
+//
+// 连接在认证前使用握手超时，认证后使用心跳超时。
+// 消息由接收协程交给业务层，发送队列与致命错误响应共用 writeMu 串行写入。
 
 // errQueueFull 表示发送队列已满，调用方应断开慢客户端。
 var errQueueFull = errors.New("gateway: send queue is full")
@@ -68,48 +71,48 @@ func (s *Server) readAndDispatchFrames(clientConn *clientConnection) {
 }
 
 // writeQueuedFrames 持续发送排队帧，写入失败或连接关闭时退出。
-func (clientConn *clientConnection) writeQueuedFrames() {
-	defer clientConn.close()
+func (c *clientConnection) writeQueuedFrames() {
+	defer c.close()
 	for {
 		select {
-		case frame := <-clientConn.outgoingFrames:
-			if err := clientConn.writeFrame(frame); err != nil {
+		case frame := <-c.outgoingFrames:
+			if err := c.writeFrame(frame); err != nil {
 				return
 			}
-		case <-clientConn.closed:
+		case <-c.closed:
 			return
 		}
 	}
 }
 
 // writeFrame 将 writer 协程与致命错误路径的写操作序列化，避免协议帧交错。
-func (clientConn *clientConnection) writeFrame(frame []byte) error {
-	clientConn.writeMu.Lock()
-	defer clientConn.writeMu.Unlock()
-	_ = clientConn.transportConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	return clientConn.transportConn.WriteMessage(frame)
+func (c *clientConnection) writeFrame(frame []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	_ = c.transportConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	return c.transportConn.WriteMessage(frame)
 }
 
 // enqueue 尝试把帧放进发送队列；队列满返回 errQueueFull，连接已关闭返回 core.ErrNoRoute。
-func (clientConn *clientConnection) enqueue(frame []byte) error {
+func (c *clientConnection) enqueue(frame []byte) error {
 	select {
-	case <-clientConn.closed:
+	case <-c.closed:
 		return core.ErrNoRoute
 	default:
 	}
 	select {
-	case clientConn.outgoingFrames <- frame:
+	case c.outgoingFrames <- frame:
 		return nil
-	case <-clientConn.closed:
+	case <-c.closed:
 		return core.ErrNoRoute
 	default:
 		return errQueueFull
 	}
 }
 
-func (clientConn *clientConnection) close() {
-	clientConn.closeOnce.Do(func() {
-		close(clientConn.closed)
-		_ = clientConn.transportConn.Close()
+func (c *clientConnection) close() {
+	c.closeOnce.Do(func() {
+		close(c.closed)
+		_ = c.transportConn.Close()
 	})
 }

@@ -2,24 +2,26 @@
 package task
 
 import (
+	"agentremote/internal/platform/jobs"
 	"errors"
 	"sort"
 	"sync"
 	"time"
 )
 
-// 生命周期状态
-type Status string
-
 // 命令任务、request_id 幂等、输出字节预算、deadline、游标分页
+
+// Status 是 jobs.Status 的别名：状态集合与终态判定由 jobs 包统一维护。
+type Status = jobs.Status
+
 const (
-	StatusQueued        Status = "queued"
-	StatusRunning       Status = "running"
-	StatusSucceeded     Status = "succeeded"
-	StatusFailed        Status = "failed"
-	StatusTimedOut      Status = "timed_out"
-	StatusCancelled     Status = "cancelled"
-	StatusResultUnknown Status = "result_unknown"
+	StatusQueued        = jobs.StatusQueued
+	StatusRunning       = jobs.StatusRunning
+	StatusSucceeded     = jobs.StatusSucceeded
+	StatusFailed        = jobs.StatusFailed
+	StatusTimedOut      = jobs.StatusTimedOut
+	StatusCancelled     = jobs.StatusCancelled
+	StatusResultUnknown = jobs.StatusResultUnknown
 )
 
 // Stream names.
@@ -58,14 +60,14 @@ type Task struct {
 	CancelRequested bool
 }
 
-func (commandTask *Task) clone() *Task {
-	if commandTask == nil {
+func (t *Task) clone() *Task {
+	if t == nil {
 		return nil
 	}
-	snapshot := *commandTask
-	snapshot.Chunks = append([]Chunk(nil), commandTask.Chunks...)
-	if commandTask.ExitCode != nil {
-		exitCodeCopy := *commandTask.ExitCode
+	snapshot := *t
+	snapshot.Chunks = append([]Chunk(nil), t.Chunks...)
+	if t.ExitCode != nil {
+		exitCodeCopy := *t.ExitCode
 		snapshot.ExitCode = &exitCodeCopy
 	}
 	return &snapshot
@@ -114,7 +116,7 @@ func (m *Manager) Start(sessionID, requestID string, timeout time.Duration) (*Ta
 	unfinishedTaskCount := 0
 	// 统计该会话尚未结束的任务。
 	for _, commandTask := range m.tasks {
-		if commandTask.SessionID == sessionID && !isTerminal(commandTask.Status) {
+		if commandTask.SessionID == sessionID && !commandTask.Status.Terminal() {
 			unfinishedTaskCount++
 		}
 	}
@@ -145,7 +147,7 @@ func (m *Manager) AppendOutput(sessionID, requestID, stream, data string) (*Task
 	if !ok || commandTask.SessionID != sessionID {
 		return nil, ErrNotFound
 	}
-	if isTerminal(commandTask.Status) {
+	if commandTask.Status.Terminal() {
 		return commandTask.clone(), ErrTerminal
 	}
 	if stream != StreamStdout && stream != StreamStderr {
@@ -170,7 +172,7 @@ func (m *Manager) AppendOutput(sessionID, requestID, stream, data string) (*Task
 
 // Finish 记录了任务的终端状态。终端任务会原样返
 func (m *Manager) Finish(sessionID, requestID string, status Status, exitCode *int, resultKnown bool) (*Task, error) {
-	if !isTerminal(status) {
+	if !status.Terminal() {
 		return nil, ErrInvalidStatus
 	}
 	m.mu.Lock()
@@ -179,7 +181,7 @@ func (m *Manager) Finish(sessionID, requestID string, status Status, exitCode *i
 	if !ok || commandTask.SessionID != sessionID {
 		return nil, ErrNotFound
 	}
-	if isTerminal(commandTask.Status) {
+	if commandTask.Status.Terminal() {
 		return commandTask.clone(), nil
 	}
 	commandTask.Status = status
@@ -200,7 +202,7 @@ func (m *Manager) RequestCancel(sessionID, requestID string) (*Task, error) {
 	if !ok || commandTask.SessionID != sessionID {
 		return nil, ErrNotFound
 	}
-	if isTerminal(commandTask.Status) {
+	if commandTask.Status.Terminal() {
 		return commandTask.clone(), nil
 	}
 	commandTask.CancelRequested = true
@@ -222,26 +224,13 @@ func (m *Manager) Get(sessionID, requestID string) (*Task, bool) {
 	return commandTask.clone(), true
 }
 
-// 给session返回任务副本
-func (m *Manager) ListBySession(sessionID string) []*Task {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var taskSnapshots []*Task
-	for _, commandTask := range m.tasks {
-		if commandTask.SessionID == sessionID {
-			taskSnapshots = append(taskSnapshots, commandTask.clone())
-		}
-	}
-	return taskSnapshots
-}
-
 // CountUnfinishedBySession 返回该会话尚未结束的任务数。
 func (m *Manager) CountUnfinishedBySession(sessionID string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	count := 0
 	for _, commandTask := range m.tasks {
-		if commandTask.SessionID == sessionID && !isTerminal(commandTask.Status) {
+		if commandTask.SessionID == sessionID && !commandTask.Status.Terminal() {
 			count++
 		}
 	}
@@ -254,13 +243,13 @@ func (m *Manager) CountUnfinishedBySession(sessionID string) int {
 func (m *Manager) FinishSession(sessionID string, finishStatus Status) []*Task {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !isTerminal(finishStatus) {
+	if !finishStatus.Terminal() {
 		finishStatus = StatusResultUnknown
 	}
 	now := m.now()
 	var finishedTasks []*Task
 	for _, commandTask := range m.tasks {
-		if commandTask.SessionID != sessionID || isTerminal(commandTask.Status) {
+		if commandTask.SessionID != sessionID || commandTask.Status.Terminal() {
 			continue
 		}
 		commandTask.Status = finishStatus
@@ -279,7 +268,7 @@ func (m *Manager) Expire() []*Task {
 	now := m.now()
 	var timedOutTasks []*Task
 	for _, commandTask := range m.tasks {
-		if isTerminal(commandTask.Status) || commandTask.Deadline.IsZero() || now.Before(commandTask.Deadline) {
+		if commandTask.Status.Terminal() || commandTask.Deadline.IsZero() || now.Before(commandTask.Deadline) {
 			continue
 		}
 		commandTask.Status = StatusTimedOut
@@ -299,6 +288,11 @@ type ResultView struct {
 
 // ResultFromCursor 返回游标开始处的输出块及任务快照。
 // 游标是块索引，不是字节偏移量。
+//
+// TODO(薄弱点 #3，见 docs/key-architecture.md §4)：这里返回 cursor 之后的**全部**分块，
+// 而单任务输出预算 2 MiB 远大于单帧上限 256 KiB。输出超过约 256 KiB 时
+// get_command_result 编码失败→写循环退出→操作者连接被关。需要按字节切页，
+// 并在 Encode 失败时降级为错误帧而不是退出写循环。
 func (m *Manager) ResultFromCursor(sessionID, requestID string, cursor int) (*ResultView, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -314,15 +308,6 @@ func (m *Manager) ResultFromCursor(sessionID, requestID string, cursor int) (*Re
 	}
 	chunks := append([]Chunk(nil), commandTask.Chunks[cursor:]...)
 	return &ResultView{Task: commandTask.clone(), Chunks: chunks, NextCursor: len(commandTask.Chunks)}, nil
-}
-
-func isTerminal(status Status) bool {
-	switch status {
-	case StatusSucceeded, StatusFailed, StatusTimedOut, StatusCancelled, StatusResultUnknown:
-		return true
-	default:
-		return false
-	}
 }
 
 // minReapAge 是「输出字节超上限」时允许淘汰的最短终态年龄。
@@ -343,10 +328,7 @@ func (m *Manager) Reap(retain time.Duration, maxRetainedOutputBytes int) (int, i
 	removedByAge := 0
 	if retain > 0 {
 		for requestID, commandTask := range m.tasks {
-			if !isTerminal(commandTask.Status) || commandTask.FinishedAt.IsZero() {
-				continue
-			}
-			if now.Sub(commandTask.FinishedAt) < retain {
+			if !jobs.Expired(commandTask.Status, commandTask.FinishedAt, now, retain) {
 				continue
 			}
 			delete(m.tasks, requestID)
@@ -360,7 +342,7 @@ func (m *Manager) Reap(retain time.Duration, maxRetainedOutputBytes int) (int, i
 		candidates := make([]*Task, 0, len(m.tasks))
 		for _, commandTask := range m.tasks {
 			totalBytes += commandTask.OutputBytes
-			if !isTerminal(commandTask.Status) || commandTask.FinishedAt.IsZero() {
+			if !commandTask.Status.Terminal() || commandTask.FinishedAt.IsZero() {
 				continue
 			}
 			if now.Sub(commandTask.FinishedAt) < minReapAge {

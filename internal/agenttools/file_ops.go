@@ -8,71 +8,12 @@ import (
 	"strings"
 )
 
-// list_dir / stat_path 把常见的“列目录、看文件属性”固化成工具，
-// 省掉 agent 自己写 PowerShell、也省掉把整段文本输出塞回上下文。
-// 两者都通过 execute_command 组合执行，不改平台协议。
+// 本文件：list_dir / stat_path——把「列目录、看属性」固化成工具，省掉 Agent 自己写 PowerShell。
 
 const (
 	listDirTimeoutSeconds = 30
 	defaultListDirLimit   = 200
-	maxListDirLimit       = 1000
 )
-
-const listDirScript = `# Yiuk: list_dir
-$ErrorActionPreference = 'Stop'
-$path = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{{PATH_BASE64}}'))
-$limit = {{LIMIT}}
-$item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
-if (-not $item.PSIsContainer) {
-    [pscustomobject]@{ kind = 'not_directory' } | ConvertTo-Json -Compress
-    exit 0
-}
-if ($item.LinkType) {
-    [pscustomobject]@{ kind = 'symlink_root'; target = $item.Target } | ConvertTo-Json -Compress
-    exit 0
-}
-$entries = New-Object System.Collections.ArrayList
-$truncated = $false
-foreach ($child in Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue) {
-    if ($entries.Count -ge $limit) { $truncated = $true; break }
-    $type = 'file'
-    if ($child.PSIsContainer) { $type = 'dir' }
-    if ($child.LinkType) { $type = 'symlink' }
-    $size = $null
-    if (-not $child.PSIsContainer) { $size = [long]$child.Length }
-    $entry = [pscustomobject]@{
-        name = $child.Name
-        type = $type
-        size = $size
-        modified = $child.LastWriteTimeUtc.ToString('o')
-        target = $child.Target
-    }
-    [void]$entries.Add($entry)
-}
-[pscustomobject]@{ kind = 'ok'; entries = $entries; truncated = $truncated; returned = $entries.Count } | ConvertTo-Json -Depth 4 -Compress
-`
-
-const statPathScript = `# Yiuk: stat_path
-$ErrorActionPreference = 'Stop'
-$path = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{{PATH_BASE64}}'))
-$item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
-if ($null -eq $item) {
-    [pscustomobject]@{ kind = 'missing' } | ConvertTo-Json -Compress
-    exit 0
-}
-$type = 'file'
-if ($item.PSIsContainer) { $type = 'dir' }
-if ($item.LinkType) { $type = 'symlink' }
-$size = $null
-if (-not $item.PSIsContainer) { $size = [long]$item.Length }
-[pscustomobject]@{
-    kind = 'ok'
-    type = $type
-    size = $size
-    modified = $item.LastWriteTimeUtc.ToString('o')
-    target = $item.Target
-} | ConvertTo-Json -Compress
-`
 
 func (c *Core) listDir(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {

@@ -6,22 +6,20 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
-
 	"agentremote/internal/agenttools"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // NewServer 将 agenttools 中的工具目录注册为 MCP 服务，并转换工具调用及其返回值。
-// newHandler 是闭包工厂：传入工具名，返回一个"记住这个工具名"的 handler。
-// 这种写法避免了给每个工具写重复的 handler 代码，也解决了 handler 签名固定、没法直接传工具名的矛盾。
-// 当客户端调用某个工具时，对应的闭包被触发：用自己捕获的 toolName 调 core.Call，再把结果转成 MCP 格式返回。
+//
+// handler 的签名是固定的，拿不到工具名，所以用闭包工厂：每注册一个工具就生成一个
+// “记住自己叫什么”的 handler，避免给 22 个工具各写一份几乎相同的样板代码。
 func NewServer(core *agenttools.Core) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "agentremote", Version: "0.1.0"}, nil)
-	newHandler := func(toolName string) mcp.ToolHandler { // 创建一个闭包来捕获工具名称
-
+	newHandler := func(toolName string) mcp.ToolHandler {
 		return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			response := core.Call(ctx, toolName, req.Params.Arguments) // 调用工具并获取响应
-			content, err := json.Marshal(response)                     //序列化
+			response := core.Call(ctx, toolName, req.Params.Arguments)
+			content, err := json.Marshal(response)
 			if err != nil {
 				return nil, fmt.Errorf("encode tool response: %w", err)
 			}
@@ -36,7 +34,6 @@ func NewServer(core *agenttools.Core) *mcp.Server {
 			}, nil
 		}
 	}
-	// 遍历工具目录并注册每个工具
 	for _, spec := range core.Tools() {
 		server.AddTool(&mcp.Tool{
 			Name:         spec.Name,

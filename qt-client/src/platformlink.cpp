@@ -42,7 +42,6 @@ void MainWindow::loadPlatformConfig() {
     const QString storedDeviceID = identity.value("device_id").toString();
     platformConfig.deviceId = storedDeviceID.size() == 9 ? storedDeviceID : deviceId();
     platformConfig.deviceName = QSysInfo::machineHostName();
-    platformConfig.mode = identity.value("mode").toString("approval");
     platformConfig.ttlSeconds = identity.value("ttl_seconds").toInt(24 * 60 * 60);
     platformConfig.enabled = true;
     platformConfig.allowInsecure = false;
@@ -87,8 +86,7 @@ void MainWindow::savePlatformConfig() {
     saveYiukIdentity(QJsonObject{
         {"device_id", deviceId()},
         {"device_name", platformConfig.deviceName},
-        {"mode", platformConfig.mode},
-        {"ttl_seconds", platformConfig.ttlSeconds},
+                {"ttl_seconds", platformConfig.ttlSeconds},
         {"password_version", platformConfig.passwordVersion},
         {"player_password", SecureStore::protect(platformConfig.playerPassword)},
         {"temporary_password", SecureStore::protect(platformConfig.temporaryPassword)},

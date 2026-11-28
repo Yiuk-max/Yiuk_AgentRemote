@@ -220,6 +220,14 @@ private:
     void startPlatformCommand(const QString &sessionId, const QString &requestId, const QString &command,
                                 const QString &workingDirectory, int timeoutSeconds);
     QJsonObject invokeLocalTool(const QString &tool, const QJsonObject &input);
+    // 下面这几个是本机 bridge 的工具实现。它们看起来属于一个独立的 LocalToolHost，
+    // 但实际上要动到 18 个 MainWindow 成员（sessions/tasks/commandRunners、托盘、
+    // 审批弹窗、会话持久化、状态栏……）——抽类的代价是一个很肥的 host 接口，
+    // 而拆分后的收益只是头文件短几行。所以只把分发换成了 invokeLocalTool 里的表，
+    // 工具语义仍留在这里；真要拆，先给会话/任务状态找一个能独立于 UI 的宿主。
+    QJsonObject localListDevices(const QJsonObject &input);
+    QJsonObject localDeviceStatus(const QJsonObject &input);
+    QJsonObject localCloseSession(const QJsonObject &input);
     QJsonObject createLocalSessionRequest(const QJsonObject &input);
     QJsonObject localSessionStatusResult(const QString &sessionId);
     void expireSessionIfNeeded(const QString &sessionId);
@@ -235,7 +243,7 @@ private:
     QJsonObject downloadLocalFile(const QJsonObject &input);
     QJsonObject uploadLocalFile(const QJsonObject &input);
     QJsonObject startLocalCommand(const QJsonObject &input);
-    QJsonObject localCommandResultFromCursor(const QJsonObject &input) const;
+    QJsonObject localCommandResultFromCursor(const QJsonObject &input);
     QJsonObject cancelLocalCommand(const QJsonObject &input);
     QJsonObject closeSessionAndStopTasks(const QString &sessionId);
     void appendActivity(const QString &sessionId, const QString &message,

@@ -353,6 +353,8 @@ LRESULT PanelWindow::Handle(UINT message, WPARAM wparam, LPARAM lparam) {
                     if (span > 1.0f) {
                         const float offset = static_cast<float>(point.y) - trackTop - scrollGrab;
                         const float ratio = std::max(0.0f, std::min(1.0f, offset / span));
+                        // 拖到最底部时把 follow 打开：此后新增内容自动跟随到底部；
+                        // 用 0.999 而不是 1 是因为比例由浮点除法得到，等不到严格的 1。
                         follow = ratio >= 0.999f;
                         ScrollTo(static_cast<int>(std::lround(ratio * MaxScroll())));
                     }
@@ -710,8 +712,12 @@ int PanelWindow::ButtonAt(POINT point) const {
     return -1;
 }
 
+// ResizeZone 把鼠标位置换算成一个位掩码：1=左边、2=右边、4=上边、8=下边
+//（可叠加，例如左上角为 1|4=5）。0 表示不在拖拽边缘上。
+// 掩码只在这一处产生，Handle 与 UpdateCursor 都按同一套位解释。
 int PanelWindow::ResizeZone(POINT point) const {
     const Gdiplus::RectF card = CardRect();
+    // 命中带为 7 个逻辑像素（再按 DPI 缩放）：边缘可拖拽，但又不至于抢掉卡内点击。
     const int edge = Scale(7);
     int zone = 0;
     if (std::abs(point.x - static_cast<int>(card.X)) <= edge) zone |= 1;

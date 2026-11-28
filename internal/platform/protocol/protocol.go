@@ -18,8 +18,8 @@ const (
 
 // 信息类型
 const (
-	TypeAuthenticatePlayer = "authenticate_player" //连接平台
-	TypeAuthenticated      = "authenticated"
+	TypeAuthenticateOperator = "authenticate_player" //连接平台
+	TypeAuthenticated        = "authenticated"
 
 	TypeRegisterDevice           = "register_device"
 	TypeDeviceRegistered         = "device_registered"
@@ -93,19 +93,17 @@ const (
 	TaskResultUnknown = "result_unknown"
 )
 
-// 临时密码授权模式
-const (
-	ModeDirect   = "direct"
-	ModeApproval = "approval"
-)
-
 // 默认最大消息体字节数
 const DefaultMaxMessageBytes = 256 << 10
 
 var ErrMessageTooLarge = errors.New("protocol message exceeds configured maximum")
 
 // Message 是每个平台消息的通用信封。字段仅在需要它们的消息类型中填充。密码字段仅在身份验证/设备注册消息中有效，且从不记录。
+//
+// 所有帧字段靠 Type 判别，属于“按需填充的联合体”：下面每组前的空行就是一种分组，
+// 某类帧只应携带自己那一组。新增字段请放到对应组里，不要随手追加到末尾。
 type Message struct {
+	// 信封：所有帧共有。
 	Version      int    `json:"version"`
 	BusinessType string `json:"business_type,omitempty"`
 	Type         string `json:"type"`
@@ -118,30 +116,39 @@ type Message struct {
 	SessionID     string `json:"session_id,omitempty"`
 	Sequence      uint64 `json:"sequence,omitempty"`
 
-	IdentityType   string `json:"identity_type,omitempty"`
-	PlayerPassword string `json:"player_password,omitempty"`
+	// 认证：操作者用 player_password 换中继使用权，不授予任何设备权限。
+	// 线上字段名是历史包袱（早期把操作者叫 player），值不能改，代码里统一叫 operator。
+	IdentityType     string `json:"identity_type,omitempty"`
+	OperatorPassword string `json:"player_password,omitempty"`
 
+	// 设备注册与临时密码：device_name/platform 只在注册时上报；
+	// temporary_password 是所有权凭据（服务端只存盐+哈希，不进日志）。
 	DeviceName        string `json:"device_name,omitempty"`
 	Platform          string `json:"platform,omitempty"`
 	TemporaryPassword string `json:"temporary_password,omitempty"`
 	PasswordVersion   int    `json:"password_version,omitempty"`
-	Mode              string `json:"mode,omitempty"`
 	ExpiresAt         int64  `json:"expires_at,omitempty"`
 
+	// 会话：purpose 必填且会显示在设备端的审批弹窗里。
+	// permissions 保留给旧客户端；当前批准即全权，MCP 侧不再暴露该参数。
 	Purpose     string   `json:"purpose,omitempty"`
 	Permissions []string `json:"permissions,omitempty"`
 
+	// 设备所有者询问：answer/answer_source/selected_index 只出现在结果帧里。
+	// 只有 answered 带有效答案；cancelled / timed_out / result_unknown 都不等于用户同意。
 	Question      string   `json:"question,omitempty"`
 	Options       []string `json:"options,omitempty"`
 	Answer        string   `json:"answer,omitempty"`
 	AnswerSource  string   `json:"answer_source,omitempty"`
 	SelectedIndex *int     `json:"selected_index,omitempty"`
 
+	// 命令：cursor 用于分页拉取输出，必须单调递增。
 	Command          string `json:"command,omitempty"`
 	WorkingDirectory string `json:"working_directory,omitempty"`
 	TimeoutSeconds   int    `json:"timeout_seconds,omitempty"`
 	Cursor           int    `json:"cursor,omitempty"`
 
+	// 文件传输：分块走 Data + Sequence，结束帧带 file_size/file_sha256 供校验。
 	RemotePath string `json:"remote_path,omitempty"`
 	FileName   string `json:"file_name,omitempty"`
 	FileSize   int64  `json:"file_size,omitempty"`
@@ -149,6 +156,8 @@ type Message struct {
 	// 允许上传文件覆盖现有的远程文件。设备不直接替换文件，需要告知明确要覆盖
 	Overwrite bool `json:"overwrite,omitempty"`
 
+	// 执行输出与任务状态：result_known=false 表示“可能已经生效”，
+	// 调用方不能当作失败去重试（见 core/errors.go 的三态语义）。
 	Stream      string `json:"stream,omitempty"`
 	Data        string `json:"data,omitempty"`
 	ExitCode    *int   `json:"exit_code,omitempty"`
@@ -157,9 +166,11 @@ type Message struct {
 	Status      string `json:"status,omitempty"`
 	EOF         bool   `json:"eof,omitempty"`
 
+	// 错误帧：code 是稳定错误码，message 给人看，不写进审计日志的正文里。
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
 
+	// 服务端时间与状态快照。
 	ServerTime int64 `json:"server_time,omitempty"`
 
 	Device   *DeviceInfo   `json:"device,omitempty"`
@@ -167,6 +178,7 @@ type Message struct {
 	Session  *SessionInfo  `json:"session,omitempty"`
 	Sessions []SessionInfo `json:"sessions,omitempty"`
 
+	// 分页结果。next_cursor 为 0 表示没有更多内容。
 	Chunks      []OutputChunk `json:"chunks,omitempty"`
 	NextCursor  int           `json:"next_cursor,omitempty"`
 	OutputBytes int           `json:"output_bytes,omitempty"`

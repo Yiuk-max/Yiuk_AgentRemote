@@ -2,20 +2,20 @@ package platformclient
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"agentremote/internal/agenttools"
 	"agentremote/internal/platform/protocol"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"path/filepath"
 )
 
 // handleDownloadFile 解析工具参数，从设备下载文件并保存到本地。

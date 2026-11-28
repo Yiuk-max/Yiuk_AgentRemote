@@ -26,18 +26,15 @@ import (
 )
 
 func main() {
-	//读取共用的配置文件
 	configPath := flag.String("config", "platform.yaml", "path to the platform YAML configuration")
 	flag.Parse()
 
-	// 加载配置文件
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gateway config error:", err)
 		os.Exit(1)
 	}
 
-	// 设置日志记录器
 	closeLog, logger, err := logging.Setup(cfg.LogFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gateway log error:", err)
@@ -55,7 +52,6 @@ func main() {
 	})
 	defer func() { _ = routes.Close() }()
 
-	// 创建网关实例
 	gw, err := gateway.New(cfg, logger, routes)
 	if err != nil {
 		logger.Error("could not start gateway listener", "error", err)
@@ -90,7 +86,6 @@ func main() {
 			stop()
 		}
 	}()
-	// 启动网关循环
 	if err := gw.Run(ctx); err != nil {
 		logger.Error("gateway stopped", "error", err)
 	}

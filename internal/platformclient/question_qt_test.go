@@ -80,7 +80,7 @@ func TestMCPQuestionQtEndToEnd(t *testing.T) {
 			t.Fatal("Qt registration timeout")
 		}
 	}
-	backend, err := platformclient.New(platformclient.Config{Address: address, PlayerPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5})
+	backend, err := platformclient.New(platformclient.Config{Address: address, OperatorPassword: playerPassword, AllowPlaintext: true, TimeoutSeconds: 5})
 	if err != nil {
 		t.Fatal(err)
 	}

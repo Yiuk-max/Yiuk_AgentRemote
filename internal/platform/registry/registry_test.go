@@ -1,7 +1,5 @@
 package registry_test
 
-// 路由表的行为测试：登记、查询、过期、以及"旧连接清理不能删掉新路由"。
-
 import (
 	"context"
 	"errors"
@@ -9,10 +7,11 @@ import (
 	"time"
 
 	"agentremote/internal/platform/registry"
-
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
+
+// 本文件：路由表的行为测试——登记、查询、过期，以及“旧连接清理不能删掉新路由”。
 
 func newRegistry(t *testing.T, ttl time.Duration) (*registry.Registry, *miniredis.Miniredis) {
 	t.Helper()

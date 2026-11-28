@@ -1,8 +1,5 @@
 package core
 
-//这里负责把信息转换成协议帧的格式，方便发送给接入层（gateway）
-
-//基本信息转换、时间戳、设备信息、会话信息
 import (
 	"time"
 
@@ -16,7 +13,6 @@ func protocolDeviceInfo(info device.Info) protocol.DeviceInfo {
 		DeviceID:          info.ID,
 		Name:              info.Name,
 		Platform:          info.Platform,
-		Mode:              string(info.Mode),
 		Online:            info.Online,
 		PasswordVersion:   info.PasswordVersion,
 		PasswordExpiresAt: unixTimestampOrZero(info.PasswordExpiresAt),
@@ -33,7 +29,6 @@ func protocolSessionInfo(sessionRecord *session.Session) protocol.SessionInfo {
 		OperatorDevice: sessionRecord.OperatorSource,
 		Purpose:        sessionRecord.Purpose,
 		Permissions:    sessionRecord.PermissionList(),
-		Mode:           string(sessionRecord.Mode),
 		Status:         string(sessionRecord.Status),
 		CreatedAt:      unixTimestampOrZero(sessionRecord.CreatedAt),
 		ExpiresAt:      unixTimestampOrZero(sessionRecord.ExpiresAt),

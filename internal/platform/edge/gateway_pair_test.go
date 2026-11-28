@@ -1,8 +1,5 @@
 package edge_test
 
-// P3 的核心验收：操作者连 gw-1、设备连 gw-2，两条连接分处不同网关，
-// 所有帧都必须经 core 跨网关投递；设备所在网关退出后，会话要靠 Detach 收敛。
-
 import (
 	"context"
 	"errors"
@@ -20,11 +17,13 @@ import (
 	"agentremote/internal/platform/protocol"
 	"agentremote/internal/platform/registry"
 	"agentremote/internal/platform/transport"
-
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 )
+
+// 本文件：P3 的核心验收——操作者连 gw-1、设备连 gw-2，两条连接分处不同网关，
+// 所有帧都必须经 core 跨网关投递；设备所在网关退出后，会话要靠 Detach 收敛。
 
 // startGateway 起一个完整网关：WSS 监听给客户端，Push gRPC 监听给 core。
 // 返回网关实例与客户端应连的 ws 地址。
@@ -39,7 +38,7 @@ func startGateway(t *testing.T, gatewayID string, routes *registry.Registry, edg
 	cfg := config.Default()
 	cfg.Listen = "127.0.0.1:0"
 	cfg.AllowInsecure = true
-	cfg.PlayerPassword = testPlayerPassword
+	cfg.OperatorPassword = testOperatorPassword
 	cfg.HandshakeTimeoutSec = 5
 	cfg.HeartbeatTimeoutSec = 30
 	cfg.MaxOutputBytes = 1 << 20
@@ -84,7 +83,7 @@ func TestCrossGatewayDelivery(t *testing.T) {
 	// core：只一个，出口不留兜底地址，所以每一帧都必须真的查到路由才送得出去。
 	cfg := config.Default()
 	cfg.AllowInsecure = true // core 不开客户端监听，TLS 字段对它无意义
-	cfg.PlayerPassword = testPlayerPassword
+	cfg.OperatorPassword = testOperatorPassword
 	cfg.HandshakeTimeoutSec = 5
 	cfg.HeartbeatTimeoutSec = 30
 	cfg.MaxOutputBytes = 1 << 20
@@ -139,7 +138,6 @@ func TestCrossGatewayDelivery(t *testing.T) {
 		DeviceName:        "cross-gateway-device",
 		Platform:          "windows",
 		TemporaryPassword: testDevicePassword,
-		Mode:              protocol.ModeDirect,
 	})
 	device.expect(protocol.TypeDeviceRegistered)
 	waitFor(t, "device route on gw-2", func() bool {

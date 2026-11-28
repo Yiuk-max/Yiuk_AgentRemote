@@ -1,0 +1,63 @@
+[
+  {
+    "name": "notepad",
+    "process": "notepad",
+    "launch": "notepad",
+    "launchArgs": [],
+    "titleContains": "",
+    "restart": false,
+    "cleanup": "closeWindow",
+    "dumpNamed": true,
+    "targets": [
+      { "label": "menu-file", "mode": "exact", "value": "文件", "controlType": "MenuItem", "expectName": "文件", "expect": "File menu" },
+      { "label": "menu-edit", "mode": "exact", "value": "编辑", "controlType": "MenuItem", "expectName": "编辑", "expect": "Edit menu" },
+      { "label": "menu-view", "mode": "exact", "value": "查看", "controlType": "MenuItem", "expectName": "查看", "expect": "View menu" },
+      { "label": "menu-file-contains-enumerate", "mode": "enumerate", "value": "文件", "controlType": "MenuItem", "expectName": "文件", "expect": "same element as menu-file" },
+      { "label": "menu-file-contains-walk", "mode": "walk", "value": "文件", "controlType": "MenuItem", "expectName": "文件", "expect": "same element as menu-file" },
+      { "label": "document", "mode": "exact", "value": "文本编辑器", "controlType": "Document", "expectName": "文本编辑器", "expect": "editing area" },
+      { "label": "document-contains", "mode": "enumerate", "value": "文本编辑器", "controlType": "Document", "expectName": "文本编辑器", "expect": "same element as document" }
+    ]
+  },
+  {
+    "name": "explorer",
+    "process": "explorer",
+    "launch": "explorer",
+    "launchArgs": [],
+    "titleContains": "",
+    "restart": false,
+    "cleanup": "closeWindow",
+    "dumpNamed": true,
+    "targets": [
+      { "label": "address-bar", "mode": "exact", "value": "地址栏", "controlType": "Edit", "expectName": "地址栏", "expect": "address bar edit (Win11 has no ToolBar wrapper)" },
+      { "label": "address-bar-contains", "mode": "enumerate", "value": "地址", "controlType": "Edit", "expectName": "地址栏", "expect": "same element as address-bar" },
+      { "label": "search-exact", "mode": "exact", "value": "搜索", "controlType": "Edit", "expectName": " 在 此电脑 中搜索", "expect": "MISS expected: the real name embeds the current folder" },
+      { "label": "search-contains", "mode": "enumerate", "value": "搜索", "controlType": "Edit", "expectName": " 在 此电脑 中搜索", "expect": "same element as search-exact" },
+      { "label": "cmdbar-view", "mode": "exact", "value": "查看", "controlType": "Button", "expectName": "查看", "expect": "View button in the command bar" },
+      { "label": "cmdbar-new", "mode": "exact", "value": "新建", "controlType": "Button", "expectName": "新建", "expect": "New button in the command bar" },
+      { "label": "list-view", "mode": "exact", "value": "项目视图", "controlType": "List", "expectName": "项目视图", "expect": "item list" }
+    ]
+  },
+  {
+    "name": "edge-fixture",
+    "process": "msedge",
+    "launch": "msedge",
+    "launchArgs": ["--new-window", "file:///{scriptRoot}/fixture.html"],
+    "titleContains": "YiukSpikeFixture",
+    "restart": false,
+    "cleanup": "closeWindow",
+    "dumpNamed": true,
+    "targets": [
+      { "label": "omnibox", "mode": "exact", "value": "地址和搜索栏", "controlType": "Edit", "expectName": "地址和搜索栏", "expect": "browser address bar" },
+      { "label": "omnibox-contains", "mode": "enumerate", "value": "地址和搜索", "controlType": "Edit", "expectName": "地址和搜索栏", "expect": "same element as omnibox" },
+      { "label": "page-search", "mode": "enumerate", "value": "在页面中搜索", "controlType": "Edit", "expectName": "在页面中搜索", "expect": "input inside the page, not the browser chrome" },
+      { "label": "favorites-exact", "mode": "exact", "value": "收藏夹", "controlType": "Button", "expectName": "收藏夹", "expect": "page button whose name is exactly the query" },
+      { "label": "favorites-contains-enumerate", "mode": "enumerate", "value": "收藏夹", "controlType": "Button", "expectName": "收藏夹", "expect": "ambiguity test: a longer name also matches" },
+      { "label": "favorites-contains-walk", "mode": "walk", "value": "收藏夹", "controlType": "Button", "expectName": "收藏夹", "expect": "ambiguity test with the slow strategy" },
+      { "label": "more-menu", "mode": "enumerate", "value": "设置及其他", "controlType": "Button", "expectName": "设置及其他", "expect": "toolbar-style button" },
+      { "label": "tab-strip", "mode": "exact", "value": "标签页栏", "controlType": "Tab", "expectName": "标签页栏", "expect": "tablist inside the page" },
+      { "label": "table-row-cell", "mode": "enumerate", "value": "文件 7.txt", "controlType": "Text", "expectName": "文件 7.txt", "expect": "cell deep in a 120-row table" },
+      { "label": "table-row-cell-anytype", "mode": "enumerate", "value": "文件 7.txt", "controlType": "", "expectName": "文件 7.txt", "expect": "same cell, no ControlType filter (it is a DataItem, not Text)" },
+      { "label": "table-row-cell-exact-dataitem", "mode": "exact", "value": "文件 7.txt", "controlType": "DataItem", "expectName": "文件 7.txt", "expect": "exact name + correct ControlType" }
+    ]
+  }
+]
