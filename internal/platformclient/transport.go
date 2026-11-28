@@ -19,9 +19,12 @@ import (
 	"agentremote/internal/platform/transport"
 )
 
-// connectIfNeeded 复用现有连接，或建立认证连接并启动消息接收和心跳协程。
-// 调用方须持有 requestMu，以串行化连接初始化；连接状态由 connectionMu 保护。
+// connectIfNeeded 复用现有连接，或建立认证连接并启动收帧、分发与心跳协程。
+// 只有“建连 + 认证”被 connectMu 串行化；建连成功后各请求按 correlation_id 并发往返。
 func (c *Client) connectIfNeeded() error {
+	c.connectMu.Lock()
+	defer c.connectMu.Unlock()
+
 	c.connectionMu.Lock()
 	if c.closed {
 		c.connectionMu.Unlock()
@@ -39,10 +42,20 @@ func (c *Client) connectIfNeeded() error {
 	}
 	incomingMessages := make(chan protocol.Message, 256)
 	connectionClosed := make(chan struct{})
+
+	// 建连期间可能被 Close()：握着 connectionMu 复查一次，避免留下一条没人管的连接。
 	c.connectionMu.Lock()
+	if c.closed {
+		c.connectionMu.Unlock()
+		_ = conn.Close()
+		return &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "platform client is closed"}
+	}
 	c.conn, c.connectionID, c.incomingMessages, c.connectionClosed, c.connected = conn, connectionID, incomingMessages, connectionClosed, true
 	c.connectionMu.Unlock()
+
+	// 单读者：receiveMessages 解码后交给 dispatchMessages 缓存 + 按 correlation_id 分发。
 	go c.receiveMessages(conn, incomingMessages, connectionClosed)
+	go c.dispatchMessages(incomingMessages, connectionClosed)
 	go c.maintainHeartbeat(conn, connectionClosed)
 	return nil
 }

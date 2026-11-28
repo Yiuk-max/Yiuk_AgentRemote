@@ -21,12 +21,14 @@ type Client struct {
 	codec        protocol.Codec
 	toolHandlers map[string]toolHandler
 
-	// requestMu 串行化请求交互和连接初始化。
-	//
-	// TODO(薄弱点 #9，见 docs/key-architecture.md §4)：一把锁意味着并发工具调用
-	// 会互相阻塞到超时。长任务已经走会话式 execute_command + get_command_result，
-	// 但两个并行工具调用仍会排队；应改成 per-request 的 pending map。
-	requestMu sync.Mutex
+	// connectMu 只串行化“建连 + 认证”。请求本身不再互斥：
+	// 入站帧由 dispatchMessages 按 correlation_id 分发（见 dispatch.go），
+	// 并发工具调用不再互相阻塞（已修 TODO(薄弱点 #9)）。
+	connectMu sync.Mutex
+
+	// pendingMu 保护 correlation_id → 等待通道。读写都很短，不参与 I/O。
+	pendingMu sync.Mutex
+	pending   map[string]chan protocol.Message
 
 	// writeMu 串行化帧写入，避免心跳 goroutine 与执行中的工具调用交错写入数据
 	writeMu sync.Mutex
@@ -51,8 +53,6 @@ type Client struct {
 
 // Close 关闭操作端连接
 func (c *Client) Close() error {
-	c.requestMu.Lock()
-	defer c.requestMu.Unlock()
 	c.connectionMu.Lock()
 	c.closed = true
 	conn, connectionClosed := c.conn, c.connectionClosed
@@ -140,25 +140,30 @@ func (c *Client) sendRequestWithTimeout(ctx context.Context, request protocol.Me
 }
 
 // sendStreamingRequest 发送请求及可选的后续数据帧，然后等待同一 correlation_id 下匹配的响应。
-// 整个交互期间持有 requestMu，避免其他请求将数据帧插入流中。
+//
+// 等待只是“在自己那条通道上收帧”：并发调用各自登记一个 correlation_id，
+// 由 dispatchMessages 统一分发，因此一个长请求不会阻塞另一个请求。
+// 写帧仍由 writeMu 串行（协议要求单连接严格有序）。
 func (c *Client) sendStreamingRequest(ctx context.Context, request protocol.Message, sendFrames func(sendFrame func(protocol.Message) error) error, matchesResponse func(protocol.Message) bool, timeout time.Duration) (protocol.Message, error) {
-	c.requestMu.Lock()
-	defer c.requestMu.Unlock()
-
 	if err := c.connectIfNeeded(); err != nil {
 		return protocol.Message{}, err
 	}
 	c.connectionMu.Lock()
-	conn, incomingMessages, connectionClosed := c.conn, c.incomingMessages, c.connectionClosed
+	conn, connectionClosed := c.conn, c.connectionClosed
 	c.connectionMu.Unlock()
-
-	// 处理两次调用之间到达的事件，确保将新请求与响应关联前缓存的输出是最新的
-	c.cachePendingMessages(incomingMessages)
+	if conn == nil || connectionClosed == nil {
+		return protocol.Message{}, &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "platform connection is unavailable"}
+	}
 
 	correlationID := randomID()
 	request.Version = protocol.Version
 	request.BusinessType = protocol.BusinessAgentAssist
 	request.CorrelationID = correlationID
+
+	// 先登记再写：否则响应可能先到而被当作“没有等待者”丢弃。
+	responses := c.registerPending(correlationID)
+	defer c.unregisterPending(correlationID, responses)
+
 	if err := c.writeProtocolMessage(conn, request); err != nil {
 		c.closeConnection(connectionClosed)
 		return protocol.Message{}, &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "could not send request to platform"}
@@ -184,11 +189,7 @@ func (c *Client) sendStreamingRequest(ctx context.Context, request protocol.Mess
 			return protocol.Message{}, &agenttools.Error{Code: "PLATFORM_TIMEOUT", Message: "platform did not respond in time"}
 		case <-connectionClosed:
 			return protocol.Message{}, &agenttools.Error{Code: "PLATFORM_UNAVAILABLE", Message: "platform connection is unavailable"}
-		case message := <-incomingMessages:
-			c.cacheMessage(message)
-			if message.CorrelationID != correlationID {
-				continue
-			}
+		case message := <-responses:
 			if message.Type == protocol.TypeError {
 				code := message.Code
 				if code == "" {
@@ -199,18 +200,6 @@ func (c *Client) sendStreamingRequest(ctx context.Context, request protocol.Mess
 			if matchesResponse(message) {
 				return message, nil
 			}
-		}
-	}
-}
-
-// cachePendingMessages 将当前已排队的消息写入缓存，供下一次请求使用。
-func (c *Client) cachePendingMessages(incomingMessages chan protocol.Message) {
-	for {
-		select {
-		case message := <-incomingMessages:
-			c.cacheMessage(message)
-		default:
-			return
 		}
 	}
 }
