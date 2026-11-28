@@ -10,7 +10,7 @@
 
 ## 1. 一句话状态
 
-**P0 完成、P1 95%（只差本机 bridge 异步化）、P2 完成、P3 文本与图像定位完成（只剩 OCR 兜底）、P4 完成（`move_mouse` 平滑移动、`drag`、`click_target`，含等目标出现）。**
+**P0 完成、P1 95%（只差本机 bridge 异步化）、P2 完成、P3 完成（UIA 文本 + OpenCV 图像 + Windows OCR 兜底）、P4 完成（`move_mouse` 平滑移动、`drag`、`click_target`，含等目标出现）。**
 
 客户端已有两套原生内核：`yiuk-vision`（GDI 抓屏 / 快照 / 节流 / 设备门 / UIA / OpenCV）与 `yiuk-input`（SendInput / 确定性轨迹 / 按键守卫 / 灰度变化检测）。`take_screenshot`、`click`、`move_mouse`、`find_on_screen`、`click_target`、`drag` 现在都优先走客户端原生通道，旧客户端自动回退脚本（`find_on_screen` / `click_target` / `drag` 除外，它们必须原生）。
 
@@ -26,7 +26,7 @@
 | 命令 | `run_command`、`execute_command`、`get_command_result`、`cancel_command` |
 | 文件 | `download_file`、`upload_file`、`list_dir`、`stat_path` |
 | 桌面 | `take_screenshot`、`click`、`move_mouse`、`drag`、`press_keys`、`type_text` |
-| 视觉 | `find_on_screen`（UIA 文本 / OpenCV 图像模板，可等目标出现）、`click_target`（定位+选择+点击一笔事务，可等目标出现） |
+| 视觉 | `find_on_screen`（UIA 文本 / Windows OCR 兜底 / OpenCV 图像模板，可等目标出现）、`click_target`（定位+选择+点击一笔事务，`source=auto/uia/ocr`，可等目标出现） |
 | 等待 | `wait`、`wait_for` |
 | 交互 | `ask_user`、`get_user_reply` |
 
@@ -72,8 +72,9 @@
 | `src/vision/sessionlimiter.{h,cpp}` | 会话级互斥 + 500ms 最小间隔，排队可取消 |
 | `src/vision/devicegate.{h,cpp}` | 进程级互斥：抓屏与输入不能并发 |
 | `src/vision/visionservice.{h,cpp}` | 唯一入口：`capture` / `clickWithOptions` / `clickTarget` / `searchText` / `matchImage` / `toScreenPoint` / `screenRectToScreenshot` / `releaseScreenshotFile` / `pruneOrphanScreenshots`；`pickTarget` 与歧义判据是纯函数 |
-| `src/vision/requestparser.{h,cpp}` | 原生操作参数 → `VisionService` 入参的**唯一**解析处（三选一、region、阈值/limit 钳制、click_target 默认值与等待预算）；客户端 handler 与互操作程序共用，纯函数可测 |
+| `src/vision/requestparser.{h,cpp}` | 原生操作参数 → `VisionService` 入参的**唯一**解析处（三选一、`source=auto/uia/ocr`、region、阈值/limit 钳制、click_target 默认值与等待预算）；客户端 handler 与互操作程序共用，纯函数可测 |
 | `src/vision/textlocator.{h,cpp}` | UIA 控制视图查询（节点 5000 / 时间 300ms 上限）、全半角与空白归一化、control_type 与 region 过滤、阅读顺序排序 |
+| `src/vision/ocrlocator.{h,cpp}` | Windows.Media.Ocr 兜底：手写 WinRT ABI（无 winrt 头/C++/WinRT）、按查询文本挑语言、词窗口匹配（去字间空格）、词框并集、按面积去重；**必须 `-fno-devirtualize` 编译** |
 | `src/vision/templatematcher.{h,cpp}` | OpenCV 灰度 `TM_CCOEFF_NORMED`、阈值、region、IoU 0.3 去重；未编译 OpenCV 时返回 `UNSUPPORTED_OPERATION` |
 | `src/input/inputcontroller.{h,cpp}` | `SendInput` 绝对坐标、`buildPath` 确定性缓动、`ButtonGuard`、`drag`、灰度采样与变化判据、前台标题 |
 | `src/platformevents.cpp` | 注册 `screen.capture` / `input.click` / `input.move` / `input.drag` / `screen.release`；会话结束清理 |
@@ -167,6 +168,8 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 | 任务管理器拖动（真实客户端 + 真实平台） | 起点 `(752,337)` → 右 `+592` → 下 `+323` → 左 `−1344` → 上 `−323` → 右 `+752`，最终 `rect = 752,337`，**闭环** |
 | `click_target` 真机（`yiuk-click-target-test`，裸 Win32 按钮 fixture） | 未命中 `NOT_FOUND` 且 0 次 down；两个同标签按钮 `AMBIGUOUS_TARGET` 且 0 次 down；`pick=index:2` 只点到第二个（`clicks[2]==1`，其余 0）；`pick=best` 点到唯一按钮；落点 `(969,348)` 在命中框 `[799,322,1139,374]` 内 |
 | 互操作（真实 Qt ↔ 真实 Go 平台） | `INTEROP EXIT=0`；平台审计 6 条 `native_submitted`：`screen.capture` ×2、`screen.release`、`vision.find`、`vision.click_target` ×2（含等待超时段） |
+| OCR（`yiuk-vision-test`，GDI 画字，不读桌面） | `zh-Hans-CN`、2 行、**29 ms**；归一化后命中「收 藏」与 `Settings`，词框并集落在画字位置 `(32,49) 78×39` |
+| OCR 端到端（`yiuk-click-target-test`，`source=ocr` + `region`） | 中文按钮「收藏 首页 设置」被 OCR 读到并点中：`source=ocr`、`clicks[5]==1`，其余按钮 0 次 |
 | 绿色化 | `data\` 内出现配置/身份/`screenshots\`/`tmp\`；`data\tmp` 可见正在执行的 `.ps1`；C 盘旧目录不再写入 |
 
 ## 6. 踩过的坑（改输入/视觉前必读）
@@ -202,7 +205,6 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 
 | 项 | 状态 |
 | --- | --- |
-| OCR 兜底 | 未实现（UIA 已可用；`OCR_UNAVAILABLE` 语义待补） |
 | 非原生 Win32 目标（Qt/WPF）的 UIA 坐标 | 已验证 Qt 目标上报逻辑像素（见 §6.11），未做修正 |
 | 多显示器 / 混合 DPI / 负原点 | 未验证（P5） |
 | 模板管理（`vision.save_template`）、ROI 缓存 | 未实现（P5） |
@@ -213,10 +215,9 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 
 ## 8. 下一步（按顺序）
 
-1. **OCR 兜底**：`Windows.Media.Ocr`（P0 已验 C++ 直连可用），缺语言包返回 `OCR_UNAVAILABLE` + hint；
-   UIA 命中不到时自动回退到 OCR（并标注 `source=ocr`）。
-2. **P5**：`vision.save_template`（从快照裁剪，配额与路径校验）、多显示器/混合 DPI、ROI 缓存。
-3. **P6**：Windows CI（Qt + OpenCV 固定版本缓存）、绿色包/安装器体积与启动验证、`Release\` 重新打包。
+1. **P5**：`vision.save_template`（从快照裁剪，配额与路径校验）、多显示器/混合 DPI、ROI 缓存；
+   OCR 目前每次全帧识别（2560×1600 约 200–400ms），可以先按 `region` 裁剪再识别。
+2. **P6**：Windows CI（Qt + OpenCV 固定版本缓存）、绿色包/安装器体积与启动验证、`Release\` 重新打包。
 
 ## 9. 交接检查清单
 

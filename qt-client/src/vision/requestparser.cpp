@@ -94,6 +94,14 @@ bool buildLocateRequest(const QJsonObject &arguments, LocateRequest *out, QStrin
         out->text.controlType = out->locate.controlType;
     }
 
+    // 定位来源：auto（默认）/ uia / ocr。未知值直接拒绝，别让拼错的 "uai" 静默变成 auto。
+    const QString source = arguments.value(QStringLiteral("source")).toString().trimmed().toLower();
+    if (!source.isEmpty() && source != QLatin1String("auto") && source != QLatin1String("uia") &&
+        source != QLatin1String("ocr"))
+        return fail(code, message, QStringLiteral("INVALID_ARGUMENT"),
+                    QStringLiteral("source 只能是 auto / uia / ocr"));
+    if (!source.isEmpty()) out->text.source = source;
+
     if (!parseRegion(arguments.value(QStringLiteral("region")), &out->locate.region, &out->locate.hasRegion,
                      code, message))
         return false;

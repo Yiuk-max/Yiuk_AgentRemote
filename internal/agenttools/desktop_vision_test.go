@@ -269,3 +269,53 @@ func emptyFindEnvelope() json.RawMessage {
 		`"width":2560,"height":1600,"screen_left":0,"screen_top":0,"screen_width":2560,"screen_height":1600,` +
 		`"matches":[],"truncated":false,"visited_nodes":12,"elapsed_ms":9,"source":"uia"}`)
 }
+
+// 定位来源：source=auto/uia/ocr 原样送下去，结果里的 OCR 现场也带回给 Agent。
+func TestFindOnScreenForwardsSourceAndOcrFindings(t *testing.T) {
+	backend := nativeBackendWithImage(t)
+	var forwarded map[string]any
+	backend.nativeImpl = func(_ string, _ string, arguments json.RawMessage) (json.RawMessage, error) {
+		_ = json.Unmarshal(arguments, &forwarded)
+		return json.RawMessage(`{"captured":true,"screenshot_id":"aabbccddee11","layout_version":"0123456789abcdef",` +
+			`"width":2560,"height":1600,"screen_left":0,"screen_top":0,"screen_width":2560,"screen_height":1600,` +
+			`"matches":[{"bbox":[100,200,180,240],"center":[140,220],"score":0.9,"source":"ocr","text":"收藏",` +
+			`"control_type":""}],"truncated":false,"visited_nodes":0,"elapsed_ms":38,"source":"ocr",` +
+			`"requested_source":"ocr","ocr_language":"zh-Hans-CN"}`), nil
+	}
+	core := NewCore(backend)
+
+	response := core.Call(context.Background(), FindOnScreen, json.RawMessage(
+		`{"session_id":"s1","text":"收藏","source":"ocr"}`))
+	if !response.OK {
+		t.Fatalf("find_on_screen failed: %#v", response)
+	}
+	if forwarded["source"] != "ocr" {
+		t.Fatalf("source was not forwarded: %#v", forwarded)
+	}
+	data, _ := response.Data.(map[string]any)
+	if data["source"] != "ocr" || data["ocr_language"] != "zh-Hans-CN" || data["requested_source"] != "ocr" {
+		t.Fatalf("OCR findings missing from the result: %#v", data)
+	}
+	matches, _ := data["matches"].([]map[string]any)
+	if len(matches) != 1 || matches[0]["source"] != "ocr" {
+		t.Fatalf("OCR match source must survive: %#v", data["matches"])
+	}
+
+	// source=ocr 而设备没有语言包：错误原样上抛，不能被当成"找不到"。
+	backend.nativeImpl = func(_ string, _ string, _ json.RawMessage) (json.RawMessage, error) {
+		return nil, &Error{Code: "OCR_UNAVAILABLE", Message: "没有可用的 OCR 引擎",
+			Hint: "在设备上安装 OCR 语言包"}
+	}
+	failed := core.Call(context.Background(), FindOnScreen, json.RawMessage(
+		`{"session_id":"s1","text":"收藏","source":"ocr"}`))
+	if failed.OK || failed.Code != "OCR_UNAVAILABLE" || failed.Hint == "" {
+		t.Fatalf("OCR_UNAVAILABLE must be a real error: %#v", failed)
+	}
+
+	// 未知 source 由 schema 的 enum 挡住。
+	bad := core.Call(context.Background(), FindOnScreen, json.RawMessage(
+		`{"session_id":"s1","text":"收藏","source":"uai"}`))
+	if bad.OK || bad.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("unknown source must be rejected: %#v", bad)
+	}
+}

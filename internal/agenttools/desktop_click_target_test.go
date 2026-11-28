@@ -220,3 +220,33 @@ func TestClickTargetForwardsWaitUntilFound(t *testing.T) {
 		t.Fatalf("timeout_seconds=21 must be rejected: %#v", tooLong)
 	}
 }
+
+// OCR 兜底：source 参数直通客户端，结果里的 ocr_language 也会带回给 Agent。
+func TestClickTargetForwardsSource(t *testing.T) {
+	backend := nativeBackendWithImage(t)
+	var forwarded map[string]any
+	backend.nativeImpl = func(_ string, _ string, arguments json.RawMessage) (json.RawMessage, error) {
+		_ = json.Unmarshal(arguments, &forwarded)
+		return clickTargetEnvelope(), nil
+	}
+	core := NewCore(backend)
+
+	response := core.Call(context.Background(), ClickTarget, json.RawMessage(
+		`{"session_id":"s1","text":"收藏","source":"ocr"}`))
+	if !response.OK {
+		t.Fatalf("click_target failed: %#v", response)
+	}
+	if forwarded["source"] != "ocr" {
+		t.Fatalf("source was not forwarded: %#v", forwarded)
+	}
+
+	// 显式要 OCR 却缺语言包：设备回 OCR_UNAVAILABLE，MCP 不能把它降级成 NOT_FOUND。
+	backend.nativeImpl = func(_ string, _ string, _ json.RawMessage) (json.RawMessage, error) {
+		return nil, &Error{Code: "OCR_UNAVAILABLE", Message: "系统没有安装任何 OCR 识别语言包"}
+	}
+	failed := core.Call(context.Background(), ClickTarget, json.RawMessage(
+		`{"session_id":"s1","text":"收藏","source":"ocr"}`))
+	if failed.OK || failed.Code != "OCR_UNAVAILABLE" {
+		t.Fatalf("OCR_UNAVAILABLE must surface as an error: %#v", failed)
+	}
+}

@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QJsonObject>
 #include <QStringList>
+#include <QtMath>
 
 #include <windows.h>
 
@@ -103,6 +104,23 @@ QJsonObject geometryToJson(const ScreenGeometry &geometry) {
         {QStringLiteral("width"), geometry.width},
         {QStringLiteral("height"), geometry.height},
     };
+}
+
+QRect screenshotRectToScreen(const ScreenGeometry &geometry, const QRect &rect) {
+    if (geometry.width <= 0 || geometry.height <= 0 || geometry.screenWidth <= 0 || geometry.screenHeight <= 0 ||
+        rect.isNull())
+        return QRect();
+    const auto scaleX = [&](int value) {
+        return geometry.left + qRound(static_cast<double>(value) * geometry.screenWidth / geometry.width);
+    };
+    const auto scaleY = [&](int value) {
+        return geometry.top + qRound(static_cast<double>(value) * geometry.screenHeight / geometry.height);
+    };
+    const int left = scaleX(rect.left());
+    const int top = scaleY(rect.top());
+    const int right = scaleX(rect.left() + rect.width());
+    const int bottom = scaleY(rect.top() + rect.height());
+    return QRect(left, top, qMax(1, right - left), qMax(1, bottom - top));
 }
 
 namespace {

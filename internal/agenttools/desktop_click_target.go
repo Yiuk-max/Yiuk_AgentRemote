@@ -55,6 +55,7 @@ func (c *Core) clickTarget(ctx context.Context, raw json.RawMessage) (any, error
 		ControlType    string  `json:"control_type"`
 		Region         []int   `json:"region"`
 		Limit          int     `json:"limit"`
+		Source         string  `json:"source"`
 		Pick           string  `json:"pick"`
 		Button         string  `json:"button"`
 		Double         bool    `json:"double"`
@@ -110,6 +111,9 @@ func (c *Core) clickTarget(ctx context.Context, raw json.RawMessage) (any, error
 	}
 	if input.Limit > 0 {
 		arguments["limit"] = input.Limit
+	}
+	if source := strings.TrimSpace(input.Source); source != "" {
+		arguments["source"] = source
 	}
 	if pick := strings.TrimSpace(input.Pick); pick != "" {
 		arguments["pick"] = pick
@@ -197,6 +201,8 @@ func (c *Core) clickTarget(ctx context.Context, raw json.RawMessage) (any, error
 		WaitedMS       int     `json:"waited_ms"`
 		ElapsedMS      int     `json:"elapsed_ms"`
 		Source         string  `json:"source"`
+		OcrLanguage    string  `json:"ocr_language"`
+		OcrNote        string  `json:"ocr_note"`
 	}
 	if err := json.Unmarshal(rawResult, &result); err != nil {
 		return nil, &Error{Code: "NATIVE_RESULT_INVALID",
@@ -260,6 +266,8 @@ func (c *Core) clickTarget(ctx context.Context, raw json.RawMessage) (any, error
 		"matches":         matches,
 		"candidate_count": result.CandidateCount,
 		"source":          firstNonEmpty(result.Source, "uia"),
+		"ocr_language":    result.OcrLanguage,
+		"ocr_note":        result.OcrNote,
 		"elapsed_ms":      result.ElapsedMS,
 		// 等待语义的现场：默认不等时 attempts=1，timed_out 恒 false（超时是失败）。
 		"attempts":         result.Attempts,

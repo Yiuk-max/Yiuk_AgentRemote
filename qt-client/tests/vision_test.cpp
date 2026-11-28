@@ -11,6 +11,7 @@
 #include "vision/snapshotstore.h"
 #include "vision/templatematcher.h"
 #include "vision/textlocator.h"
+#include "vision/ocrlocator.h"
 #include "vision/requestparser.h"
 #include "vision/visionservice.h"
 
@@ -24,6 +25,8 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QTemporaryDir>
+
+#include <windows.h>
 
 #include <atomic>
 #include <cstdio>
@@ -711,6 +714,173 @@ void testRequestParsing() {
     check(waitCapped.waitTimeoutMs == 20000, QStringLiteral("wait budget is capped at 20s"));
 }
 
+// 用 GDI 画一张带文字的图（不依赖 Qt 字体/窗口），给 OCR 测试当输入。
+QImage renderTextImage(const QStringList &lines) {
+    const int width = 640;
+    const int height = 60 + int(lines.size()) * 60;
+    QImage image(width, height, QImage::Format_ARGB32);
+    image.fill(Qt::white);
+    HDC screen = GetDC(nullptr);
+    HDC memory = CreateCompatibleDC(screen);
+    HBITMAP bitmap = CreateCompatibleBitmap(screen, width, height);
+    HGDIOBJ previous = SelectObject(memory, bitmap);
+    RECT full{0, 0, width, height};
+    FillRect(memory, &full, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+    SetBkMode(memory, TRANSPARENT);
+    SetTextColor(memory, RGB(20, 30, 45));
+    LOGFONTW font{};
+    font.lfHeight = -40;
+    lstrcpyW(font.lfFaceName, L"Microsoft YaHei UI");
+    HFONT textFont = CreateFontIndirectW(&font);
+    HGDIOBJ oldFont = SelectObject(memory, textFont);
+    int y = 40;
+    for (const QString &line : lines) {
+        const std::wstring wide = line.toStdWString();
+        TextOutW(memory, 30, y, wide.c_str(), int(wide.size()));
+        y += 60;
+    }
+    SelectObject(memory, oldFont);
+    DeleteObject(textFont);
+    GdiFlush();
+    // 32 位 DIB 才是 BGRA；用 GetDIBits 拿不到就直接按 DDB 逐行读像素不可靠，
+    // 这里改用 DIB section 重画一遍保证内存布局可控。
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    void *bits = nullptr;
+    HBITMAP dib = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HDC dibDc = CreateCompatibleDC(screen);
+    HGDIOBJ dibPrevious = SelectObject(dibDc, dib);
+    BitBlt(dibDc, 0, 0, width, height, memory, 0, 0, SRCCOPY);
+    GdiFlush();
+    if (bits != nullptr) {
+        for (int row = 0; row < height; ++row) {
+            memcpy(image.scanLine(row), static_cast<const uchar *>(bits) + qsizetype(row) * width * 4,
+                   size_t(width) * 4);
+        }
+    } else {
+        image = QImage();
+    }
+    SelectObject(dibDc, dibPrevious);
+    DeleteObject(dib);
+    DeleteDC(dibDc);
+    SelectObject(memory, previous);
+    DeleteObject(bitmap);
+    DeleteDC(memory);
+    ReleaseDC(nullptr, screen);
+    return image;
+}
+
+// OCR 文本匹配：词窗口、得分、去重、region 过滤（纯函数，不需要真 OCR）。
+void testOcrMatching() {
+    using namespace yiuk::vision;
+    OcrLine line;
+    line.text = QStringLiteral("收 藏 首 页 设 置");
+    const QStringList words{QStringLiteral("收"), QStringLiteral("藏"), QStringLiteral("首"), QStringLiteral("页"),
+                            QStringLiteral("设"), QStringLiteral("置")};
+    for (int i = 0; i < words.size(); ++i) {
+        OcrWord word;
+        word.text = words.at(i);
+        word.rect = QRect(30 + i * 44, 40, 40, 40);
+        line.words.append(word);
+    }
+    OcrOutcome outcome;
+    outcome.lines.append(line);
+
+    TextQuery query;
+    query.text = QStringLiteral("收藏");  // OCR 给的“收 藏”归一化后要能命中
+    QVector<TextMatch> matches;
+    matchOcrText(outcome, query, QRect(), &matches);
+    check(matches.size() == 1, QStringLiteral("OCR matches a two-word CJK phrase"));
+    check(matches.at(0).source == QStringLiteral("ocr") && matches.at(0).score > 0.89,
+          QStringLiteral("OCR hits are scored like text matches and tagged with source=ocr"));
+    // 框应该是“收 + 藏”两词的并集，而不是整行。
+    check(matches.at(0).rect.left() == 30 && matches.at(0).rect.width() < 200,
+          QStringLiteral("OCR bounding box covers only the matched words"));
+
+    // 单字命中：只框那一个字。
+    TextQuery single;
+    single.text = QStringLiteral("页");
+    matches.clear();
+    matchOcrText(outcome, single, QRect(), &matches);
+    check(matches.size() == 1 && matches.at(0).rect.width() <= 44,
+          QStringLiteral("a single OCR word is boxed tightly"));
+
+    // exact 语义：整窗完全一致才命中（“收藏”不会匹配到“收藏夹”这类更长文本）。
+    TextQuery exact;
+    exact.text = QStringLiteral("收藏");
+    exact.match = QStringLiteral("exact");
+    matches.clear();
+    matchOcrText(outcome, exact, QRect(), &matches);
+    check(matches.size() == 1 && matches.at(0).score == 1.0,
+          QStringLiteral("exact OCR matching reports score 1.0"));
+
+    // region 过滤：交集为空就不算命中。
+    TextQuery inRegion;
+    inRegion.text = QStringLiteral("收藏");
+    matches.clear();
+    matchOcrText(outcome, inRegion, QRect(0, 0, 20, 20), &matches);
+    check(matches.isEmpty(), QStringLiteral("a region without overlap filters OCR hits out"));
+
+    // 找不到就是空，不编造候选。
+    TextQuery missing;
+    missing.text = QStringLiteral("下载");
+    matches.clear();
+    matchOcrText(outcome, missing, QRect(), &matches);
+    check(matches.isEmpty(), QStringLiteral("OCR returns no match for absent text"));
+}
+
+// 真 OCR：GDI 画字 → Windows.Media.Ocr → 词框。没有语言包时跳过（不算失败）。
+void testOcrRecognition() {
+    using namespace yiuk::vision;
+    const QImage image = renderTextImage({QStringLiteral("收藏 首页 设置"), QStringLiteral("Settings 2026")});
+    check(!image.isNull(), QStringLiteral("GDI renders a text image for OCR"));
+    if (image.isNull()) return;
+
+    OcrOutcome outcome;
+    QString code;
+    QString message;
+    const bool ok = recognizeText(image, QStringLiteral("收藏"), nullptr, &outcome, &code, &message);
+    if (!ok && code == QStringLiteral("OCR_UNAVAILABLE")) {
+        std::printf("WARN OCR is unavailable on this machine: %s\n", qPrintable(message));
+        return;
+    }
+    check(ok, QStringLiteral("recognizeText runs on a rendered image"));
+    if (!ok) {
+        std::printf("     OCR failed: %s %s\n", qPrintable(code), qPrintable(message));
+        return;
+    }
+    check(!outcome.language.isEmpty() && !outcome.lines.isEmpty(),
+          QStringLiteral("OCR reports a language and at least one line"));
+    check(outcome.elapsedMs >= 0, QStringLiteral("OCR reports elapsed time"));
+
+    TextQuery query;
+    query.text = QStringLiteral("收藏");
+    QVector<TextMatch> matches;
+    matchOcrText(outcome, query, QRect(), &matches);
+    check(!matches.isEmpty(), QStringLiteral("OCR finds the rendered CJK text"));
+    if (!matches.isEmpty()) {
+        const QRect box = matches.at(0).rect;
+        std::printf("     ocr %s: %d lines, %d ms, box=%d,%d %dx%d\n", qPrintable(outcome.language),
+                    int(outcome.lines.size()), outcome.elapsedMs, box.left(), box.top(), box.width(),
+                    box.height());
+        // 文字画在 (30,40) 附近，框应该落在图内且不在右下角。
+        check(box.left() < image.width() / 2 && box.top() < image.height() / 2,
+              QStringLiteral("OCR bounding box lands where the text was drawn"));
+    }
+
+    TextQuery latin;
+    latin.text = QStringLiteral("Settings");
+    latin.match = QStringLiteral("exact");
+    matches.clear();
+    matchOcrText(outcome, latin, QRect(), &matches);
+    check(!matches.isEmpty(), QStringLiteral("OCR finds Latin text too"));
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -727,6 +897,8 @@ int main(int argc, char **argv) {
     testTextNormalization();
     testPickTarget();
     testRequestParsing();
+    testOcrMatching();
+    testOcrRecognition();
     testTextSearchOnDesktop();
     testDeviceGate();
     testPrune();

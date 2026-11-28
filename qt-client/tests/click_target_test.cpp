@@ -39,9 +39,11 @@ void check(bool condition, const QString &what) {
     std::printf("FAIL %s\n", qPrintable(what));
 }
 
-constexpr int kProbeCount = 5;
 constexpr UINT_PTR kFirstButtonId = 100;
-int clicks[kProbeCount] = {0, 0, 0, 0, 0};
+constexpr int kProbeCount = 5;
+// 第 6 个按钮专门给 OCR：中文标签、大字号，OCR 才读得稳。
+constexpr UINT_PTR kOcrButtonId = kFirstButtonId + kProbeCount;
+int clicks[kProbeCount + 1] = {0, 0, 0, 0, 0, 0};
 const wchar_t *const kLabels[kProbeCount] = {
     L"yiuk-unique-probe",     // 0：唯一标签
     L"yiuk-ambiguous-probe",  // 1：与 2 同标签、不同位置
@@ -53,7 +55,7 @@ const wchar_t *const kLabels[kProbeCount] = {
 LRESULT CALLBACK fixtureProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     if (message == WM_COMMAND && HIWORD(wparam) == BN_CLICKED) {
         const UINT_PTR id = LOWORD(wparam);
-        if (id >= kFirstButtonId && id < kFirstButtonId + kProbeCount) ++clicks[id - kFirstButtonId];
+        if (id >= kFirstButtonId && id <= kOcrButtonId) ++clicks[id - kFirstButtonId];
         return 0;
     }
     if (message == WM_CLOSE) {
@@ -136,7 +138,7 @@ int main(int argc, char **argv) {
     }
     // 放在屏幕中部：避开本机常驻的 MyDockFinder 等贴边浮层。
     HWND window = CreateWindowExW(0, windowClass.lpszClassName, L"yiuk-click-target-fixture",
-                                 WS_OVERLAPPEDWINDOW | WS_VISIBLE, 760, 260, 420, 460, nullptr, nullptr,
+                                 WS_OVERLAPPEDWINDOW | WS_VISIBLE, 760, 200, 420, 520, nullptr, nullptr,
                                  windowClass.hInstance, nullptr);
     if (window == nullptr) {
         std::printf("SKIP cannot create the fixture window\n");
@@ -146,6 +148,17 @@ int main(int argc, char **argv) {
         CreateWindowExW(0, L"BUTTON", kLabels[i], WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 30,
                         24 + i * 78, 340, 52, window, reinterpret_cast<HMENU>(kFirstButtonId + i),
                         windowClass.hInstance, nullptr);
+    }
+    // OCR 按钮：中文标签 + 22px 字体，避免小字被识别成一堆噪声。
+    HWND ocrButton = CreateWindowExW(0, L"BUTTON", L"收藏 首页 设置", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 30,
+                                     24 + kProbeCount * 78, 340, 52, window,
+                                     reinterpret_cast<HMENU>(kOcrButtonId), windowClass.hInstance, nullptr);
+    if (ocrButton != nullptr) {
+        LOGFONTW labelFont{};
+        labelFont.lfHeight = -22;
+        lstrcpyW(labelFont.lfFaceName, L"Microsoft YaHei UI");
+        HFONT font = CreateFontIndirectW(&labelFont);
+        if (font != nullptr) SendMessageW(ocrButton, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }
     pumpFor(300);
     if (!ensureForeground(window)) {
@@ -260,6 +273,43 @@ int main(int argc, char **argv) {
               QStringLiteral("physical click point stays inside the picked bounding box"));
         std::printf("     picked bbox=[%d,%d,%d,%d] screen=%d,%d\n", bbox.at(0).toInt(), bbox.at(1).toInt(),
                     bbox.at(2).toInt(), bbox.at(3).toInt(), x, y);
+    }
+
+    // 6) OCR 兜底：显式 source=ocr，只在按钮附近的 region 里找中文标签。
+    //    这一段验证的是「UIA 之外的来源」也能落到同一个点击事务里：
+    //    region 用物理屏幕坐标，OCR 的框换回屏幕坐标后再过滤。
+    if (!ensureForeground(window)) {
+        std::printf("SKIP lost foreground before the OCR case\n");
+        return 2;
+    }
+    if (ocrButton != nullptr) {
+        RECT buttonRect{};
+        GetWindowRect(ocrButton, &buttonRect);
+        yiuk::vision::ClickTargetOptions ocrOptions;
+        ocrOptions.text.text = QStringLiteral("收藏");
+        ocrOptions.text.source = QStringLiteral("ocr");
+        ocrOptions.text.region =
+            QRect(buttonRect.left, buttonRect.top, buttonRect.right - buttonRect.left,
+                  buttonRect.bottom - buttonRect.top)
+                .adjusted(-4, -4, 4, 4);
+        ocrOptions.pick = QStringLiteral("best");
+        ocrOptions.detectChange = false;
+        QJsonObject ocrData;
+        QString ocrCode;
+        QString ocrMessage;
+        const bool ocrOk = service.clickTarget(QStringLiteral("session-click-target"), ocrOptions, nullptr,
+                                               &ocrData, &ocrCode, &ocrMessage);
+        pumpFor(400);
+        if (!ocrOk && ocrCode == QLatin1String("OCR_UNAVAILABLE")) {
+            std::printf("WARN OCR is unavailable on this machine: %s\n", qPrintable(ocrMessage));
+        } else {
+            check(ocrOk, QStringLiteral("source=ocr locates and clicks a CJK label"));
+            if (ocrOk) {
+                check(ocrData.value(QStringLiteral("source")).toString() == QStringLiteral("ocr"),
+                      QStringLiteral("OCR result is tagged with source=ocr"));
+                check(clicks[kProbeCount] == 1, QStringLiteral("the OCR-labelled button received the click"));
+            }
+        }
     }
 
     DestroyWindow(window);

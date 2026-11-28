@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QImage>
+#include <QRect>
 #include <QJsonObject>
 #include <QString>
 
@@ -28,6 +29,10 @@ struct ScreenCapture {
 bool captureDesktop(ScreenCapture *capture, QString *error);
 
 QJsonObject geometryToJson(const ScreenGeometry &geometry);
+
+// 截图坐标 -> 物理屏幕坐标（与 VisionService::screenRectToScreenshot 互逆）。
+// OCR 在图像像素上出框，需要这一份换算回屏幕坐标。
+QRect screenshotRectToScreen(const ScreenGeometry &geometry, const QRect &rect);
 
 // 当前桌面布局的摘要（虚拟桌面矩形 + 每个显示器的物理矩形 + DPI）。
 // 插拔显示器、改分辨率或改缩放都会让摘要变化，用于让旧的 screenshot_id 立即失效。

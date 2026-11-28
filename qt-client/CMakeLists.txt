@@ -30,13 +30,16 @@ add_library(yiuk-vision STATIC
     src/vision/visionservice.h
     src/vision/requestparser.cpp
     src/vision/requestparser.h
+    src/vision/ocrlocator.cpp
+    src/vision/ocrlocator.h
 )
 target_include_directories(yiuk-vision PUBLIC src)
 # 点击（含变化检测）需要输入内核：vision 依赖 input，反向不依赖。
 target_link_libraries(yiuk-vision PUBLIC Qt6::Gui yiuk-input)
 if(WIN32)
-    # 抓屏走 GDI，文本定位走 UIA（COM）：MinGW 下必须显式链接这些系统库。
-    target_link_libraries(yiuk-vision PUBLIC gdi32 user32 ole32 oleaut32 uuid)
+    # 抓屏走 GDI，文本定位走 UIA（COM），OCR 走 WinRT（windowsapp / combase）：
+    # MinGW 下这些系统库必须显式链接，否则 WindowsCreateString / RoInitialize 会未定义。
+    target_link_libraries(yiuk-vision PUBLIC gdi32 user32 ole32 oleaut32 uuid windowsapp)
     # NOMINMAX 防止 windows.h 的 min/max 宏破坏 std::max；UIA 需要 _WIN32_WINNT >= Win7。
     target_compile_definitions(yiuk-vision PRIVATE
         UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
@@ -46,6 +49,10 @@ set_target_properties(yiuk-vision PROPERTIES FOLDER "libs")
 # OpenCV：P0 已经在 spike/vision 里用同一套 MinGW 静态构建（core + imgproc）。
 # 找不到就关闭图像模板匹配（编译期 YIUK_HAS_OPENCV 区分，运行时返回 UNSUPPORTED_OPERATION），
 # 不让"没有 OpenCV"变成构建失败。
+# Windows.Media.Ocr 的 ABI 手写接口在 -O2/-O3 下会被 MinGW 反优化成 __cxa_pure_virtual
+# （运行时 0xC0000005），见 docs/local-dev.md §6.6 与 spike/vision/src/probe_winrt_ocr.cpp。
+set_source_files_properties(src/vision/ocrlocator.cpp PROPERTIES COMPILE_OPTIONS "-fno-devirtualize")
+
 set(YIUK_OPENCV_STATIC "${CMAKE_CURRENT_SOURCE_DIR}/../spike/vision/third_party/install-opencv/x64/mingw/staticlib")
 if(EXISTS "${YIUK_OPENCV_STATIC}/OpenCVConfig.cmake")
     set(OpenCV_DIR "${YIUK_OPENCV_STATIC}")

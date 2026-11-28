@@ -223,7 +223,11 @@ MCP 工具 → agenttools 原生桌面调度 → platformclient
       归一化全角→半角、去所有空白（OCR 的"收 藏"）、casefold；`exact` / `contains`；
       `control_type` 名称过滤；`region` 相交过滤；过滤 offscreen 与零尺寸矩形；按阅读顺序排序。
       未做：UIA 结果缓存、三种 DPI/两主题下的命中率重测（仍按计划低于 80% 则降级为显式来源）。
-- [ ] OCR：系统语言检查、lang 校验、图像尺寸上限、行/词匹配框与去重；缺语言包返回 `OCR_UNAVAILABLE` + hint，不影响图像/UIA。
+- [x] OCR：`Windows.Media.Ocr` 直连（手写 WinRT ABI，MinGW 需 `-fno-devirtualize`）；
+      系统语言枚举 + 按查询文本挑引擎（CJK 优先中文）、`MaxImageDimension` 校验；
+      行/词窗口匹配（归一化去掉 CJK 字间空格）+ 词框并集 + ≥60% 重叠去重；
+      缺语言包返回 `OCR_UNAVAILABLE` + hint，`source=auto` 时只记 `ocr_note` 不影响 UIA/图像结果。
+      未做：按 region 裁剪后再识别（当前整帧识别）、竖排/旋转文本。
 - [x] `find_on_screen`（文本路径）：`limit` 1–20、`region`、`control_type`、`match`，返回截图坐标 bbox/center
       与 `screenshot_id`，不返回图片；没有截图时先抓一张不落盘的建立基准。
       等待语义：`wait_until_found` + `timeout_seconds`（1–25，默认 10），MCP 侧每 500ms 一个独立原生调用，

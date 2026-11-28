@@ -38,6 +38,10 @@
   截图坐标，直接把 `screenshot_id` 一起交给 `click` / `drag`。`region` 用 `[left,top,right,bottom]`
   截图坐标缩小范围；`match=exact` 走精确匹配；文字匹配已归一化全半角、大小写与空白
   （OCR 的"收 藏"也能命中）。
+- **文字定位可以用 OCR 兜底**。`find_on_screen` / `click_target` 的 `source`：`auto`（默认，UIA 优先，
+  没命中再对同一帧做 Windows OCR）/ `uia` / `ocr`。OCR 命中的 `matches[].source` 是 `ocr`，词框已
+  去掉中文的字间空格；缺语言包时 `source=ocr` 返回 `OCR_UNAVAILABLE`（带安装 hint），`auto` 只把原因
+  放进 `ocr_note`，不改变结果。OCR 读不到控件类型，`control_type` 只作用于 UIA。
 - **图像模板匹配用 OpenCV**。`text` / `image_path` / `image_b64` 三选一：`image_path` 是**设备端**
   路径（先用 `upload_file` 传模板），`image_b64` 是 PNG/JPEG（解码后 ≤64 KiB、尺寸 ≤2048x2048）。
   实现是灰度 `TM_CCOEFF_NORMED` + IoU 0.3 去重，`threshold` 默认 0.88；`matches[].source` 为

@@ -50,6 +50,7 @@ func (c *Core) findOnScreen(ctx context.Context, raw json.RawMessage) (any, erro
 		ControlType    string  `json:"control_type"`
 		Region         []int   `json:"region"`
 		Limit          int     `json:"limit"`
+		Source         string  `json:"source"`
 		TimeoutSeconds int     `json:"timeout_seconds"`
 		WaitUntilFound bool    `json:"wait_until_found"`
 	}
@@ -97,6 +98,9 @@ func (c *Core) findOnScreen(ctx context.Context, raw json.RawMessage) (any, erro
 	}
 	if input.Limit > 0 {
 		arguments["limit"] = input.Limit
+	}
+	if source := strings.TrimSpace(input.Source); source != "" {
+		arguments["source"] = source
 	}
 
 	// 等待目标出现：每轮一个原生调用（每轮自己取/放设备门），轮间放回去睡 500ms。
@@ -176,6 +180,10 @@ func (c *Core) findOnScreen(ctx context.Context, raw json.RawMessage) (any, erro
 		VisitedNodes int    `json:"visited_nodes"`
 		ElapsedMS    int    `json:"elapsed_ms"`
 		Source       string `json:"source"`
+		// OCR 兜底的现场：用了哪个语言包、auto 模式下为什么没用上。
+		RequestedSource string `json:"requested_source"`
+		OcrLanguage     string `json:"ocr_language"`
+		OcrNote         string `json:"ocr_note"`
 	}
 	if err := json.Unmarshal(rawResult, &result); err != nil {
 		return nil, &Error{Code: "NATIVE_RESULT_INVALID",
@@ -222,14 +230,17 @@ func (c *Core) findOnScreen(ctx context.Context, raw json.RawMessage) (any, erro
 	}
 
 	return map[string]any{
-		"session_id":    input.SessionID,
-		"screenshot_id": result.ScreenshotID,
-		"matches":       matches,
-		"count":         len(matches),
-		"truncated":     result.Truncated,
-		"source":        firstNonEmpty(result.Source, "uia"),
-		"visited_nodes": result.VisitedNodes,
-		"elapsed_ms":    result.ElapsedMS,
+		"session_id":       input.SessionID,
+		"screenshot_id":    result.ScreenshotID,
+		"matches":          matches,
+		"count":            len(matches),
+		"truncated":        result.Truncated,
+		"source":           firstNonEmpty(result.Source, "uia"),
+		"requested_source": firstNonEmpty(result.RequestedSource, "auto"),
+		"ocr_language":     result.OcrLanguage,
+		"ocr_note":         result.OcrNote,
+		"visited_nodes":    result.VisitedNodes,
+		"elapsed_ms":       result.ElapsedMS,
 		// 等待语义的现场：attempts=查了几轮，timed_out=预算用完仍未命中（不是错误）。
 		"timed_out":        timedOut,
 		"attempts":         attempts,

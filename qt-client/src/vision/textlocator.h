@@ -19,6 +19,9 @@ struct TextMatch {
 
 struct TextQuery {
     QString text;
+    // 定位来源：auto（默认：UIA 找不到再用 OCR）/ uia / ocr。OCR 读不出控件类型，
+    // 所以 control_type 只会作用在 UIA 上。
+    QString source = QStringLiteral("auto");
     // contains（默认）| exact；大小写与全半角差异都会被归一化掉。
     QString match = QStringLiteral("contains");
     // 可选：按控件类型过滤（"Button" / "Edit" / ...，大小写不敏感）。

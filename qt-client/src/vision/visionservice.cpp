@@ -1,5 +1,7 @@
 #include "visionservice.h"
 
+#include "ocrlocator.h"
+
 #include "apppaths.h"
 
 #include "input/inputcontroller.h"
@@ -437,10 +439,16 @@ bool VisionService::clickTarget(const QString &sessionId, const ClickTargetOptio
     limit = qBound(1, limit, 20);
 
     QVector<TargetCandidate> candidates;
-    const QString source = options.useImage ? QStringLiteral("opencv") : QStringLiteral("uia");
+    const QString wantedSource = options.useImage ? QString() : options.text.source.trimmed().toLower();
+    if (!options.useImage && wantedSource != QLatin1String("auto") && wantedSource != QLatin1String("uia") &&
+        wantedSource != QLatin1String("ocr"))
+        return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("source 只能是 auto / uia / ocr"));
+    QString source = options.useImage ? QStringLiteral("opencv") : QStringLiteral("uia");
     bool truncated = false;
     int visitedNodes = 0;
     int locateMs = 0;
+    QString ocrLanguage;
+    QString ocrNote;
     if (options.useImage) {
         TemplateOptions imageOptions = options.image;
         imageOptions.limit = limit;
@@ -456,23 +464,64 @@ bool VisionService::clickTarget(const QString &sessionId, const ClickTargetOptio
     } else {
         TextQuery query = options.text;
         query.limit = limit;
-        TextSearchOutcome outcome;
-        if (!findText(query, &outcome, code, message)) return false;
-        truncated = outcome.truncated;
-        visitedNodes = outcome.visitedNodes;
-        locateMs = outcome.elapsedMs;
-        for (const TextMatch &hit : outcome.matches) {
-            QRect rect;
-            SnapshotRef ignored;
-            // UIA 给的是物理屏幕坐标，必须换算到刚抓这一帧的坐标系。
-            if (!screenRectToScreenshot(sessionId, hit.rect, &rect, &ignored, code, message)) continue;
-            TargetCandidate candidate;
-            candidate.bbox = rect;
-            candidate.score = hit.score;
-            candidate.text = hit.name;
-            candidate.source = hit.source;
-            candidate.controlType = hit.controlType;
-            candidates.append(candidate);
+
+        // UIA 优先（能拿到控件类型，也最准）；auto 模式下它失败或没命中都不算致命。
+        if (wantedSource != QLatin1String("ocr")) {
+            TextSearchOutcome outcome;
+            if (!findText(query, &outcome, code, message)) {
+                if (wantedSource == QLatin1String("uia")) return false;
+                ocrNote = *message;  // 记下 UIA 为什么没给结果
+            } else {
+                truncated = outcome.truncated;
+                visitedNodes = outcome.visitedNodes;
+                locateMs = outcome.elapsedMs;
+                for (const TextMatch &hit : outcome.matches) {
+                    QRect rect;
+                    SnapshotRef ignored;
+                    // UIA 给的是物理屏幕坐标，必须换算到刚抓这一帧的坐标系。
+                    if (!screenRectToScreenshot(sessionId, hit.rect, &rect, &ignored, code, message)) continue;
+                    TargetCandidate candidate;
+                    candidate.bbox = rect;
+                    candidate.score = hit.score;
+                    candidate.text = hit.name;
+                    candidate.source = hit.source;
+                    candidate.controlType = hit.controlType;
+                    candidates.append(candidate);
+                }
+            }
+        }
+
+        // OCR 兜底：UIA 没有候选（或调用方直接要 ocr）时，在**同一帧**上识别。
+        // 同一帧很关键：定位与点击共用这一帧，OCR 的框不需要再换一次坐标基准。
+        if (candidates.isEmpty() && wantedSource != QLatin1String("uia")) {
+            OcrOutcome ocr;
+            QString ocrCode;
+            QString ocrMessage;
+            if (!recognizeText(shot.image, query.text, cancelled, &ocr, &ocrCode, &ocrMessage)) {
+                if (ocrCode == QLatin1String("CANCELLED")) return fail(ocrCode, ocrMessage);
+                if (wantedSource == QLatin1String("ocr"))
+                    return fail(ocrCode, ocrMessage);
+                ocrNote = ocrMessage;
+            } else {
+                ocrLanguage = ocr.language;
+                locateMs += ocr.elapsedMs;
+                QVector<TextMatch> ocrHits;
+                matchOcrText(ocr, query, QRect(), &ocrHits);
+                for (const TextMatch &hit : ocrHits) {
+                    // OCR 的框直接就是这一帧的像素坐标（截图坐标）。
+                    if (query.region.isValid() && !query.region.isEmpty()) {
+                        const QRect screenRect = screenshotRectToScreen(shot.geometry, hit.rect);
+                        if (!screenRect.isNull() && !screenRect.intersects(query.region)) continue;
+                    }
+                    TargetCandidate candidate;
+                    candidate.bbox = hit.rect;
+                    candidate.score = hit.score;
+                    candidate.text = hit.name;
+                    candidate.source = QStringLiteral("ocr");
+                    candidates.append(candidate);
+                }
+                if (!candidates.isEmpty()) source = QStringLiteral("ocr");
+            }
         }
     }
 
@@ -489,6 +538,8 @@ bool VisionService::clickTarget(const QString &sessionId, const ClickTargetOptio
     detail.insert(QStringLiteral("visited_nodes"), visitedNodes);
     detail.insert(QStringLiteral("locate_ms"), locateMs);
     if (options.useImage) detail.insert(QStringLiteral("threshold"), options.image.threshold);
+    if (!ocrLanguage.isEmpty()) detail.insert(QStringLiteral("ocr_language"), ocrLanguage);
+    if (!ocrNote.isEmpty()) detail.insert(QStringLiteral("ocr_note"), ocrNote);
 
     const TargetPickOutcome choice = pickTarget(candidates, pick);
     if (choice.status != TargetPickStatus::Picked) {
@@ -620,22 +671,105 @@ bool VisionService::searchText(const QString &sessionId, const TextQuery &query,
     };
     if (data == nullptr) return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("data 为空"));
 
+    // 定位来源：auto（UIA 优先，找不到再 OCR）/ uia / ocr。
+    const QString wanted = query.source.trimmed().toLower();
+    if (wanted != QLatin1String("auto") && wanted != QLatin1String("uia") && wanted != QLatin1String("ocr"))
+        return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("source 只能是 auto / uia / ocr"));
+
     // 坐标基准：没有就必须先抓一张（不落盘），否则返回的坐标无处可用。
+    // 明确只要 OCR 时不先抓：下面那次抓屏会同时建立基准，少一次全屏抓取。
     SnapshotRef ref;
-    if (!latestScreenshot(sessionId, &ref)) {
-        CaptureOptions options;
-        options.saveToDisk = false;
-        CaptureOutcome outcome;
-        if (!capture(sessionId, options, cancelled, &outcome, code, message)) return false;
-        if (!latestScreenshot(sessionId, &ref))
-            return fail(QStringLiteral("SCREENSHOT_FAILED"), QStringLiteral("无法建立坐标基准"));
+    bool haveRef = latestScreenshot(sessionId, &ref);
+    QVector<TextMatch> hits;  // 统一用**物理屏幕坐标**
+    bool truncated = false;
+    int visitedNodes = 0;
+    int elapsedMs = 0;
+
+    if (wanted != QLatin1String("ocr")) {
+        if (!haveRef) {
+            CaptureOptions options;
+            options.saveToDisk = false;
+            CaptureOutcome outcome;
+            if (!capture(sessionId, options, cancelled, &outcome, code, message)) return false;
+            haveRef = latestScreenshot(sessionId, &ref);
+            if (!haveRef) return fail(QStringLiteral("SCREENSHOT_FAILED"), QStringLiteral("无法建立坐标基准"));
+        }
+        TextSearchOutcome outcome;
+        if (!findText(query, &outcome, code, message)) {
+            // auto：UIA 用不了（锁屏、前台不是普通窗口、没有前台窗口）不该挡住 OCR 兜底。
+            if (wanted == QLatin1String("uia")) return false;
+        } else {
+            truncated = outcome.truncated;
+            visitedNodes = outcome.visitedNodes;
+            elapsedMs = outcome.elapsedMs;
+            hits = outcome.matches;
+        }
     }
 
-    TextSearchOutcome outcome;
-    if (!findText(query, &outcome, code, message)) return false;
+    QString usedSource = hits.isEmpty() ? QStringLiteral("uia") : QStringLiteral("uia");
+    QString ocrLanguage;
+    QString ocrNote;
+    int ocrMs = 0;
+
+    if (hits.isEmpty() && wanted != QLatin1String("uia")) {
+        // OCR 要像素：抓一帧不落盘的画面，并让它成为新的坐标基准。
+        CaptureOptions captureOptions;
+        captureOptions.saveToDisk = false;
+        captureOptions.keepImage = true;
+        CaptureOutcome shot;
+        if (!capture(sessionId, captureOptions, cancelled, &shot, code, message)) return false;
+        ref = SnapshotRef{};
+        if (!latestScreenshot(sessionId, &ref))
+            return fail(QStringLiteral("SCREENSHOT_FAILED"), QStringLiteral("无法建立坐标基准"));
+
+        OcrOutcome ocr;
+        QString ocrCode;
+        QString ocrMessage;
+        if (!recognizeText(shot.image, query.text, cancelled, &ocr, &ocrCode, &ocrMessage)) {
+            if (ocrCode == QLatin1String("CANCELLED")) return fail(ocrCode, ocrMessage);
+            if (wanted == QLatin1String("ocr")) {
+                const QString hint = ocrCode == QLatin1String("OCR_UNAVAILABLE")
+                                         ? QStringLiteral("在设备上安装 OCR 语言包（设置 → 时间和语言 → 语言），或用 image 模板匹配")
+                                         : QString();
+                if (code) *code = ocrCode;
+                if (message) *message = ocrMessage;
+                // 显式要 OCR 却没成：带 hint 交给上层，不当成"找不到"。
+                if (data) {
+                    QJsonObject detail = geometryToJson(ref.geometry);
+                    detail.insert(QStringLiteral("captured"), true);
+                    detail.insert(QStringLiteral("screenshot_id"), ref.id);
+                    detail.insert(QStringLiteral("source"), QStringLiteral("ocr"));
+                    detail.insert(QStringLiteral("ocr_hint"), hint);
+                    *data = detail;
+                }
+                return false;
+            }
+            ocrNote = ocrMessage;  // auto：记下为什么没用 OCR，然后照常返回空结果
+        } else {
+            ocrLanguage = ocr.language;
+            ocrMs = ocr.elapsedMs;
+            QVector<TextMatch> ocrHits;
+            matchOcrText(ocr, query, QRect(), &ocrHits);
+            for (const TextMatch &hit : ocrHits) {
+                TextMatch screenMatch = hit;
+                screenMatch.rect = screenshotRectToScreen(shot.geometry, hit.rect);
+                if (screenMatch.rect.isNull()) continue;
+                // region 语义与 UIA 一致：物理屏幕坐标，相交即算。
+                if (query.region.isValid() && !query.region.isEmpty() &&
+                    !screenMatch.rect.intersects(query.region))
+                    continue;
+                hits.append(screenMatch);
+            }
+            if (!hits.isEmpty()) usedSource = QStringLiteral("ocr");
+            elapsedMs += ocrMs;
+        }
+    }
 
     QJsonArray matches;
-    for (const TextMatch &hit : outcome.matches) {
+    int emitted = 0;
+    const int limit = qBound(1, query.limit, 20);
+    for (const TextMatch &hit : hits) {
+        if (emitted >= limit) break;
         QRect shotRect;
         SnapshotRef ignored;
         if (!screenRectToScreenshot(sessionId, hit.rect, &shotRect, &ignored, code, message)) continue;
@@ -651,6 +785,7 @@ bool VisionService::searchText(const QString &sessionId, const TextQuery &query,
             {QStringLiteral("text"), hit.name},
             {QStringLiteral("control_type"), hit.controlType},
         });
+        ++emitted;
     }
 
     QJsonObject payload = geometryToJson(ref.geometry);
@@ -658,10 +793,13 @@ bool VisionService::searchText(const QString &sessionId, const TextQuery &query,
     payload.insert(QStringLiteral("screenshot_id"), ref.id);
     payload.insert(QStringLiteral("layout_version"), ref.layoutVersion);
     payload.insert(QStringLiteral("matches"), matches);
-    payload.insert(QStringLiteral("truncated"), outcome.truncated);
-    payload.insert(QStringLiteral("visited_nodes"), outcome.visitedNodes);
-    payload.insert(QStringLiteral("elapsed_ms"), outcome.elapsedMs);
-    payload.insert(QStringLiteral("source"), QStringLiteral("uia"));
+    payload.insert(QStringLiteral("truncated"), truncated);
+    payload.insert(QStringLiteral("visited_nodes"), visitedNodes);
+    payload.insert(QStringLiteral("elapsed_ms"), elapsedMs);
+    payload.insert(QStringLiteral("source"), usedSource);
+    payload.insert(QStringLiteral("requested_source"), wanted.isEmpty() ? QStringLiteral("auto") : wanted);
+    if (!ocrLanguage.isEmpty()) payload.insert(QStringLiteral("ocr_language"), ocrLanguage);
+    if (!ocrNote.isEmpty()) payload.insert(QStringLiteral("ocr_note"), ocrNote);
     *data = payload;
     return true;
 }
