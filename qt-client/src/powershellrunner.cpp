@@ -3,6 +3,10 @@
 #include <QDir>
 #include <QFile>
 #include <QProcess>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 #include <QStandardPaths>
 #include <QTimer>
 
@@ -67,6 +71,13 @@ bool PowerShellRunner::start(QString *error) {
     process_->setProgram(executablePath);
     process_->setArguments({"-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                             "-File", scriptPath_});
+#ifdef Q_OS_WIN
+    // 没有 CREATE_NO_WINDOW 时会闪出 conhost 并抢走前台激活：
+    // 紧接着 SendInput 注入的按键/点击就落到控制台窗口，而不是目标应用。
+    process_->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) {
+        args->flags |= CREATE_NO_WINDOW;
+    });
+#endif
     if (QDir(workingDirectory_).exists()) process_->setWorkingDirectory(workingDirectory_);
 
     connect(process_, &QProcess::readyReadStandardOutput, this, [this] { readAndLimitOutput(false); });

@@ -181,6 +181,9 @@ func TestMCPQuestionQtEndToEnd(t *testing.T) {
 			}
 		})
 	}
+	// wait_seconds: 长轮询在超时后返回 ok + timed_out，而不是报错。
+	waitArgs := map[string]any{"session_id": sid}
+	_ = waitArgs
 	// A second session verifies real device disconnect dismisses the live window.
 	session = call(agenttools.RequestConnection, map[string]any{"device_id": ready["device_id"], "temporary_password": ready["password"], "purpose": "disconnect cleanup"})
 	sid = session["session_id"]

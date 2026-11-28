@@ -75,6 +75,7 @@ func (c *Client) fetchCommandResult(ctx context.Context, sessionID, requestID st
 func (c *Client) handleRunCommand(ctx context.Context, arguments json.RawMessage) (any, error) {
 	var input struct {
 		DeviceID               string `json:"device_id"`
+		DeviceName             string `json:"device_name"`
 		TemporaryPassword      string `json:"temporary_password"`
 		Command                string `json:"command"`
 		Purpose                string `json:"purpose"`
@@ -89,6 +90,12 @@ func (c *Client) handleRunCommand(ctx context.Context, arguments json.RawMessage
 	if input.Purpose == "" {
 		input.Purpose = "run a remote command"
 	}
+	// 没有临时密码时走审批；resolveDevice 同时把 device_name 归一成 device_id。
+	device, err := c.resolveDevice(ctx, input.DeviceID, input.DeviceName)
+	if err != nil {
+		return nil, err
+	}
+	input.DeviceID = device.DeviceID
 	if input.TimeoutSeconds <= 0 {
 		input.TimeoutSeconds = 60
 	}

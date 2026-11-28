@@ -118,7 +118,7 @@ QString MainWindow::mcpSetupPromptText() const {
         "3. 本机平台连接配置由 Yiuk 客户端维护，位置为：\n%2\n"
         "   其中包含平台地址、Player 密码和 TLS 设置。不要在 MCP 配置里复制、输出或泄露密码；MCP Server 会从该配置文件读取连接信息。\n"
         "4. 检查 MCP 配置语法并告知我如何重启/重新加载当前 Agent 以启用工具。不要擅自修改平台地址、凭据或 TLS 安全选项。\n\n"
-        "可用工具包括 list_devices、get_device_status、request_connection、run_command、execute_command、get_command_result、download_file、upload_file、cancel_command、close_session、ask_user 和 get_user_reply。远程操作前先确认目标设备与任务；没有有效临时密码时，连接请求需要目标设备所有者批准。"
+        "可用工具包括 list_devices、get_device_status、request_connection、run_command、execute_command、get_command_result、download_file、upload_file、cancel_command、close_session、ask_user、get_user_reply、press_keys、move_mouse、wait、wait_for、list_dir 和 stat_path。远程操作前先确认目标设备与任务；没有有效临时密码时，连接请求需要目标设备所有者批准。"
     ).arg(sourceExe, clientConfig);
 }
 

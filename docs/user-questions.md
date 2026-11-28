@@ -79,26 +79,16 @@
 
 原操作者在会话关闭后仍可查询自己的终态结果，但不能用已关闭会话发起新询问。平台和 Qt 客户端需共同升级。无需新增权限配置：首版复用 `execute_command` 的会话授权。
 
-## 构建与测试
+## 验证
+
+- 单元与集成：`go test ./...` 覆盖选项/自由输入、越权、幂等、忙碌、迟到回复、原子终态、超时与断线。
+- 真机：本地真实平台 + 真实 Qt `MainWindow`，端到端测试自动操作实际控件（选项、输入+Enter、纯输入、长文本、Esc、关闭、暂不回答、超时、关闭会话、设备断线）。
+- 交互修复（都有回归覆盖）：空输入按 Enter 不会误选第一项；标题栏按钮不再是对话框的隐式默认按钮；长问题只滚动正文；窗口置顶并在托盘隐藏时发提醒。
 
 ```sh
 go test ./...
-cmake -S qt-client -B qt-client/build-qt -DYIUK_BUILD_TESTS=ON
-cmake --build qt-client/build-qt
-```
-
-额外的端到端测试使用真实 Qt `MainWindow`、实际窗口控件和隔离的临时配置目录，不读取/覆盖生产设备身份。测试进程自动操作控件，不需要人工回复。
-
-PowerShell 示例（Qt/MinGW 路径按本机修改）：
-
-```powershell
-$env:PATH = "D:\QT\Tools\mingw1310_64\bin;D:\QT\6.11.1\mingw_64\bin;" + $env:PATH
-$env:QT_PLUGIN_PATH = "D:\QT\6.11.1\mingw_64\plugins"
-$env:YIUK_QUESTION_QT_EXE = "$PWD\qt-client\build-qt\yiuk-question-interop.exe"
-$env:YIUK_QUESTION_MCP_EXE = "$PWD\qt-client\build-qt\yiuk-mcp.exe"
+$env:QT_PLUGIN_PATH="<Qt>\6.11.1\mingw_64\plugins"
+$env:YIUK_QUESTION_QT_EXE="<repo>\qt-client\build-qt\yiuk-question-interop.exe"
+$env:YIUK_QUESTION_MCP_EXE="<repo>\qt-client\build-qt\yiuk-mcp.exe"
 go test ./internal/platformclient -run 'Test(MCPQuestionQt|LocalBridgeQuestionQt)EndToEnd' -v -count=1
 ```
-
-默认无界面 `offscreen` 测试；设置 `YIUK_QUESTION_QPA=windows` 可在 Windows 上实际显示弹窗，设置 `YIUK_QUESTION_SNAPSHOT` 为 PNG 路径可保存首个弹窗截图。`--preview` 参数配合 `YIUK_PREVIEW=options|input|long|extreme` 只渲染窗口并截图，不连接平台。`QT_SCALE_FACTOR=1.25` / `1.5` 用于缩放验收。
-
-测试覆盖选择、自定义回复、纯输入、长文本/六选项、空输入和按 Enter 都不提交、超长回复禁用、Esc、关闭、暂不回答、超时、关闭会话和设备断线；另有协议越权、幂等、忙碌、迟到回复、原子终态，以及 core/gateway gRPC 转发测试。本地桥接也使用同一个窗口控制器。

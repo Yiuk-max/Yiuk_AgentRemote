@@ -10,6 +10,9 @@
 #include <QPushButton>
 #include <QScreen>
 #include <cstdio>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 void output(const QJsonObject &message) {
     const auto bytes = QJsonDocument(message).toJson(QJsonDocument::Compact);
@@ -31,6 +34,25 @@ QPushButton *buttonWithText(QWidget *root, const QString &text) {
     return nullptr;
 }
 }  // namespace
+
+#ifdef Q_OS_WIN
+namespace {
+// 后台进程无法直接抢前台：附加到当前前台线程再 SetForegroundWindow 才可靠。
+// 这是测试程序专用，产品代码不应这样做。
+void forceForeground(HWND hwnd) {
+    if (!hwnd) return;
+    HWND foreground = GetForegroundWindow();
+    const DWORD foregroundThread = foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+    const DWORD thisThread = GetCurrentThreadId();
+    if (foregroundThread && foregroundThread != thisThread) AttachThreadInput(foregroundThread, thisThread, TRUE);
+    ShowWindow(hwnd, SW_SHOW);
+    BringWindowToTop(hwnd);
+    SetForegroundWindow(hwnd);
+    SetFocus(hwnd);
+    if (foregroundThread && foregroundThread != thisThread) AttachThreadInput(foregroundThread, thisThread, FALSE);
+}
+}  // namespace
+#endif
 
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
@@ -73,6 +95,107 @@ int main(int argc, char **argv) {
             }
             app.exit(0);
         });
+        return app.exec();
+    }
+
+    if (app.arguments().contains(QStringLiteral("--desktop"))) {
+        // Foreground test surface for press_keys / type_text / move_mouse.
+        // The Go test skips unless this window reports itself active, so a
+        // stray keystroke can never land in somebody else's application.
+        auto *surface = new QWidget;
+        surface->setWindowTitle(QStringLiteral("Yiuk Desktop Test"));
+        surface->resize(520, 160);
+        surface->setStyleSheet("background: #ffffff;");
+        auto *surfaceLayout = new QVBoxLayout(surface);
+        surfaceLayout->setContentsMargins(16, 16, 16, 16);
+        auto *edit = new QLineEdit;
+        edit->setObjectName("desktopInput");
+        edit->setMinimumHeight(36);
+        edit->setStyleSheet("QLineEdit { border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 8px; font-size: 14px; }");
+        surfaceLayout->addWidget(edit);
+        // 一个点得动的按钮 + 会变的标签：用来验证 click 是否真的落地，
+        // 以及 detect_change 能不能看出“画面变了”。
+        auto *label = new QLabel(QStringLiteral("点击次数：0"));
+        label->setObjectName("desktopLabel");
+        surfaceLayout->addWidget(label);
+        auto *button = new QPushButton(QStringLiteral("点我"));
+        button->setObjectName("desktopButton");
+        button->setMinimumHeight(36);
+        surfaceLayout->addWidget(button);
+        int clicks = 0;
+        QObject::connect(button, &QPushButton::clicked, &app, [&] {
+            ++clicks;
+            label->setText(QStringLiteral("点击次数：%1").arg(clicks));
+            output({{"clicked", clicks}});
+        });
+        surface->show();
+        surface->raise();
+        surface->activateWindow();
+        edit->setFocus();
+#ifdef Q_OS_WIN
+        forceForeground(reinterpret_cast<HWND>(surface->winId()));
+#endif
+        const QRect rect = surface->geometry();
+        const QRect buttonRect(button->mapToGlobal(QPoint(0, 0)), button->size());
+        const QRect editRect(edit->mapToGlobal(QPoint(0, 0)), edit->size());
+        const QPoint editProbe = editRect.topLeft() + QPoint(editRect.width() / 2, editRect.height() / 2);
+        output({{"ready", true}, {"rect_x", rect.x()}, {"rect_y", rect.y()},
+                {"rect_w", rect.width()}, {"rect_h", rect.height()},
+                {"button_x", buttonRect.x()}, {"button_y", buttonRect.y()},
+                {"button_w", buttonRect.width()}, {"button_h", buttonRect.height()},
+                {"edit_x", editRect.x()}, {"edit_y", editRect.y()},
+                {"edit_cx", editProbe.x()}, {"edit_cy", editProbe.y()}});
+        QObject::connect(edit, &QLineEdit::textChanged, &app, [&](const QString &text) { output({{"text", text}}); });
+
+        QTimer housekeeping;
+        housekeeping.setInterval(120);
+        QObject::connect(&housekeeping, &QTimer::timeout, &app, [&] {
+            // Auto-approve the local bridge session the test requests.
+            for (auto *button : window.findChildren<QPushButton *>())
+                if (button->text() == QStringLiteral("批准")) { button->click(); break; }
+#ifdef Q_OS_WIN
+            static QString lastForeground;
+            wchar_t foregroundTitle[300] = {};
+            HWND foreground = GetForegroundWindow();
+            GetWindowTextW(foreground, foregroundTitle, 300);
+            const QString currentForeground = QString::fromWCharArray(foregroundTitle);
+            if (currentForeground != lastForeground) {
+                lastForeground = currentForeground;
+                output({{"foreground", currentForeground}, {"foregroundIsSurface", foreground == reinterpret_cast<HWND>(surface->winId())}});
+            }
+#endif
+#ifdef Q_OS_WIN
+            if (GetForegroundWindow() != reinterpret_cast<HWND>(surface->winId()))
+                forceForeground(reinterpret_cast<HWND>(surface->winId()));
+#endif
+            static bool reported = false;
+            const bool active = surface->isActiveWindow();
+            if (!reported || active != reported) {
+                reported = active;
+                output({{"active", active}});
+            }
+            const auto commandFile = qEnvironmentVariable("YIUK_QUESTION_CONTROL");
+            if (commandFile.isEmpty() || !QFile::exists(commandFile)) return;
+            QFile command(commandFile);
+            if (!command.open(QIODevice::ReadOnly)) return;
+            const auto action = command.readAll().trimmed();
+            command.close();
+            QFile::remove(commandFile);
+            if (action == "quit") {
+                app.quit();
+            } else if (action == "cursor") {
+#ifdef Q_OS_WIN
+                POINT cursor{};
+                GetCursorPos(&cursor);
+                QJsonArray position;
+                position.append(static_cast<int>(cursor.x));
+                position.append(static_cast<int>(cursor.y));
+                output(QJsonObject{{"cursor", position}});
+#endif
+            }
+        });
+        housekeeping.start();
+        QTimer::singleShot(60000, &app, [&] { app.exit(9); });
         return app.exec();
     }
 

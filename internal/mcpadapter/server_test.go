@@ -3,6 +3,7 @@ package mcpadapter
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -54,8 +55,8 @@ func TestMCPListsToolsAndReturnsStructuredToolResponse(t *testing.T) {
 			t.Fatal("download_file should declare a destructive hint")
 		}
 	}
-	if len(toolNames) != 16 {
-		t.Fatalf("got %d tools, want 16: %v", len(toolNames), toolNames)
+	if len(toolNames) != 22 {
+		t.Fatalf("got %d tools, want 22: %v", len(toolNames), toolNames)
 	}
 
 	result, err := clientSession.CallTool(context.Background(), &mcp.CallToolParams{
@@ -78,6 +79,92 @@ func TestMCPListsToolsAndReturnsStructuredToolResponse(t *testing.T) {
 	}
 	if !response.OK || response.Code != "OK" {
 		t.Fatalf("got %#v, want successful tool response", response)
+	}
+}
+
+func TestMCPRunsLocalWaitWithoutBackend(t *testing.T) {
+	server := NewServer(agenttools.NewCore(nil))
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "test"}, nil)
+	clientSession, err := client.Connect(context.Background(), clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	// wait 不依赖任何后端：没有配置后端时也必须成功。
+	result, err := clientSession.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: agenttools.Wait, Arguments: map[string]any{"ms": 20},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected MCP tool error: %#v", result.Content)
+	}
+	var response agenttools.Response
+	text, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("unexpected content %T", result.Content[0])
+	}
+	if err := json.Unmarshal([]byte(text.Text), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.OK {
+		t.Fatalf("got %#v", response)
+	}
+}
+
+func TestMCPRejectsBadKeyChordBeforeBackend(t *testing.T) {
+	called := false
+	core := agenttools.NewCore(backendFunc(func(_ context.Context, req agenttools.Request) (any, error) {
+		called = true
+		return map[string]any{}, nil
+	}))
+	response := core.Call(context.Background(), agenttools.PressKeys, json.RawMessage(`{"session_id":"s","keys":"ctrl"}`))
+	if called {
+		t.Fatal("backend must not be called for an invalid key chord")
+	}
+	if response.OK || response.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("got %#v", response)
+	}
+}
+
+func TestMCPComposesPressKeysIntoExecuteCommand(t *testing.T) {
+	var script string
+	core := agenttools.NewCore(backendFunc(func(_ context.Context, req agenttools.Request) (any, error) {
+		switch req.Name {
+		case agenttools.ExecuteCommand:
+			var input struct {
+				Command string `json:"command"`
+			}
+			if err := json.Unmarshal(req.Input, &input); err != nil {
+				t.Fatal(err)
+			}
+			script = input.Command
+			return map[string]any{"request_id": "r1", "status": "running"}, nil
+		case agenttools.GetCommandResult:
+			return map[string]any{"status": "succeeded", "stdout": `{"sent":true}`}, nil
+		default:
+			t.Fatalf("unexpected tool %q", req.Name)
+		}
+		return nil, nil
+	}))
+	response := core.Call(context.Background(), agenttools.PressKeys, json.RawMessage(`{"session_id":"s","keys":"ctrl+l"}`))
+	if !response.OK {
+		t.Fatalf("got %#v", response)
+	}
+	if !strings.Contains(script, "Yiuk: press_keys") {
+		t.Fatalf("script does not look like press_keys: %q", script)
+	}
+	// ctrl+l 必须变成白名单里的 VK 码，而不是把原文透传进脚本。
+	if !strings.Contains(script, "0x11,0x4C") {
+		t.Fatalf("script is missing the ctrl+l virtual key codes: %q", script)
 	}
 }
 

@@ -23,6 +23,7 @@ type sessionRequestOptions struct {
 func (c *Client) handleRequestConnection(ctx context.Context, arguments json.RawMessage) (any, error) {
 	var input struct {
 		DeviceID               string `json:"device_id"`
+		DeviceName             string `json:"device_name"`
 		Purpose                string `json:"purpose"`
 		TemporaryPassword      string `json:"temporary_password"`
 		WaitForApprovalSeconds int    `json:"wait_for_approval_seconds"`
@@ -30,8 +31,12 @@ func (c *Client) handleRequestConnection(ctx context.Context, arguments json.Raw
 	if err := json.Unmarshal(arguments, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
+	device, err := c.resolveDevice(ctx, input.DeviceID, input.DeviceName)
+	if err != nil {
+		return nil, err
+	}
 	return c.requestSession(ctx, sessionRequestOptions{
-		DeviceID:          input.DeviceID,
+		DeviceID:          device.DeviceID,
 		Purpose:           input.Purpose,
 		TemporaryPassword: input.TemporaryPassword,
 		WaitForApproval:   time.Duration(input.WaitForApprovalSeconds) * time.Second,
@@ -55,6 +60,10 @@ func (c *Client) requestSession(ctx context.Context, input sessionRequestOptions
 	result := sessionToolResult(response)
 	sessionID := sessionIDFromResult(result)
 	status, _ := result["status"].(string)
+	if status == protocol.StatusPendingApproval || status == protocol.StatusRequested {
+		// 默认立即返回；不要在 request_connection 里等审批（宿主超时会先到）。
+		result["next"] = "get_session_status"
+	}
 	if (status == protocol.StatusPendingApproval || status == protocol.StatusRequested) && input.WaitForApproval > 0 {
 		if c.waitForSessionDecision(ctx, sessionID, input.WaitForApproval) {
 			result["wait_timed_out"] = true
@@ -67,43 +76,86 @@ func (c *Client) requestSession(ctx context.Context, input sessionRequestOptions
 	return result, nil
 }
 
-// waitForSessionDecision 轮询会话状态，直到审批结束、上下文取消或等待时限到达。
-// 返回 true 表示等待超时或取消，false 仅表示会话不再等待审批，未必已获批准。
-func (c *Client) waitForSessionDecision(ctx context.Context, sessionID string, timeout time.Duration) (timedOutOrCancelled bool) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if result, err := c.fetchSessionStatus(ctx, sessionID); err == nil {
-			if status, _ := result["status"].(string); status != protocol.StatusPendingApproval && status != protocol.StatusRequested {
-				return false
+// waitForSessionDecision 等审批落定；返回 true 表示等待超时或取消。
+// 查询失败按“仍在等待”处理，避免一次网络抖动就把审批判成超时。
+func (c *Client) waitForSessionDecision(ctx context.Context, sessionID string, timeout time.Duration) bool {
+	_, settled, _ := pollUntil(ctx, 1500*time.Millisecond, timeout,
+		func() (map[string]any, error) {
+			result, err := c.fetchSessionStatus(ctx, sessionID)
+			if err != nil {
+				return map[string]any{"status": protocol.StatusPendingApproval}, nil
 			}
-		}
-		pollDelay := 1500 * time.Millisecond
-		if remaining := time.Until(deadline); remaining < pollDelay {
-			pollDelay = remaining
-		}
-		if pollDelay <= 0 {
-			break
-		}
-		timer := time.NewTimer(pollDelay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return true
-		case <-timer.C:
-		}
-	}
-	return true
+			return result, nil
+		},
+		func(status map[string]any) bool {
+			value, _ := status["status"].(string)
+			return !isPendingApproval(value)
+		})
+	return !settled
 }
 
 // handleGetSessionStatus 解析工具参数并查询远程会话状态。
+// wait_seconds > 0 时在 MCP 内轮询，避免 agent 自己空转调用。
 func (c *Client) handleGetSessionStatus(ctx context.Context, arguments json.RawMessage) (any, error) {
 	var input struct {
-		SessionID string `json:"session_id"`
+		SessionID   string `json:"session_id"`
+		WaitSeconds int    `json:"wait_seconds"`
 	}
 	if err := json.Unmarshal(arguments, &input); err != nil {
 		return nil, &agenttools.Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
-	return c.fetchSessionStatus(ctx, input.SessionID)
+	if input.WaitSeconds <= 0 {
+		return c.fetchSessionStatus(ctx, input.SessionID)
+	}
+	return c.fetchSessionStatusWaiting(ctx, input.SessionID, time.Duration(input.WaitSeconds)*time.Second)
+}
+
+// pollUntil 按固定间隔拉取状态，直到 done 命中、等待超时或调用被取消。
+// 超时/取消不是错误：返回最后一次结果，由调用方决定怎么标注。
+func pollUntil(ctx context.Context, interval, wait time.Duration, fetch func() (map[string]any, error), done func(map[string]any) bool) (map[string]any, bool, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		last, err := fetch()
+		if err != nil {
+			return nil, false, err
+		}
+		if done(last) {
+			return last, true, nil
+		}
+		delay := interval
+		if remaining := time.Until(deadline); remaining < delay {
+			delay = remaining
+		}
+		if delay <= 0 {
+			return last, false, nil
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return last, false, nil
+		case <-timer.C:
+		}
+	}
+}
+
+func isPendingApproval(status string) bool {
+	return status == protocol.StatusPendingApproval || status == protocol.StatusRequested
+}
+
+// fetchSessionStatusWaiting 轮询到会话离开审批态、调用被取消或等待超时。
+func (c *Client) fetchSessionStatusWaiting(ctx context.Context, sessionID string, wait time.Duration) (map[string]any, error) {
+	result, settled, err := pollUntil(ctx, 1500*time.Millisecond, wait,
+		func() (map[string]any, error) { return c.fetchSessionStatus(ctx, sessionID) },
+		func(status map[string]any) bool {
+			value, _ := status["status"].(string)
+			return !isPendingApproval(value)
+		})
+	if err != nil {
+		return nil, err
+	}
+	result["timed_out"] = !settled
+	return result, nil
 }
 
 // fetchSessionStatus 查询指定会话，并转换为工具结果结构。

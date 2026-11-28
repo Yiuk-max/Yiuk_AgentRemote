@@ -2,10 +2,11 @@ package agenttools
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -40,25 +41,129 @@ type screenGeometry struct {
 	Height       int `json:"height"`
 }
 
+// screenshotRef 把「一张截图」的 id 与它当时的屏幕几何绑在一起。
+// 最近 5 张都保留，仅用于把 STALE_SCREENSHOT 的报错说清楚。
+type screenshotRef struct {
+	ID       string
+	Geometry screenGeometry
+}
+
+// sessionGate 让同一会话的截屏串行执行并保持最小间隔，
+// 避免 agent 连发截图把低内存设备打满。用信号量而不是互斥锁，
+// 排队期间的取消才能立即生效。
+type sessionGate struct {
+	sem  chan struct{}
+	mu   sync.Mutex
+	last time.Time
+}
+
 type desktopState struct {
-	mu      sync.Mutex
-	screens map[string]screenGeometry
+	mu       sync.Mutex
+	recent   map[string][]screenshotRef
+	sequence uint64
+	gates    map[string]*sessionGate
 }
 
-func (s *desktopState) remember(sessionID string, geometry screenGeometry) {
+const (
+	maxScreenshotHistory  = 5
+	minScreenshotInterval = 500 * time.Millisecond
+
+	// 变化判据：强变化像素占比，或整块平均差。阈值来自真机测量：
+	// 点中按钮（标签文字改变）changed_ratio ≈ 0.004~0.02，
+	// 点空白处 ≈ 0.000~0.001。
+	changedPixelRatioThreshold = 0.002
+	changedMeanThreshold       = 0.02
+)
+
+func (s *desktopState) gate(sessionID string) *sessionGate {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.screens == nil {
-		s.screens = map[string]screenGeometry{}
+	if s.gates == nil {
+		s.gates = map[string]*sessionGate{}
 	}
-	s.screens[sessionID] = geometry
+	gate, ok := s.gates[sessionID]
+	if !ok {
+		gate = &sessionGate{sem: make(chan struct{}, 1)}
+		s.gates[sessionID] = gate
+	}
+	return gate
 }
 
-func (s *desktopState) lookup(sessionID string) (screenGeometry, bool) {
+// newScreenshotID 生成短 id；只用于绑定坐标基准，不承担安全用途。
+func (s *desktopState) newScreenshotID(sessionID string) string {
+	s.mu.Lock()
+	s.sequence++
+	sequence := s.sequence
+	s.mu.Unlock()
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d", sessionID, sequence, time.Now().UnixNano())))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+func (s *desktopState) remember(sessionID string, ref screenshotRef) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	geometry, ok := s.screens[sessionID]
-	return geometry, ok
+	if s.recent == nil {
+		s.recent = map[string][]screenshotRef{}
+	}
+	history := append([]screenshotRef{ref}, s.recent[sessionID]...)
+	if len(history) > maxScreenshotHistory {
+		history = history[:maxScreenshotHistory]
+	}
+	s.recent[sessionID] = history
+}
+
+func (s *desktopState) latest(sessionID string) (screenshotRef, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	history := s.recent[sessionID]
+	if len(history) == 0 {
+		return screenshotRef{}, false
+	}
+	return history[0], true
+}
+
+// find 返回指定 id 在历史中的位置（0 = 最新）。
+func (s *desktopState) find(sessionID, id string) (screenshotRef, int, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for age, ref := range s.recent[sessionID] {
+		if ref.ID == id {
+			return ref, age, true
+		}
+	}
+	return screenshotRef{}, 0, false
+}
+
+// acquireScreenshotSlot 串行化同一会话的截屏，并保证最小间隔；
+// 返回的函数用于释放。排队与等待期间都响应 ctx 取消。
+func (c *Core) acquireScreenshotSlot(ctx context.Context, sessionID string) (func(), error) {
+	gate := c.desktop.gate(sessionID)
+	select {
+	case gate.sem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, &Error{Code: "CANCELLED", Message: "tool call was cancelled while waiting for the screenshot slot"}
+	}
+	release := func() { <-gate.sem }
+
+	gate.mu.Lock()
+	last := gate.last
+	gate.mu.Unlock()
+	if !last.IsZero() {
+		if wait := minScreenshotInterval - time.Since(last); wait > 0 {
+			timer := time.NewTimer(wait)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				release()
+				return nil, &Error{Code: "CANCELLED", Message: "tool call was cancelled while waiting for the screenshot slot"}
+			}
+		}
+	}
+	gate.mu.Lock()
+	gate.last = time.Now()
+	gate.mu.Unlock()
+	return release, nil
 }
 
 // 让进程使用物理像素坐标；否则在缩放的屏幕上 CopyFromScreen 只会截到左上角一部分，点击也会偏移。
@@ -104,6 +209,18 @@ public static class YiukDesktop {
             else Send(Key(0, ch, 4), Key(0, ch, 4 | 2));
             System.Threading.Thread.Sleep(3);
         }
+    }
+    public static void PressCombo(int[] keys) {
+        foreach (int key in keys) Send(Key((ushort)key, 0, 0));
+        System.Threading.Thread.Sleep(25);
+        for (int i = keys.Length - 1; i >= 0; i--) Send(Key((ushort)keys[i], 0, 2));
+    }
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);
+    public static string ForegroundTitle() {
+        System.Text.StringBuilder text = new System.Text.StringBuilder(1024);
+        GetWindowText(GetForegroundWindow(), text, text.Capacity);
+        return text.ToString();
     }
 }
 '@
@@ -152,20 +269,71 @@ $bitmap.Dispose()
 `
 
 const clickScript = `# Yiuk: click
-` + desktopPrelude + `if (-not [YiukDesktop]::SetCursorPos({{X}}, {{Y}})) { throw 'SetCursorPos failed; the desktop may be locked or a secure desktop is active' }
+` + desktopPrelude + `$foreground = [YiukDesktop]::ForegroundTitle()
+if (-not [YiukDesktop]::SetCursorPos({{X}}, {{Y}})) { throw 'SetCursorPos failed; the desktop may be locked or a secure desktop is active' }
 Start-Sleep -Milliseconds 50
 for ($i = 0; $i -lt {{COUNT}}; $i++) {
     [YiukDesktop]::mouse_event({{DOWN}}, 0, 0, 0, [UIntPtr]::Zero)
     [YiukDesktop]::mouse_event({{UP}}, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 80
 }
-[pscustomobject]@{ x = {{X}}; y = {{Y}} } | ConvertTo-Json -Compress
+[pscustomobject]@{ x = {{X}}; y = {{Y}}; foreground = $foreground } | ConvertTo-Json -Compress
 `
 
 // 文字以 base64 嵌入脚本，任何内容都不会被当作 PowerShell 代码解析。
 // paste 模式在粘贴后等待目标程序读取剪贴板，再恢复原有文本。
+// 点击后变化检测：只采样点击位置周围 192x108 区域并缩到 96x54 灰度，
+// 不抓整屏，避免为了“看一眼有没有变”再产生一次大位图。
+const clickWithChangeScript = `# Yiuk: click (change detection)
+` + desktopPrelude + `Add-Type -AssemblyName System.Drawing
+$screenLeft = [YiukDesktop]::GetSystemMetrics(76)
+$screenTop = [YiukDesktop]::GetSystemMetrics(77)
+$screenWidth = [YiukDesktop]::GetSystemMetrics(78)
+$screenHeight = [YiukDesktop]::GetSystemMetrics(79)
+$foreground = [YiukDesktop]::ForegroundTitle()
+# 取点击点周围 192x108 的原分辨率灰度；小图缩放会把“一处文字变了”抹平。
+function Sample([int]$cx, [int]$cy) {
+    $w = 192; $h = 108
+    $sx = [Math]::Max($screenLeft, [Math]::Min($screenLeft + $screenWidth - $w, $cx - [int]($w / 2)))
+    $sy = [Math]::Max($screenTop, [Math]::Min($screenTop + $screenHeight - $h, $cy - [int]($h / 2)))
+    $bitmap = New-Object System.Drawing.Bitmap $w, $h
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    try { $graphics.CopyFromScreen($sx, $sy, 0, 0, $bitmap.Size) } finally { $graphics.Dispose() }
+    $bytes = New-Object byte[] ($w * $h)
+    for ($y = 0; $y -lt $h; $y++) {
+        for ($x = 0; $x -lt $w; $x++) {
+            $pixel = $bitmap.GetPixel($x, $y)
+            $bytes[$y * $w + $x] = [byte](($pixel.R + $pixel.G + $pixel.B) / 3)
+        }
+    }
+    $bitmap.Dispose()
+    return ,$bytes
+}
+$before = Sample {{X}} {{Y}}
+if (-not [YiukDesktop]::SetCursorPos({{X}}, {{Y}})) { throw 'SetCursorPos failed; the desktop may be locked or a secure desktop is active' }
+Start-Sleep -Milliseconds 50
+for ($i = 0; $i -lt {{COUNT}}; $i++) {
+    [YiukDesktop]::mouse_event({{DOWN}}, 0, 0, 0, [UIntPtr]::Zero)
+    [YiukDesktop]::mouse_event({{UP}}, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 80
+}
+Start-Sleep -Milliseconds {{SETTLE}}
+$after = Sample {{X}} {{Y}}
+$difference = 0
+$strongPixels = 0
+for ($i = 0; $i -lt $before.Length; $i++) {
+    $delta = [Math]::Abs([int]$before[$i] - [int]$after[$i])
+    $difference += $delta
+    if ($delta -ge 24) { $strongPixels++ }
+}
+$diffRatio = [Math]::Round($difference / ($before.Length * 255.0), 4)
+$changedRatio = [Math]::Round($strongPixels / [double]$before.Length, 4)
+[pscustomobject]@{ x = {{X}}; y = {{Y}}; foreground = $foreground; diff_ratio = $diffRatio; changed_ratio = $changedRatio } | ConvertTo-Json -Compress
+`
+
 const typeTextScript = `# Yiuk: type_text
-` + desktopPrelude + `$text = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{{TEXT_BASE64}}'))
+` + desktopPrelude + `$foreground = [YiukDesktop]::ForegroundTitle()
+$text = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{{TEXT_BASE64}}'))
 if ('{{METHOD}}' -eq 'paste') {
     $previous = $null
     try { $previous = Get-Clipboard -Raw -ErrorAction Stop } catch {}
@@ -180,7 +348,7 @@ if (${{PRESS_ENTER}}) {
     Start-Sleep -Milliseconds 150
     [YiukDesktop]::PressKey(0x0D)
 }
-[pscustomobject]@{ characters = $text.Length } | ConvertTo-Json -Compress
+[pscustomobject]@{ characters = $text.Length; foreground = $foreground } | ConvertTo-Json -Compress
 `
 
 const (
@@ -206,6 +374,21 @@ func (c *Core) callDesktopTool(ctx context.Context, name string, input json.RawM
 	case TypeText:
 		data, err = c.typeText(ctx, input)
 		return data, nil, true, err
+	case PressKeys:
+		data, err = c.pressKeys(ctx, input)
+		return data, nil, true, err
+	case MoveMouse:
+		data, err = c.moveMouse(ctx, input)
+		return data, nil, true, err
+	case WaitFor:
+		data, err = c.waitFor(ctx, input)
+		return data, nil, true, err
+	case ListDir:
+		data, err = c.listDir(ctx, input)
+		return data, nil, true, err
+	case StatPath:
+		data, err = c.statPath(ctx, input)
+		return data, nil, true, err
 	}
 	return nil, nil, false, nil
 }
@@ -225,6 +408,11 @@ func (c *Core) takeScreenshot(ctx context.Context, raw json.RawMessage) (any, []
 	if input.Format == "" {
 		input.Format = "png"
 	}
+	release, err := c.acquireScreenshotSlot(ctx, input.SessionID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer release()
 	script := strings.NewReplacer("{{MAX_WIDTH}}", strconv.Itoa(input.MaxWidth), "{{FORMAT}}", input.Format).Replace(screenshotScript)
 	output, err := c.runDesktopScript(ctx, input.SessionID, script, screenshotTimeoutSeconds)
 	if err != nil {
@@ -254,12 +442,14 @@ func (c *Core) takeScreenshot(ctx context.Context, raw json.RawMessage) (any, []
 		return nil, nil, &Error{Code: "SCREENSHOT_FAILED", Message: "could not read the downloaded screenshot"}
 	}
 
-	c.desktop.remember(input.SessionID, shot.screenGeometry)
+	screenshotID := c.desktop.newScreenshotID(input.SessionID)
+	c.desktop.remember(input.SessionID, screenshotRef{ID: screenshotID, Geometry: shot.screenGeometry})
 	mimeType := "image/png"
 	if input.Format == "jpeg" {
 		mimeType = "image/jpeg"
 	}
 	return map[string]any{
+		"screenshot_id": screenshotID,
 		"session_id":    input.SessionID,
 		"width":         shot.Width,
 		"height":        shot.Height,
@@ -274,11 +464,14 @@ func (c *Core) takeScreenshot(ctx context.Context, raw json.RawMessage) (any, []
 
 func (c *Core) click(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {
-		SessionID string `json:"session_id"`
-		X         int    `json:"x"`
-		Y         int    `json:"y"`
-		Button    string `json:"button"`
-		Double    bool   `json:"double"`
+		SessionID    string `json:"session_id"`
+		X            int    `json:"x"`
+		Y            int    `json:"y"`
+		Button       string `json:"button"`
+		Double       bool   `json:"double"`
+		ScreenshotID string `json:"screenshot_id"`
+		DetectChange bool   `json:"detect_change"`
+		SettleMS     int    `json:"settle_ms"`
 	}
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return nil, &Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
@@ -286,36 +479,88 @@ func (c *Core) click(ctx context.Context, raw json.RawMessage) (any, error) {
 	if input.Button == "" {
 		input.Button = "left"
 	}
-	geometry, ok := c.desktop.lookup(input.SessionID)
-	if !ok {
-		return nil, &Error{Code: "SCREENSHOT_REQUIRED", Message: "call take_screenshot for this session first; click coordinates are pixels in the latest screenshot"}
+	if input.DetectChange && input.SettleMS == 0 {
+		input.SettleMS = 250
 	}
-	if input.X >= geometry.Width || input.Y >= geometry.Height {
-		return nil, &Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("x/y must be inside the latest screenshot (%dx%d)", geometry.Width, geometry.Height)}
+	if !input.DetectChange {
+		input.SettleMS = 0
 	}
-	screenX := geometry.Left + int(math.Round(float64(input.X)*float64(geometry.ScreenWidth)/float64(geometry.Width)))
-	screenY := geometry.Top + int(math.Round(float64(input.Y)*float64(geometry.ScreenHeight)/float64(geometry.Height)))
+	if err := c.requireFreshScreenshot(input.SessionID, input.ScreenshotID); err != nil {
+		return nil, err
+	}
+	screenX, screenY, _, err := c.screenPoint(input.SessionID, input.X, input.Y)
+	if err != nil {
+		return nil, err
+	}
 	count := 1
 	if input.Double {
 		count = 2
 	}
 	flags := mouseButtonFlags[input.Button]
+	template := clickScript
+	if input.DetectChange {
+		template = clickWithChangeScript
+		release, err := c.acquireScreenshotSlot(ctx, input.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+	}
 	script := strings.NewReplacer(
 		"{{X}}", strconv.Itoa(screenX), "{{Y}}", strconv.Itoa(screenY), "{{COUNT}}", strconv.Itoa(count),
 		"{{DOWN}}", strconv.Itoa(flags[0]), "{{UP}}", strconv.Itoa(flags[1]),
-	).Replace(clickScript)
-	if _, err := c.runDesktopScript(ctx, input.SessionID, script, clickTimeoutSeconds); err != nil {
+		"{{SETTLE}}", strconv.Itoa(input.SettleMS),
+	).Replace(template)
+	var clicked struct {
+		Foreground   string  `json:"foreground"`
+		DiffRatio    float64 `json:"diff_ratio"`
+		ChangedRatio float64 `json:"changed_ratio"`
+	}
+	if err := c.runDesktopJSON(ctx, input.SessionID, script, clickTimeoutSeconds, &clicked); err != nil {
 		return nil, err
 	}
-	return map[string]any{
-		"session_id": input.SessionID,
-		"x":          input.X,
-		"y":          input.Y,
-		"screen_x":   screenX,
-		"screen_y":   screenY,
-		"button":     input.Button,
-		"double":     input.Double,
-	}, nil
+	latest, _ := c.desktop.latest(input.SessionID)
+	result := map[string]any{
+		"session_id":       input.SessionID,
+		"x":                input.X,
+		"y":                input.Y,
+		"screen_x":         screenX,
+		"screen_y":         screenY,
+		"button":           input.Button,
+		"double":           input.Double,
+		"screenshot_id":    latest.ID,
+		"foreground_title": clicked.Foreground,
+	}
+	if input.DetectChange {
+		// 判据两条：明显变色的像素占比，或整体平均差。文字/按钮状态变化
+		// 只占画面很小一块，所以必须看“强变化像素”，而不是平均亮度。
+		result["changed"] = clicked.ChangedRatio >= changedPixelRatioThreshold || clicked.DiffRatio >= changedMeanThreshold
+		result["diff_ratio"] = clicked.DiffRatio
+		result["changed_ratio"] = clicked.ChangedRatio
+		result["settle_ms"] = input.SettleMS
+	}
+	return result, nil
+}
+
+// requireFreshScreenshot 校验调用方声明的坐标基准；省略 id 时沿用最新一张。
+func (c *Core) requireFreshScreenshot(sessionID, id string) error {
+	if id == "" {
+		return nil
+	}
+	latest, ok := c.desktop.latest(sessionID)
+	if !ok {
+		return &Error{Code: "SCREENSHOT_REQUIRED", Message: "call take_screenshot for this session first; coordinates are pixels in the latest screenshot"}
+	}
+	if latest.ID == id {
+		return nil
+	}
+	if _, age, known := c.desktop.find(sessionID, id); known {
+		return &Error{Code: "STALE_SCREENSHOT", Message: fmt.Sprintf(
+			"screenshot_id %s is stale: %d newer screenshot(s) exist and the latest is %s. Re-run take_screenshot and use the new coordinates.",
+			id, age, latest.ID)}
+	}
+	return &Error{Code: "STALE_SCREENSHOT", Message: fmt.Sprintf(
+		"screenshot_id %s is unknown; the latest screenshot is %s. Re-run take_screenshot.", id, latest.ID)}
 }
 
 func (c *Core) typeText(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -336,15 +581,35 @@ func (c *Core) typeText(ctx context.Context, raw json.RawMessage) (any, error) {
 		"{{METHOD}}", input.Method,
 		"{{PRESS_ENTER}}", strconv.FormatBool(input.PressEnter),
 	).Replace(typeTextScript)
-	if _, err := c.runDesktopScript(ctx, input.SessionID, script, typeTextTimeoutSeconds); err != nil {
+	var typed struct {
+		Foreground string `json:"foreground"`
+	}
+	if err := c.runDesktopJSON(ctx, input.SessionID, script, typeTextTimeoutSeconds, &typed); err != nil {
 		return nil, err
 	}
 	return map[string]any{
-		"session_id":  input.SessionID,
-		"characters":  utf8.RuneCountInString(input.Text),
-		"method":      input.Method,
-		"press_enter": input.PressEnter,
+		"session_id":       input.SessionID,
+		"characters":       utf8.RuneCountInString(input.Text),
+		"method":           input.Method,
+		"press_enter":      input.PressEnter,
+		"foreground_title": typed.Foreground,
 	}, nil
+}
+
+// runDesktopJSON 运行组合脚本，并把 stdout 最后一行解析到 out。
+// 所有输入类工具共用，避免每个 handler 重复“解析失败就报 DESKTOP_COMMAND_FAILED”。
+func (c *Core) runDesktopJSON(ctx context.Context, sessionID, script string, timeoutSeconds int, out any) error {
+	output, err := c.runDesktopScript(ctx, sessionID, script, timeoutSeconds)
+	if err != nil {
+		return err
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal([]byte(output), out); err != nil {
+		return &Error{Code: "DESKTOP_COMMAND_FAILED", Message: "device returned an unexpected script result"}
+	}
+	return nil
 }
 
 // runDesktopScript 提交脚本并等待结束，返回 stdout 最后一个非空行。

@@ -88,10 +88,13 @@ Agent: get_command_result(session_id, request_id)
 * `read_file`
 * `write_file`
 
-**MCP 工具（共 16 个）**
+**MCP 工具（共 22 个）**
 
-* 包含设备查询、会话控制、命令执行与取消、文件收发，以及基于上述能力组合出的 `take_screenshot`、`click`、`type_text`（支持全屏截图缩放、坐标换算、Unicode 逐字输入或剪贴板投递）。
+* 包含设备查询、会话控制、命令执行与取消、文件收发，以及基于上述能力组合出的 `take_screenshot`、`click`、`type_text`（支持全屏截图缩放、坐标换算、Unicode 逐字输入或剪贴板投递）。截图返回 `screenshot_id`，`click` 绑定时效性与变化检测；会话与回复查询支持 `wait_seconds` 长轮询。
 * `ask_user` / `get_user_reply`：在已授权会话中弹窗询问设备用户，提供单选项并始终允许自由输入；明确区分回复、取消、超时和断线未知结果。见[用户询问说明](docs/user-questions.md)。
+* `press_keys` / `move_mouse` / `wait` / `wait_for`：组合键、悬停（读 tooltip、触发 dock）、本地等待与设备侧条件等待，补上 GUI 自动化的基础原语。
+* `list_dir` / `stat_path`：列目录与看属性，链接只标注不跟随；错误自带 `hint` 与在线设备现场。
+* 设备参数可以给 `device_id` 或 `device_name`（平台内存态重启后 id 会变）；`run_command` 的临时密码改为可选，没有密码就走审批。
 * 标准 MCP stdio 接入，支持 pi、Claude Desktop、Cursor 等任意 MCP 宿主。
 
 **只读活动面板**

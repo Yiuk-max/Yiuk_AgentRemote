@@ -26,6 +26,12 @@ const (
 	CancelCommand     = "cancel_command"
 	CloseSession      = "close_session"
 	TakeScreenshot    = "take_screenshot"
+	PressKeys         = "press_keys"
+	MoveMouse         = "move_mouse"
+	Wait              = "wait"
+	WaitFor           = "wait_for"
+	ListDir           = "list_dir"
+	StatPath          = "stat_path"
 	Click             = "click"
 	TypeText          = "type_text"
 )
@@ -47,11 +53,14 @@ type Request struct {
 
 // Response 是工具调用的统一结果格式；业务错误通过 Code 和 Message 返回。
 type Response struct {
-	OK      bool    `json:"ok"`
-	Code    string  `json:"code"`
-	Message string  `json:"message,omitempty"`
-	Data    any     `json:"data,omitempty"`
-	Images  []Image `json:"-"`
+	OK      bool   `json:"ok"`
+	Code    string `json:"code"`
+	Message string `json:"message,omitempty"`
+	// Hint 是可执行的下一步建议（例如“先调用 list_devices”），
+	// 让 agent 不用猜错误含义。
+	Hint   string  `json:"hint,omitempty"`
+	Data   any     `json:"data,omitempty"`
+	Images []Image `json:"-"`
 }
 
 // Backend 是稳定且独立于 Agent 的接口，由本地客户端或远程平台连接实现
@@ -79,32 +88,46 @@ func (c *Core) Call(ctx context.Context, name string, input json.RawMessage) Res
 	if err := validateInput(input, name); err != nil {
 		return Response{Code: "INVALID_ARGUMENT", Message: err.Error()}
 	}
-	if c.backend == nil {
-		return Response{Code: "NOT_CONFIGURED", Message: "remote platform backend is not configured"}
-	}
-	data, images, handled, err := c.callDesktopTool(ctx, spec.Name, input)
-	if !handled {
-		data, err = c.backend.Invoke(ctx, Request{Name: spec.Name, Input: append(json.RawMessage(nil), input...)})
-	}
+	data, images, err := c.invoke(ctx, spec.Name, input)
 	if err != nil {
 		var toolErr *Error
 		if errors.As(err, &toolErr) {
-			return Response{Code: toolErr.Code, Message: toolErr.Message}
+			return Response{Code: toolErr.Code, Message: toolErr.Message, Hint: toolErr.Hint, Data: toolErr.Data}
 		}
 		return Response{Code: "INTERNAL", Message: "tool request failed"}
 	}
 	return Response{OK: true, Code: "OK", Data: data, Images: images}
 }
 
+// invoke 依次处理本地工具（wait）、组合工具（截屏/点击/按键……）和后端调用。
+// wait 必须在 backend 判空之前处理：它不需要任何后端。
+func (c *Core) invoke(ctx context.Context, name string, input json.RawMessage) (any, []Image, error) {
+	if name == Wait {
+		data, err := c.wait(ctx, input)
+		return data, nil, err
+	}
+	if c.backend == nil {
+		return nil, nil, &Error{Code: "NOT_CONFIGURED", Message: "remote platform backend is not configured"}
+	}
+	if data, images, handled, err := c.callDesktopTool(ctx, name, input); handled {
+		return data, images, err
+	}
+	data, err := c.backend.Invoke(ctx, Request{Name: name, Input: append(json.RawMessage(nil), input...)})
+	return data, nil, err
+}
+
 // Error 表示可安全传递给工具调用方的结构化业务错误。
 type Error struct {
 	Code    string
 	Message string
+	Hint    string
+	// Data 用于错误也需要现场信息的场景（例如 DEVICE_NOT_FOUND 附带在线设备）。
+	Data any
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
 
-var responseSchema = json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"},"code":{"type":"string"},"message":{"type":"string"},"data":{}},"required":["ok","code"],"additionalProperties":false}`)
+var responseSchema = json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"},"code":{"type":"string"},"message":{"type":"string"},"hint":{"type":"string"},"data":{}},"required":["ok","code"],"additionalProperties":false}`)
 
 // ToolAnnotations 是 MCP 提示，供 pi 等宿主展示工具和应用确认策略时使用
 type ToolAnnotations struct {
@@ -125,12 +148,12 @@ func tool(name, description, input string, annotations ToolAnnotations) ToolSpec
 // toolSpecs 是 MCP 暴露给 Agent 的唯一工具目录，输入 schema 与运行时校验需保持一致。
 var toolSpecs = []ToolSpec{
 	tool(AskUser, "Ask the device owner one question in an approved session. Shows up to six choices and always allows a custom text answer. Returns a request_id immediately; use get_user_reply later, without busy-polling. Do not repeat a pending question or perform actions that depend on its answer. A reply does not grant extra permissions. Never request passwords, verification codes or private keys.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"question":{"type":"string","minLength":1,"maxLength":1000},"options":{"type":"array","maxItems":6,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":100}},"timeout_seconds":{"type":"integer","minimum":15,"maximum":300}},"required":["session_id","question"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(false), OpenWorld: boolPtr(false)}),
-	tool(GetUserReply, "Read the status and reply to ask_user. Returns pending, answered, cancelled, timed_out or result_unknown. Only answered is an explicit user response; none of the other states implies consent. If pending, wait before querying again; do not busy-poll or automatically reissue questions after a disconnect.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"request_id":{"type":"string","minLength":1,"maxLength":128}},"required":["session_id","request_id"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
+	tool(GetUserReply, "Read the status and reply to ask_user. Returns pending, answered, cancelled, timed_out or result_unknown; only answered is an explicit user response and none of the other states implies consent. Set wait_seconds (0-25) to poll internally; a timeout returns ok with timed_out=true. Do not automatically reissue questions after a disconnect.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"request_id":{"type":"string","minLength":1,"maxLength":128},"wait_seconds":{"type":"integer","minimum":0,"maximum":25}},"required":["session_id","request_id"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
 	tool(ListDevices, "List devices available to the current operator.", `{"type":"object","properties":{},"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
 	tool(GetDeviceStatus, "Get online and session status for a device.", `{"type":"object","properties":{"device_id":{"type":"string","minLength":1,"maxLength":128}},"required":["device_id"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
-	tool(RequestConnection, "Request a remote session to one target device. Without temporary_password the device owner must approve; with the owner's current temporary password, the session connects directly without changing the target's mode setting. Pass wait_for_approval_seconds to wait for an owner decision when requesting approval. Approval grants the full set of session actions: run PowerShell, download remote files and upload local files. A pending session is not authorization to execute commands. When the owner approves, their current temporary password is returned as temporary_password: reuse it to create a new session after a disconnect without asking for approval again, until it expires or is rotated.", `{"type":"object","properties":{"device_id":{"type":"string","minLength":1,"maxLength":128},"purpose":{"type":"string","minLength":1,"maxLength":512},"temporary_password":{"type":"string","minLength":32,"maxLength":256},"wait_for_approval_seconds":{"type":"integer","minimum":0,"maximum":300}},"required":["device_id","purpose"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(false), OpenWorld: boolPtr(false)}),
-	tool(RunCommand, "One-shot remote task for a server-hosted agent: ask the human for the target device code (device_id) and its 32-character temporary password, request a session, optionally wait for owner approval, execute one PowerShell command, wait for the result, then close the session unless keep_session_open is true. Returns aggregated stdout, stderr, exit code, status and truncation flag.", `{"type":"object","properties":{"device_id":{"type":"string","minLength":1,"maxLength":128},"temporary_password":{"type":"string","minLength":32,"maxLength":256},"command":{"type":"string","minLength":1,"maxLength":32768},"purpose":{"type":"string","maxLength":512},"working_directory":{"type":"string","maxLength":4096},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600},"wait_for_approval_seconds":{"type":"integer","minimum":0,"maximum":300},"keep_session_open":{"type":"boolean"}},"required":["device_id","temporary_password","command"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
-	tool(GetSessionStatus, "Get the current status of a connection request or session.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128}},"required":["session_id"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
+	tool(RequestConnection, "Request a remote session to one target device. Without temporary_password the device owner must approve; with the owner's current temporary password, the session connects directly without changing the target's mode setting. It returns immediately with status pending_approval and next=get_session_status; do not block here waiting for the owner, poll get_session_status with wait_seconds instead (wait_for_approval_seconds is capped at 25s). Approval grants the full set of session actions: run PowerShell, download remote files and upload local files. A pending session is not authorization to execute commands. When the owner approves, their current temporary password is returned as temporary_password: reuse it to create a new session after a disconnect without asking for approval again, until it expires or is rotated.", `{"type":"object","properties":{"device_id":{"type":"string","minLength":1,"maxLength":128},"purpose":{"type":"string","minLength":1,"maxLength":512},"temporary_password":{"type":"string","minLength":32,"maxLength":256},"wait_for_approval_seconds":{"type":"integer","minimum":0,"maximum":25}},"required":["device_id","purpose"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(false), OpenWorld: boolPtr(false)}),
+	tool(RunCommand, "One-shot remote task for a server-hosted agent: identify the device by device_id or device_name, optionally with its 32-character temporary password (without it the owner must approve), request a session, execute one PowerShell command, wait for the result, then close the session unless keep_session_open is true. Good for short commands; for long jobs use execute_command + get_command_result. Returns aggregated stdout, stderr, exit code, status and truncation flag.", `{"type":"object","properties":{"device_id":{"type":"string","minLength":1,"maxLength":128},"temporary_password":{"type":"string","minLength":32,"maxLength":256},"command":{"type":"string","minLength":1,"maxLength":32768},"purpose":{"type":"string","maxLength":512},"working_directory":{"type":"string","maxLength":4096},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600},"wait_for_approval_seconds":{"type":"integer","minimum":0,"maximum":25},"keep_session_open":{"type":"boolean"}},"required":["device_id","temporary_password","command"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
+	tool(GetSessionStatus, "Get the current status of a connection request or session. Set wait_seconds (0-25) to poll internally instead of calling again in a loop; a timeout returns ok with timed_out=true.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"wait_seconds":{"type":"integer","minimum":0,"maximum":25}},"required":["session_id"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
 	tool(ExecuteCommand, "Execute one PowerShell command in an approved session.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"command":{"type":"string","minLength":1,"maxLength":32768},"working_directory":{"type":"string","maxLength":4096},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}},"required":["session_id","command"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
 	tool(GetCommandResult, "Read output and final status for a command task.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"request_id":{"type":"string","minLength":1,"maxLength":128},"cursor":{"type":"integer","minimum":0}},"required":["session_id","request_id"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
 	tool(DownloadFile, "Download one remote file from an approved session. The file is written locally and the result returns its local_path; files larger than the configured limit are rejected.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"remote_path":{"type":"string","minLength":1,"maxLength":4096},"destination_path":{"type":"string","maxLength":4096}},"required":["session_id","remote_path"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(false), OpenWorld: boolPtr(false)}),
@@ -138,8 +161,12 @@ var toolSpecs = []ToolSpec{
 	tool(CancelCommand, "Cancel a running command in an approved session.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"request_id":{"type":"string","minLength":1,"maxLength":128}},"required":["session_id","request_id"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
 	tool(CloseSession, "Close a remote session and revoke its authorization.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128}},"required":["session_id"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), Idempotent: true, OpenWorld: boolPtr(false)}),
 	tool(TakeScreenshot, "Capture the whole desktop (all monitors) of the device in an approved session and return it as an image. The image is scaled down to max_width pixels wide (default 1568). Coordinates for click are pixels in the most recent screenshot of the session, so take a new screenshot whenever the screen may have changed. Fails while the device is locked or showing a UAC prompt.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"max_width":{"type":"integer","minimum":320,"maximum":7680},"format":{"type":"string","enum":["png","jpeg"]}},"required":["session_id"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, OpenWorld: boolPtr(false)}),
-	tool(Click, "Move the mouse and click on the device in an approved session. x and y are pixel coordinates in the most recent take_screenshot image of this session (call take_screenshot first). button defaults to left; set double for a double-click. Clicks into elevated (administrator) windows are silently blocked by Windows.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"button":{"type":"string","enum":["left","right","middle"]},"double":{"type":"boolean"}},"required":["session_id","x","y"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
-	tool(TypeText, "Type text into the focused control on the device in an approved session, e.g. a chat box: click the input first, then call this. Any language including Chinese and emoji is typed directly, independent of the input method. method \"type\" (default) sends characters one by one and types line breaks as Shift+Enter so chat apps do not send early; method \"paste\" pastes through the clipboard (better for long text) and restores the previous clipboard text afterwards. Set press_enter to press Enter once after the text, which sends the message in most chat apps. Input into elevated (administrator) windows is silently blocked by Windows.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"text":{"type":"string","minLength":1,"maxLength":4000},"method":{"type":"string","enum":["type","paste"]},"press_enter":{"type":"boolean"}},"required":["session_id","text"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
+	tool(Click, "Move the mouse and click on the device in an approved session. x and y are pixel coordinates in the most recent take_screenshot image of this session (call take_screenshot first). button defaults to left; set double for a double-click. Clicks into elevated (administrator) windows are silently blocked by Windows.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"button":{"type":"string","enum":["left","right","middle"]},"double":{"type":"boolean"},"screenshot_id":{"type":"string","minLength":1,"maxLength":64},"detect_change":{"type":"boolean"},"settle_ms":{"type":"integer","minimum":0,"maximum":2000}},"required":["session_id","x","y"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
+	tool(TypeText, "Type text into the focused control on the device in an approved session, e.g. a chat box: click the input first, then call this. Any language including Chinese and emoji is typed directly, independent of the input method. method \"type\" (default) sends characters one by one and types line breaks as Shift+Enter so chat apps do not send early; method \"paste\" pastes through the clipboard (better for long text) and restores the previous clipboard text afterwards. Set press_enter to press Enter once after the text, which sends the message in most chat apps. Input into elevated (administrator) windows is silently blocked by Windows.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"text":{"type":"string","minLength":1,"maxLength":4000},"method":{"type":"string","enum":["type","paste"]},"press_enter":{"type":"boolean"}},"required":["session_id","text"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}), tool(PressKeys, "Send one key chord such as ctrl+l, ctrl+shift+o, win+r or alt+f4 to the device in an approved session. Letters, digits, F1-F24 and common named keys are supported: up to three modifiers plus exactly one main key. Keys go to the foreground window: confirm the target with wait_for(window_title=...) first, and check foreground_title in the result. Unavailable while the device is locked or showing a UAC prompt.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"keys":{"type":"string","minLength":1,"maxLength":64},"repeat":{"type":"integer","minimum":1,"maximum":20},"interval_ms":{"type":"integer","minimum":0,"maximum":1000}},"required":["session_id","keys"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(true), OpenWorld: boolPtr(false)}),
+	tool(MoveMouse, "Move the pointer without clicking, to reveal tooltips, hover menus or auto-hiding docks. x and y are pixels in the latest take_screenshot image of this session; call take_screenshot first. settle_ms waits on the device before returning so a tooltip has time to appear; foreground_title reports which window was frontmost.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"settle_ms":{"type":"integer","minimum":0,"maximum":3000},"screenshot_id":{"type":"string","minLength":1,"maxLength":64}},"required":["session_id","x","y"],"additionalProperties":false}`, ToolAnnotations{Destructive: boolPtr(false), OpenWorld: boolPtr(false)}),
+	tool(Wait, "Wait without touching the device, for hosts whose sandbox has no sleep. Maximum 25000 ms; returns early if the call is cancelled.", `{"type":"object","properties":{"ms":{"type":"integer","minimum":0,"maximum":25000}},"required":["ms"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
+	tool(WaitFor, "Wait on the device until a condition becomes true: the frontmost window title contains value, a process is running, or a remote path exists. Returns matched, timed_out, elapsed_ms and evidence; a timeout is a normal result, not an error. Needs an approved session.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"condition":{"type":"string","enum":["window_title","process","path_exists"]},"value":{"type":"string","minLength":1,"maxLength":1024},"timeout_seconds":{"type":"integer","minimum":1,"maximum":25}},"required":["session_id","condition","value"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}), tool(ListDir, "List one directory on the device without running PowerShell yourself. Returns name, type, size and modified for each entry; links are reported as type symlink with target and are never followed. If path itself is a symlink the call fails with hint.target so you can switch to the real path.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"path":{"type":"string","minLength":1,"maxLength":4096},"limit":{"type":"integer","minimum":1,"maximum":1000}},"required":["session_id","path"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
+	tool(StatPath, "Return type, size, mtime and link target for one remote path. Missing paths are FILE_NOT_FOUND instead of an exception.", `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"maxLength":128},"path":{"type":"string","minLength":1,"maxLength":4096}},"required":["session_id","path"],"additionalProperties":false}`, ToolAnnotations{ReadOnly: true, Idempotent: true, OpenWorld: boolPtr(false)}),
 }
 
 // 名称->工具定义 映射
@@ -164,13 +191,13 @@ func validateInput(raw json.RawMessage, name string) error {
 	switch name {
 	case ListDevices:
 	case GetDeviceStatus:
-		required = []string{"device_id"}
+		required = nil
 	case RequestConnection:
 		// 不提供 temporary_password 时走审批流：由设备所有者在客户端批准，因此它不是必填项。
 		// 也不再要求 permissions：批准即授予全部会话能力。
-		required = []string{"device_id", "purpose"}
+		required = []string{"purpose"}
 	case RunCommand:
-		required = []string{"device_id", "temporary_password", "command"}
+		required = []string{"command"}
 	case GetSessionStatus, CloseSession:
 		required = []string{"session_id"}
 	case ExecuteCommand:
@@ -189,6 +216,18 @@ func validateInput(raw json.RawMessage, name string) error {
 		required = []string{"session_id", "x", "y"}
 	case TypeText:
 		required = []string{"session_id", "text"}
+	case PressKeys:
+		required = []string{"session_id", "keys"}
+	case MoveMouse:
+		required = []string{"session_id", "x", "y"}
+	case Wait:
+		required = []string{"ms"}
+	case WaitFor:
+		required = []string{"session_id", "condition", "value"}
+	case ListDir:
+		required = []string{"session_id", "path"}
+	case StatPath:
+		required = []string{"session_id", "path"}
 	}
 	for _, key := range required {
 		if _, exists := fields[key]; !exists {
@@ -225,11 +264,24 @@ func validateInput(raw json.RawMessage, name string) error {
 		Text             string `json:"text"`
 		Method           string `json:"method"`
 		PressEnter       *bool  `json:"press_enter"`
+		Keys             string `json:"keys"`
+		Repeat           *int   `json:"repeat"`
+		IntervalMS       *int   `json:"interval_ms"`
+		SettleMS         *int   `json:"settle_ms"`
+		MS               *int   `json:"ms"`
+		Condition        string `json:"condition"`
+		Value            string `json:"value"`
+		ScreenshotID     string `json:"screenshot_id"`
+		DetectChange     *bool  `json:"detect_change"`
+		WaitSeconds      *int   `json:"wait_seconds"`
+		DeviceName       string `json:"device_name"`
+		Path             string `json:"path"`
+		Limit            *int   `json:"limit"`
 	}
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return fmt.Errorf("invalid arguments: %w", err)
 	}
-	for _, key := range []string{"device_id", "purpose", "session_id", "request_id", "command", "working_directory", "temporary_password", "remote_path", "destination_path", "local_path", "format", "button", "text", "method", "question"} {
+	for _, key := range []string{"device_id", "purpose", "session_id", "request_id", "command", "working_directory", "temporary_password", "remote_path", "destination_path", "local_path", "format", "button", "text", "method", "question", "keys", "condition", "value", "screenshot_id", "device_name", "path"} {
 		if value, ok := fields[key]; ok {
 			var s string
 			if err := json.Unmarshal(value, &s); err != nil {
@@ -269,8 +321,17 @@ func validateInput(raw json.RawMessage, name string) error {
 	if input.Cursor != nil && *input.Cursor < 0 {
 		return fmt.Errorf("cursor must not be negative")
 	}
-	if input.WaitForApproval != nil && (*input.WaitForApproval < 0 || *input.WaitForApproval > 300) {
-		return fmt.Errorf("wait_for_approval_seconds must be between 0 and 300")
+	if input.WaitForApproval != nil && (*input.WaitForApproval < 0 || *input.WaitForApproval > maxWaitForSeconds) {
+		return fmt.Errorf("wait_for_approval_seconds must be between 0 and %d; poll get_session_status with wait_seconds for longer waits", maxWaitForSeconds)
+	}
+	if input.WaitSeconds != nil && (*input.WaitSeconds < 0 || *input.WaitSeconds > maxWaitForSeconds) {
+		return fmt.Errorf("wait_seconds must be between 0 and %d", maxWaitForSeconds)
+	}
+	if len(input.ScreenshotID) > 64 {
+		return fmt.Errorf("screenshot_id exceeds 64 characters")
+	}
+	if input.SettleMS != nil && name == Click && (*input.SettleMS > 2000) {
+		return fmt.Errorf("settle_ms must be between 0 and 2000 for click")
 	}
 	if input.MaxWidth != nil && (*input.MaxWidth < 320 || *input.MaxWidth > 7680) {
 		return fmt.Errorf("max_width must be between 320 and 7680")
@@ -290,18 +351,60 @@ func validateInput(raw json.RawMessage, name string) error {
 	if input.Method != "" && input.Method != "type" && input.Method != "paste" {
 		return fmt.Errorf("method must be type or paste")
 	}
+	if input.Repeat != nil && (*input.Repeat < 1 || *input.Repeat > 20) {
+		return fmt.Errorf("repeat must be between 1 and 20")
+	}
+	if input.IntervalMS != nil && (*input.IntervalMS < 0 || *input.IntervalMS > 1000) {
+		return fmt.Errorf("interval_ms must be between 0 and 1000")
+	}
+	if input.SettleMS != nil && (*input.SettleMS < 0 || *input.SettleMS > 3000) {
+		return fmt.Errorf("settle_ms must be between 0 and 3000")
+	}
+	if input.MS != nil && (*input.MS < 0 || *input.MS > maxWaitMilliseconds) {
+		return fmt.Errorf("ms must be between 0 and %d", maxWaitMilliseconds)
+	}
+	if len(input.Keys) > 64 {
+		return fmt.Errorf("keys exceeds 64 characters")
+	}
+	if len(input.Value) > 1024 {
+		return fmt.Errorf("value exceeds 1024 characters")
+	}
+	switch name {
+	case GetDeviceStatus, RequestConnection, RunCommand:
+		hasID := strings.TrimSpace(input.DeviceID) != ""
+		hasName := strings.TrimSpace(input.DeviceName) != ""
+		if hasID == hasName {
+			return fmt.Errorf("provide exactly one of device_id or device_name")
+		}
+	}
+	if input.Limit != nil && (*input.Limit < 1 || *input.Limit > 1000) {
+		return fmt.Errorf("limit must be between 1 and 1000")
+	}
+	if len(input.Path) > 4096 {
+		return fmt.Errorf("path exceeds 4096 characters")
+	}
+	if name == WaitFor {
+		switch input.Condition {
+		case "window_title", "process", "path_exists":
+		default:
+			return fmt.Errorf("condition must be window_title, process or path_exists")
+		}
+		if input.TimeoutSeconds != nil && (*input.TimeoutSeconds < 1 || *input.TimeoutSeconds > maxWaitForSeconds) {
+			return fmt.Errorf("timeout_seconds must be between 1 and %d", maxWaitForSeconds)
+		}
+	}
 	return nil
 }
 
 // schemaFields 按工具记录允许的字段，用于补充 JSON Schema 的未知字段检查。
 var schemaFields = map[string]map[string]struct{}{
 	AskUser:           fieldSet("session_id", "question", "options", "timeout_seconds"),
-	GetUserReply:      fieldSet("session_id", "request_id"),
+	GetUserReply:      fieldSet("session_id", "request_id", "wait_seconds"),
 	ListDevices:       fieldSet(),
-	GetDeviceStatus:   fieldSet("device_id"),
-	RequestConnection: fieldSet("device_id", "purpose", "temporary_password", "wait_for_approval_seconds"),
-	RunCommand:        fieldSet("device_id", "temporary_password", "command", "purpose", "working_directory", "timeout_seconds", "wait_for_approval_seconds", "keep_session_open"),
-	GetSessionStatus:  fieldSet("session_id"),
+	GetDeviceStatus:   fieldSet("device_id", "device_name"),
+	RequestConnection: fieldSet("device_id", "device_name", "purpose", "temporary_password", "wait_for_approval_seconds"),
+	RunCommand:        fieldSet("device_id", "device_name", "temporary_password", "command", "purpose", "working_directory", "timeout_seconds", "wait_for_approval_seconds", "keep_session_open"),
+	GetSessionStatus:  fieldSet("session_id", "wait_seconds"),
 	ExecuteCommand:    fieldSet("session_id", "command", "working_directory", "timeout_seconds"),
 	GetCommandResult:  fieldSet("session_id", "request_id", "cursor"),
 	DownloadFile:      fieldSet("session_id", "remote_path", "destination_path"),
@@ -309,8 +412,14 @@ var schemaFields = map[string]map[string]struct{}{
 	CancelCommand:     fieldSet("session_id", "request_id"),
 	CloseSession:      fieldSet("session_id"),
 	TakeScreenshot:    fieldSet("session_id", "max_width", "format"),
-	Click:             fieldSet("session_id", "x", "y", "button", "double"),
+	Click:             fieldSet("session_id", "x", "y", "button", "double", "screenshot_id", "detect_change", "settle_ms"),
 	TypeText:          fieldSet("session_id", "text", "method", "press_enter"),
+	PressKeys:         fieldSet("session_id", "keys", "repeat", "interval_ms"),
+	MoveMouse:         fieldSet("session_id", "x", "y", "settle_ms", "screenshot_id"),
+	Wait:              fieldSet("ms"),
+	WaitFor:           fieldSet("session_id", "condition", "value", "timeout_seconds"),
+	ListDir:           fieldSet("session_id", "path", "limit"),
+	StatPath:          fieldSet("session_id", "path"),
 }
 
 // fieldSet 将字段名切片转换为便于查询的集合。
