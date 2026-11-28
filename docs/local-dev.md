@@ -165,6 +165,22 @@ $h = (Get-Process yiuk-activity-panel).MainWindowHandle
 [N.W]::SetWindowPos($h, [IntPtr]::new(-1), 0, 0, 0, 0, 0x0013) | Out-Null
 ```
 
+### 5.4 原生输入真机验收（会真的动鼠标）
+
+```powershell
+E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-input-fixture.exe   # 置顶窗口：左半区等点击、右半区等悬停
+# 按 §4 起 Redis + core + gateway 之后：
+$env:YIUK_PLATFORM_ADDRESS  = "127.0.0.1:25664"
+$env:YIUK_PLATFORM_PASSWORD = "<player-password>"
+$env:YIUK_PLATFORM_INSECURE = "1"
+$env:YIUK_INTEROP_NATIVE    = "1"
+$env:YIUK_INTEROP_INPUT     = "1"
+E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-platform-interop.exe
+```
+
+通过判据：fixture 打印 `FIXTURE OK click=1 hover=1 hover_in_left=1 click_in_right=0`，
+互操作程序退出码 0。fixture 15 秒内没等到事件会打印 `FIXTURE FAIL` 并退出 1。
+
 ## 6. 本机已知坑
 
 1. **这个 Git Bash 没有 coreutils**：`ls`、`grep`、`head`、`sed`、`mkdir` 都不存在，`cat` 也不可靠。脚本里用 PowerShell 或 `rg`（路径见 §1）。

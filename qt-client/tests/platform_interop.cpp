@@ -17,6 +17,11 @@
 //
 // 当另一个有效连接仍占用相同设备 ID 时，预期会收到 DEVICE_ALREADY_ONLINE
 // 客户端会延迟后重试，因此测试程序会报告该错误，但不会将其视为失败
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
+#include "input/inputcontroller.h"
 #include "platformclient.h"
 #include "nativeops.h"
 #include "vision/screengrab.h"
@@ -28,6 +33,7 @@
 #include <QJsonDocument>
 #include <QFileInfo>
 #include <QJsonObject>
+#include <QThread>
 #include <QTimer>
 
 namespace {
@@ -93,6 +99,56 @@ int main(int argc, char *argv[]) {
                 return NativeOperationDispatcher::envelopeError(code, message);
             return NativeOperationDispatcher::envelopeOk(data);
         });
+    // 原生输入：坐标换算走 VisionService，投递走 yiuk::input（与真实客户端一致）。
+    dispatcher.registerOperation(
+        QStringLiteral("input.click"),
+        [vision](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
+            int screenX = 0;
+            int screenY = 0;
+            QString code;
+            QString message;
+            if (!vision->toScreenPoint(sessionId, arguments.value(QStringLiteral("screenshot_id")).toString(),
+                                       arguments.value(QStringLiteral("x")).toInt(),
+                                       arguments.value(QStringLiteral("y")).toInt(), &screenX, &screenY, &code,
+                                       &message))
+                return NativeOperationDispatcher::envelopeError(code, message);
+            QString inputError;
+            if (!yiuk::input::click(screenX, screenY, arguments.value(QStringLiteral("button")).toString(
+                                                       QStringLiteral("left")),
+                                    arguments.value(QStringLiteral("double")).toBool() ? 2 : 1, cancelled,
+                                    &inputError))
+                return NativeOperationDispatcher::envelopeError(QStringLiteral("INPUT_FAILED"), inputError);
+            return NativeOperationDispatcher::envelopeOk(
+                QJsonObject{{QStringLiteral("x"), arguments.value(QStringLiteral("x")).toInt()},
+                            {QStringLiteral("y"), arguments.value(QStringLiteral("y")).toInt()},
+                            {QStringLiteral("screen_x"), screenX},
+                            {QStringLiteral("screen_y"), screenY},
+                            {QStringLiteral("foreground_title"), yiuk::input::foregroundTitle()}});
+        });
+    dispatcher.registerOperation(
+        QStringLiteral("input.move"),
+        [vision](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
+            int screenX = 0;
+            int screenY = 0;
+            QString code;
+            QString message;
+            if (!vision->toScreenPoint(sessionId, arguments.value(QStringLiteral("screenshot_id")).toString(),
+                                       arguments.value(QStringLiteral("x")).toInt(),
+                                       arguments.value(QStringLiteral("y")).toInt(), &screenX, &screenY, &code,
+                                       &message))
+                return NativeOperationDispatcher::envelopeError(code, message);
+            const int durationMs = arguments.value(QStringLiteral("duration_ms")).toInt();
+            QString inputError;
+            if (!yiuk::input::move(screenX, screenY, durationMs, cancelled, &inputError))
+                return NativeOperationDispatcher::envelopeError(QStringLiteral("INPUT_FAILED"), inputError);
+            return NativeOperationDispatcher::envelopeOk(
+                QJsonObject{{QStringLiteral("x"), arguments.value(QStringLiteral("x")).toInt()},
+                            {QStringLiteral("y"), arguments.value(QStringLiteral("y")).toInt()},
+                            {QStringLiteral("screen_x"), screenX},
+                            {QStringLiteral("screen_y"), screenY},
+                            {QStringLiteral("duration_ms"), durationMs},
+                            {QStringLiteral("foreground_title"), yiuk::input::foregroundTitle()}});
+        });
     // 临时截图回收：下载完由 MCP 调用，这里验证"只删截图目录内的文件"这条路径能跑通。
     dispatcher.registerOperation(
         QStringLiteral("screen.release"),
@@ -119,7 +175,8 @@ int main(int argc, char *argv[]) {
     deviceConfig.enabled = true;
     deviceConfig.clientVersion = QStringLiteral("interop");
     deviceConfig.capabilities = QStringList{QStringLiteral("screen.capture"), QStringLiteral("screen.release"),
-                                            QStringLiteral("vision.find")};
+                                            QStringLiteral("vision.find"), QStringLiteral("input.click"),
+                                            QStringLiteral("input.move")};
     device->setConfig(deviceConfig);
 
     auto *operatorClient = new PlatformClient(&app);
@@ -145,6 +202,8 @@ int main(int argc, char *argv[]) {
     bool sessionRequested = false;
     bool sessionApproved = false;
     const bool nativeEnabled = qEnvironmentVariable("YIUK_INTEROP_NATIVE") == QLatin1String("1");
+    // 输入验收会真的动鼠标，默认关闭；需要配合 yiuk-input-fixture 显式开启。
+    const bool inputEnabled = qEnvironmentVariable("YIUK_INTEROP_INPUT") == QLatin1String("1");
     bool commandSent = false;
     bool commandSeen = false;
     bool nativeSent = false;
@@ -153,6 +212,11 @@ int main(int argc, char *argv[]) {
     bool savedResultOk = false;
     bool releasedResultOk = false;
     bool findResultOk = false;
+    bool inputMoveOk = false;
+    bool inputClickOk = false;
+    int pendingClickX = 0;
+    int pendingClickY = 0;
+    QString pendingScreenshotId;
     QString savedScreenshotPath;
     bool sessionClosed = false;
     int failures = 0;
@@ -292,6 +356,16 @@ int main(int argc, char *argv[]) {
             qInfo() << "operator saw screenshot release";
             return;
         }
+        if (requestId == QLatin1String("interop-native-input-move")) {
+            inputMoveOk = true;
+            qInfo() << "operator saw native move" << payload;
+            return;
+        }
+        if (requestId == QLatin1String("interop-native-input-click")) {
+            inputClickOk = true;
+            qInfo() << "operator saw native click" << payload;
+            return;
+        }
         if (requestId == QLatin1String("interop-native-find")) {
             // 只要求链路通：前台窗口里本来就不该有这串测试文本，空结果也算成功。
             const QString screenshotId = payload.value(QStringLiteral("screenshot_id")).toString();
@@ -307,6 +381,49 @@ int main(int argc, char *argv[]) {
                     << "nodes" << payload.value(QStringLiteral("elapsed_ms")).toInt() << "ms";
         }
     });
+    // 输入真机验收：找到 fixture 窗口 -> 物理坐标换成截图坐标 -> 先移动（悬停）再点击。
+    auto submitInputAcceptance = [&](const QString &sessionId) {
+        HWND fixture = nullptr;
+        for (int attempt = 0; attempt < 30 && fixture == nullptr; ++attempt) {
+            fixture = FindWindowW(L"YiukInputFixtureWindow", nullptr);
+            if (fixture == nullptr) QThread::msleep(100);
+        }
+        yiuk::vision::SnapshotRef ref;
+        if (fixture == nullptr || !vision->latestScreenshot(sessionId, &ref)) {
+            qWarning() << "input acceptance prerequisites missing (fixture =" << fixture << ")";
+            ++failures;
+            operatorClient->requestSessionClose(sessionId);
+            return;
+        }
+        RECT rect{};
+        GetWindowRect(fixture, &rect);
+        const auto toShotX = [&](int value) {
+            return qRound(static_cast<double>(value - ref.geometry.left) * ref.geometry.width /
+                          ref.geometry.screenWidth);
+        };
+        const auto toShotY = [&](int value) {
+            return qRound(static_cast<double>(value - ref.geometry.top) * ref.geometry.height /
+                          ref.geometry.screenHeight);
+        };
+        const int width = rect.right - rect.left;
+        const int height = rect.bottom - rect.top;
+        const int hoverX = toShotX(rect.left + width * 3 / 4);
+        const int hoverY = toShotY(rect.top + height / 2);
+        pendingClickX = toShotX(rect.left + width / 4);
+        pendingClickY = toShotY(rect.top + height / 2);
+        pendingScreenshotId = ref.id;
+        qInfo() << "input acceptance: fixture" << rect.left << rect.top << width << height << "hover" << hoverX
+                << hoverY << "click" << pendingClickX << pendingClickY;
+        operatorClient->submitNative(sessionId, QStringLiteral("interop-native-input-move"),
+                                     QStringLiteral("input.move"),
+                                     QJsonObject{{QStringLiteral("x"), hoverX},
+                                                 {QStringLiteral("y"), hoverY},
+                                                 {QStringLiteral("screenshot_id"), ref.id},
+                                                 {QStringLiteral("duration_ms"), 300},
+                                                 {QStringLiteral("settle_ms"), 150}},
+                                     10);
+    };
+
     QObject::connect(operatorClient, &PlatformClient::commandResultReceived, &app,
                      [&](const QString &sessionId, const QString &requestId, const QString &status,
                          const QJsonValue &, bool, bool) {
@@ -347,6 +464,27 @@ int main(int argc, char *argv[]) {
         }
         if (requestId == QLatin1String("interop-native-find")) {
             if (!findResultOk) ++failures;
+            if (inputEnabled) {
+                submitInputAcceptance(sessionId);
+            } else {
+                operatorClient->requestSessionClose(sessionId);
+            }
+            return;
+        }
+        if (requestId == QLatin1String("interop-native-input-move")) {
+            if (!inputMoveOk) ++failures;
+            // 移动阶段已经让 fixture 记录悬停；现在点左半区。
+            operatorClient->submitNative(sessionId, QStringLiteral("interop-native-input-click"),
+                                         QStringLiteral("input.click"),
+                                         QJsonObject{{QStringLiteral("x"), pendingClickX},
+                                                     {QStringLiteral("y"), pendingClickY},
+                                                     {QStringLiteral("screenshot_id"), pendingScreenshotId},
+                                                     {QStringLiteral("detect_change"), false}},
+                                         10);
+            return;
+        }
+        if (requestId == QLatin1String("interop-native-input-click")) {
+            if (!inputClickOk) ++failures;
             operatorClient->requestSessionClose(sessionId);
             return;
         }
@@ -417,6 +555,11 @@ int main(int argc, char *argv[]) {
                    << "sent:" << nativeSent << "seen:" << nativeSeen << "ok:" << nativeResultOk
                    << "saved:" << savedResultOk << "released:" << releasedResultOk
                    << "find:" << findResultOk;
+        return 1;
+    }
+    if (inputEnabled && (!inputMoveOk || !inputClickOk)) {
+        qWarning() << "native input round trip did not complete"
+                   << "move:" << inputMoveOk << "click:" << inputClickOk;
         return 1;
     }
     return result == 0 && sessionClosed ? 0 : 1;

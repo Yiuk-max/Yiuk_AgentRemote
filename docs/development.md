@@ -144,7 +144,12 @@ Qt 原生操作分发器与视觉内核（不需要平台，控制台运行）�
 qt-client/build-qt/yiuk-nativeops-test.exe      # 能力/信封/取消/超时/超大结果/抓屏几何
 qt-client/build-qt/yiuk-vision-test.exe         # 快照回收/坐标基准/节流/缩放/编码 + 一次真实抓屏
 qt-client/build-qt/yiuk-input-test.exe          # 轨迹端点/单调性/可复现、变化判据、采样区域
+qt-client/build-qt/yiuk-input-fixture.exe       # 真机验收目标窗口（左半区点击/右半区悬停）
 ```
+
+真机输入验收（会真的动鼠标）：fixture 窗口 + 平台 + `YIUK_INTEROP_INPUT=1` 的互操作程序，
+fixture 打印 `FIXTURE OK click=1 hover=1 hover_in_left=1 click_in_right=0` 才算通过。
+完整命令见[本机开发环境](local-dev.md) §5.4。
 
 `take_screenshot` 有两条实现路径：设备客户端上报 `screen.capture` 能力时走原生
 （客户端抓屏 + 落盘，MCP 用既有 `download_file` 取图，结果里 `capture_source=native`），

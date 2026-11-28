@@ -197,6 +197,13 @@ if(YIUK_BUILD_TESTS)
     set_target_properties(yiuk-vision-test PROPERTIES WIN32_EXECUTABLE FALSE)
     target_link_libraries(yiuk-vision-test PRIVATE yiuk-vision)
 
+    # 真机验收目标窗口：左半区等点击、右半区等悬停；由互操作程序真实投递输入。
+    add_executable(yiuk-input-fixture tests/input_fixture.cpp)
+    set_target_properties(yiuk-input-fixture PROPERTIES WIN32_EXECUTABLE FALSE)
+    if(WIN32)
+        target_link_libraries(yiuk-input-fixture PRIVATE user32 gdi32)
+    endif()
+
     # 原生输入的行为测试：轨迹端点/单调性/可复现性、灰度变化判据、点击区域采样。
     # 不注入键鼠：只验证纯逻辑与"采样能拿到数据"，真实点击由真机验收。
     qt_add_executable(yiuk-input-test tests/input_test.cpp)

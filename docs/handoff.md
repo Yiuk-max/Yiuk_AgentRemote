@@ -14,7 +14,7 @@
 P2 实质完成：客户端有了 `yiuk-vision`（抓屏/快照/节流/设备门）与 `yiuk-input`（原生鼠标）两个静态库，
 `take_screenshot` / `click` / `move_mouse` 都优先走原生通道，变化检测在设备侧完成，
 临时截图由 `screen.release` + 每会话保留 5 张 + 定时清理三重兜底（见 §2.1）。
-唯一没做的是原生 `click` / `move_mouse` 的真机 GUI 人工验收。
+原生 `click` / `move_mouse` 已用 fixture 窗口做过真机验收（左半区收到左键、右半区收到移入，见 §5.5）。
 P3 第一步已完成：`find_on_screen`（UIA 文本定位）是第 23 个工具，返回截图坐标并可直接 click；
 图像模板匹配（OpenCV）、OCR 兜底与 `drag`（P4）仍未实现。
 
@@ -72,7 +72,7 @@ Go 侧 `find_on_screen` 4 个用例（`desktop_vision_test.go`）。
 
 - **P1 剩余**：本机 bridge（`qt-client/src/localbridge.cpp` + `localtools.cpp`）的异步完成与有界原生请求体。
   只影响"没有平台"的本地 demo 后端；平台链路不受影响。
-- **P2 剩余**：只有真机 GUI 里对原生 `click` / `move_mouse` 的人工验收（单元测试与端到端协议都已通过）。
+- **P2 剩余**：无（原生 `click` / `move_mouse` 已由 `yiuk-input-fixture` 真机验收，见 §5.5）。
 - **P3 剩余**：图像模板匹配（需把 OpenCV 接进 Qt 构建）、OCR 兜底、`timeout_seconds` /
   `wait_until_found` 等待语义、固定素材集与命中率验收。
 - **P3 起未做**：UIA/OCR 文本定位、`find_on_screen`/`click_target`/`drag`、
@@ -182,6 +182,25 @@ native_submitted operation=vision.find             # UIA 文本定位，校验�
 
 进程退出码 0 才算通过；跑完 `%LOCALAPPDATA%\Yiuk\DeviceAssist\screenshots` 里不应留下文件。
 
+### 5.5 原生输入真机验收（会真的动鼠标）
+
+`yiuk-input-fixture.exe` 打开一个置顶窗口：**左半区等一次左键按下，右半区等一次鼠标移入**，
+两个条件都满足就打印 `FIXTURE OK` 并退出。互操作程序在 `YIUK_INTEROP_INPUT=1` 时按
+`GetWindowRect` 找到这个窗口，把物理坐标换成截图坐标，先 `input.move`（300ms 平滑移动）再
+`input.click`，平台日志会多出 `native_submitted operation=input.move/input.click`。
+
+```powershell
+cd E:\Yiuk_AgentRemote
+.\qt-client\build-qt\yiuk-input-fixture.exe          # 另开一个窗口跑，看到 FIXTURE READY
+# 平台三条命令仍然照 §5.3 启动，然后：
+$env:YIUK_INTEROP_INPUT = "1"
+.\qt-client\build-qt\yiuk-platform-interop.exe
+```
+
+通过判据：fixture 输出 `FIXTURE OK click=1 hover=1 hover_in_left=1 click_in_right=0`，
+互操作程序退出码 0。`click_in_right=0` 说明没有点错半区。测试结束后 fixture 自己退出；
+如果它打印 `FIXTURE FAIL`，说明输入没落到窗口上（锁屏、窗口被遮挡、坐标换算错误）。
+
 ### 5.4 P0 基线（视觉相关，重跑约 5–15 分钟）
 
 ```powershell
@@ -251,7 +270,7 @@ OpenCV 静态构建的完整命令在 `spike/vision/README.md` §1。
 | MCP `take_screenshot` 原生全链路 | 未验：互操作里已跑通 `screen.capture`，但"原生抓屏 → `download_file` 取图 → Agent 收到图片"只在单元测试里验证过 |
 | `find_on_screen` 命中率 | 未测：UIA 链路已跑通（0 节点时约 320ms），但记事本/Edge/资源管理器三场景的命中率与 300ms 预算未实测 |
 | 原生截图临时文件的长期增长 | 机制已齐（release + 5 张上限 + 定时清理），但未长跑确认 |
-| 原生 `click` / `move_mouse` 真机行为 | 未验：只在单元测试里验证参数/坐标/回退；真实桌面上的点击与悬停需人工确认 |
+| 原生 `click` / `move_mouse` 真机行为 | 已验证：`yiuk-input-fixture` 收到左半区左键与右半区移入（2 次运行均 OK）；仍未覆盖多显示器/混合 DPI |
 
 ## 9. 交接检查清单
 
