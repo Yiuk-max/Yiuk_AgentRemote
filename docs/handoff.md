@@ -1,359 +1,193 @@
-# 交接文档：MCP 视觉定位与鼠标增强
+# 交接文档
 
-> 写于本轮工作结束时。目的：让下一位接手的人不用读全部历史，就能知道**现在到哪一步、改动在哪、怎么验证、下一步做什么**。
+> 写给下一位接手的人：**现在能做什么、代码在哪、怎么验证、哪些坑已经踩过、下一步做什么。**
 >
 > 相关文档：
-> - 目标（产品口径）：[`mcp-vision-mouse-plan.md`](mcp-vision-mouse-plan.md)
-> - 实施计划（P0–P6 清单与门禁）：[`mcp-vision-mouse-implementation-plan.md`](mcp-vision-mouse-implementation-plan.md)
+> - 产品口径：[`mcp-vision-mouse-plan.md`](mcp-vision-mouse-plan.md)
+> - 阶段清单与门禁：[`mcp-vision-mouse-implementation-plan.md`](mcp-vision-mouse-implementation-plan.md)
+> - 不能破坏的不变量：[`key-architecture.md`](key-architecture.md)
 > - P0 实测数据与工具链坑：[`spike/vision/README.md`](../spike/vision/README.md)
 
 ## 1. 一句话状态
 
-**P0 完成、P1 完成约 95%（只差本机 bridge）、P2 完成、P3 文本定位完成（图像/OCR 未做）、P4 进行中（move/drag 已落地，click_target 未做）。**
-原生操作通道（`execute_native`）已从 MCP 侧协议、Go 平台、Go 客户端一路通到 Qt 客户端，并用真实 Qt ↔ 真实 Go 平台验证过。
-P2 实质完成：客户端有了 `yiuk-vision`（抓屏/快照/节流/设备门）与 `yiuk-input`（原生鼠标）两个静态库，
-`take_screenshot` / `click` / `move_mouse` 都优先走原生通道，变化检测在设备侧完成，
-临时截图由 `screen.release` + 每会话保留 5 张 + 定时清理三重兜底（见 §2.1）。
-原生 `click` / `move_mouse` 已用 fixture 窗口做过真机验收（左半区收到左键、右半区收到移入，见 §5.5）。
-P3 第一步已完成：`find_on_screen`（UIA 文本定位）是第 23 个工具，返回截图坐标并可直接 click；
-图像模板匹配（OpenCV）、OCR 兜底与 `drag`（P4）仍未实现。
+**P0 完成、P1 95%（只差本机 bridge 异步化）、P2 完成、P3 文本与图像定位完成（OCR/等待语义未做）、P4 完成 `move_mouse` 平滑移动与 `drag`（`click_target` 未做）。**
 
-## 2. 现在到底有什么
+客户端已有两套原生内核：`yiuk-vision`（GDI 抓屏 / 快照 / 节流 / 设备门 / UIA / OpenCV）与 `yiuk-input`（SendInput / 确定性轨迹 / 按键守卫 / 灰度变化检测）。`take_screenshot`、`click`、`move_mouse`、`find_on_screen`、`drag` 现在都优先走客户端原生通道，旧客户端自动回退脚本（`find_on_screen` / `drag` 除外，它们必须原生）。
 
-### 2.1 已实现（可运行、有测试）
+工作区干净，最新提交 `ce1e5e7`。
 
-| 层 | 内容 | 关键文件 |
+## 2. 能做什么
+
+### 2.1 MCP 工具（24 个）
+
+| 分类 | 工具 |
+| --- | --- |
+| 设备/会话 | `list_devices`、`get_device_status`、`request_connection`、`get_session_status`、`close_session` |
+| 命令 | `run_command`、`execute_command`、`get_command_result`、`cancel_command` |
+| 文件 | `download_file`、`upload_file`、`list_dir`、`stat_path` |
+| 桌面 | `take_screenshot`、`click`、`move_mouse`、`drag`、`press_keys`、`type_text` |
+| 视觉 | `find_on_screen`（UIA 文本 / OpenCV 图像模板） |
+| 等待 | `wait`、`wait_for` |
+| 交互 | `ask_user`、`get_user_reply` |
+
+结果里的 `capture_source`（`native`/`script`）与 `input_source`（`native`/`script`）说明这次走了哪条实现路径。
+
+### 2.2 原生操作（平台白名单，8 项）
+
+| 操作 | 状态 | 说明 |
 | --- | --- | --- |
-| 协议 | `execute_native` 帧；`operation`/`arguments`/`client_version`/`capabilities` 字段与边界 | `internal/platform/protocol/protocol.go` |
-| 配置 | `native_argument_max_bytes`（默认 128 KiB，且 ≤ `max_frame_bytes/2`） | `internal/platform/config/config.go` |
-| 设备表 | 能力与版本随注册上报、重连整体覆盖、快照深拷贝 | `internal/platform/device/manager.go` |
-| 平台业务 | `handleExecuteNative`：白名单 7 操作、能力校验、已批准会话、任务限额、`request_id` 幂等、`result_unknown` 语义；与命令共用 `submitTask` | `internal/platform/core/handler_native.go`、`handler_command.go` |
-| Go 客户端 | `InvokeNative`（暂未注册成 MCP 工具）、会话→设备能力解析、信封解码、错误语义 | `internal/platformclient/tools_native.go` |
-| Go 客户端并发 | 单读者 + `correlation_id → 等待通道`，删掉整趟持锁的 `requestMu` | `internal/platformclient/dispatch.go`、`client.go`、`transport.go` |
-| Qt 客户端 | `NativeOperationDispatcher`：注册表即能力、线程池执行、取消/超时/超大结果/去重 | `qt-client/src/nativeops.{h,cpp}` |
-| Qt 视觉内核 | `yiuk-vision` 静态库：GDI RAII 抓屏（CAPTUREBLT、Per-Monitor V2 物理像素）、布局版本、按宽度缩放、PNG/JPEG 落盘 | `qt-client/src/vision/screengrab.{h,cpp}` |
-| Qt 快照与节流 | `SnapshotStore`（每会话 5 份、布局变化失效、临时文件回收）、`SessionLimiter`（会话级互斥 + 500ms 最小间隔、排队可取消）、`VisionService`（唯一入口） | `qt-client/src/vision/{snapshotstore,sessionlimiter,visionservice}.{h,cpp}` |
-| Qt 首个操作 | `screen.capture`：支持 `max_width` / `format` / `save`，返回 `screenshot_id` + 几何 + `layout_version` + `path`，仍然不回图片本体 | `qt-client/src/platformevents.cpp` |
-| MCP 抓屏 | `take_screenshot` 优先原生通道（能力检查 → `screen.capture` → 既有 `download_file` 取图），不可用时回退脚本；结果带 `capture_source` | `internal/agenttools/native.go`、`desktop_screenshot.go` |
-| Qt 原生鼠标 | `input.click` / `input.move`：截图坐标 → 物理坐标（`VisionService::toScreenPoint`）、SendInput、确定性 ease-in-out、`ButtonGuard` 保证抬起、点击前后局部变化采样 | `qt-client/src/input/inputcontroller.{h,cpp}`、`platformevents.cpp` |
-| MCP 鼠标 | `click` / `move_mouse` 优先原生通道；只有 `UNSUPPORTED_CLIENT/OPERATION` 回退脚本，`STALE_SCREENSHOT` 等业务错误原样上报；结果带 `input_source` | `internal/agenttools/desktop_click.go`、`desktop_input.go`、`desktop_input_native.go` |
-| 设备级门 | `DeviceGate`：进程级互斥，抓屏与输入动作排队，排队可取消 | `qt-client/src/vision/devicegate.{h,cpp}` |
-| 临时截图回收 | 新原生操作 `screen.release`（只删截图目录内）；MCP 读完图片后尽力回收；每次抓屏清理 5 分钟前的残留 | `internal/agenttools/desktop_screenshot.go`、`internal/platform/core/handler_native.go`、`platformevents.cpp` |
-| Qt 拖动 | `input::drag`：按下 → 确定性路径 → 抬起，`ButtonGuard` 保证任何路径释放；原生操作 `input.drag` 与设备门 | `qt-client/src/input/inputcontroller.{h,cpp}`、`platformevents.cpp` |
-| MCP 拖动 | 第 24 个工具 `drag`：截图坐标 from/to、duration_ms/hold_ms，只走原生通道，未确认释放返回 `DRAG_NOT_RELEASED` | `internal/agenttools/desktop_drag.go` |
-| MCP 平滑移动 | `move_mouse` 新增 `duration_ms`，原生透传；脚本路径仍是瞬移 | `internal/agenttools/desktop_input.go` |
-| Qt 文本定位 | `textlocator`：UIA 控制视图、节点/时间上限、全半角与空白归一化、exact/contains、control_type 与 region 过滤、阅读顺序排序 | `qt-client/src/vision/textlocator.{h,cpp}` |
-| 原生 `vision.find` | 参数解析 + `VisionService::searchText`（确保坐标基准 → UIA → 换算成截图坐标 → JSON） | `qt-client/src/platformevents_vision.cpp`、`platformevents.cpp` |
-| MCP `find_on_screen` | 第 23 个工具：校验/转发/登记坐标基准；`text` / `image_path` / `image_b64` 三选一；能力缺失返回 `UNSUPPORTED_CLIENT`，**没有脚本回退** | `internal/agenttools/desktop_vision.go`、`catalog.go` |
-| Qt 图像匹配 | `templatematcher`：灰度 `TM_CCOEFF_NORMED`、阈值、`region`、IoU 0.3 去重；OpenCV 4.12 静态链接 | `qt-client/src/vision/templatematcher.{h,cpp}`、`CMakeLists.txt` |
-| Qt 接线 | 注册上报能力与版本；`execute_native` → 分发；结果走 `command_output`+`command_result`；取消/会话结束联动 | `qt-client/src/platformclient.{h,cpp}`、`platformevents.cpp`、`platformlink.cpp`、`mainwindow.h` |
+| `screen.capture` | 已实现 | `max_width` / `format` / `save`，返回 `screenshot_id` + 几何 + `path`，不回图片本体 |
+| `screen.release` | 已实现 | 按路径删除临时截图，只允许截图目录内 |
+| `input.click` | 已实现 | 截图坐标 → 物理坐标、`detect_change` 前后采样 |
+| `input.move` | 已实现 | `duration_ms` 确定性 ease-in-out |
+| `input.drag` | 已实现 | 按下 → 路径 → 抬起，`released:true` 只在确认释放时返回 |
+| `vision.find` | 已实现 | UIA 文本 + OpenCV 灰度模板匹配 |
+| `vision.click_target` | 未实现 | 客户端内 find/pick/click 事务 |
+| `vision.save_template` | 未实现 | 从快照裁剪模板 |
 
-### 2.2 测试与验证（当前全绿）
+### 2.3 绿色化：所有文件都在程序目录
+
+`<exe 目录>\data\` 下：`platform.json`、`platform-client.json`、`identity.json`、`local-api.json`、`device.json`、`sessions.json`、`activity-panel.state`、`screenshots\`、`tmp\`（PowerShell 脚本）、`work\`（默认工作目录）、`uploads\`。
+`data\` 不可写时回退 `%LOCALAPPDATA%\Yiuk\DeviceAssist`；首次切换会把旧目录的身份与配置**复制**过来（设备码不变），旧目录此后只读不写。
+
+## 3. 代码在哪
+
+### 3.1 客户端（Qt）
+
+| 模块 | 内容 |
+| --- | --- |
+| `src/nativeops.{h,cpp}` | 原生操作分发器：注册表即能力、线程池（2 并发）、取消/超时/超大信封/`request_id` 去重；`Handler(sessionId, arguments, cancelled)` |
+| `src/vision/apppaths.{h,cpp}` | `programDataRoot()`：`<exe>\data` 优先，回退用户目录 |
+| `src/vision/screengrab.{h,cpp}` | GDI RAII 抓屏（CAPTUREBLT、Per-Monitor V2）、布局版本、缩放、PNG/JPEG 编码 |
+| `src/vision/snapshotstore.{h,cpp}` | 每会话 5 张 `screenshot_id` + 几何 + 布局版本，布局变化即失效，临时文件回收 |
+| `src/vision/sessionlimiter.{h,cpp}` | 会话级互斥 + 500ms 最小间隔，排队可取消 |
+| `src/vision/devicegate.{h,cpp}` | 进程级互斥：抓屏与输入不能并发 |
+| `src/vision/visionservice.{h,cpp}` | 唯一入口：`capture` / `clickWithOptions` / `searchText` / `matchImage` / `toScreenPoint` / `screenRectToScreenshot` / `releaseScreenshotFile` / `pruneOrphanScreenshots` |
+| `src/vision/textlocator.{h,cpp}` | UIA 控制视图查询（节点 5000 / 时间 300ms 上限）、全半角与空白归一化、control_type 与 region 过滤、阅读顺序排序 |
+| `src/vision/templatematcher.{h,cpp}` | OpenCV 灰度 `TM_CCOEFF_NORMED`、阈值、region、IoU 0.3 去重；未编译 OpenCV 时返回 `UNSUPPORTED_OPERATION` |
+| `src/input/inputcontroller.{h,cpp}` | `SendInput` 绝对坐标、`buildPath` 确定性缓动、`ButtonGuard`、`drag`、灰度采样与变化判据、前台标题 |
+| `src/platformevents.cpp` | 注册 `screen.capture` / `input.click` / `input.move` / `input.drag` / `screen.release`；会话结束清理 |
+| `src/platformevents_vision.cpp` | `vision.find`：参数校验 + 调用 `searchText` / `matchImage` |
+| `src/apphelpers.cpp` | 配置根 = `programDataPath()`（含旧配置一次性迁移）、默认命令工作目录 = `data\work` |
+
+### 3.2 MCP / 平台（Go）
+
+| 模块 | 内容 |
+| --- | --- |
+| `internal/agenttools/native.go` | 可选 `NativeInvoker` 接口（本地 bridge 不实现 → 自动走脚本） |
+| `internal/agenttools/desktop_screenshot.go` | 原生优先抓屏 + `screen.release` 回收 + `capture_source` |
+| `internal/agenttools/desktop_click.go`、`desktop_input.go`、`desktop_input_native.go` | 原生点击/移动与结果映射；只有 `UNSUPPORTED_CLIENT/OPERATION` 才回退 |
+| `internal/agenttools/desktop_vision.go` | `find_on_screen`：text / image_path / image_b64 三选一 |
+| `internal/agenttools/desktop_drag.go` | `drag`：坐标校验、`released` 必须为真 |
+| `internal/platform/core/handler_native.go` | 白名单、能力校验、`submitTask` 共用、`result_unknown` 语义 |
+| `internal/platform/protocol/protocol.go` | `execute_native` 帧与字段边界 |
+| `internal/userconfig/path.go` | `ProgramDataRoot()`：`<exe>/data` 优先，旧路径回退读取 |
+
+## 4. 怎么验证
+
+### 4.1 Go
 
 ```powershell
-go test ./... -count=1                          # 17 个包通过
-go test -race ./internal/platform/gateway/ ./internal/platformclient/
-gofmt -l .                                      # 必须空输出
+gofmt -l .                      # 必须空
 go vet ./...
-
-# Qt（需要 QT 在 PATH）
-& "D:\QT\Tools\Ninja\ninja.exe" -C qt-client/build-qt
-.\qt-client\build-qt\yiuk-nativeops-test.exe    # 18 项断言，含真实抓屏
-```
-
-用例数量：平台侧原生通道 10 个（`internal/platform/gateway/native_test.go`）、
-Go 客户端 5 个（`internal/platformclient/native_test.go`）、Qt 分发器 18 项
-（`qt-client/tests/nativeops_test.cpp`）、Qt 视觉内核 78 项（`qt-client/tests/vision_test.cpp`，含文本归一化与一次真实 UIA 查询）、Qt 原生输入 20 项
-（`qt-client/tests/input_test.cpp`）、Go 侧原生抓屏 4 个用例含 3 个畸形信封子用例
-（`desktop_screenshot_native_test.go`）、Go 侧原生鼠标 4 个用例（`desktop_input_native_test.go`）、
-Go 侧 `find_on_screen` 4 个用例（`desktop_vision_test.go`）、Go 侧拖动/平滑移动 4 个用例（`desktop_drag_test.go`）。
-
-端到端（真实 Qt ↔ 真实 Go 平台）已验证过一次，命令见 §5.3。平台日志应出现：
-`command_submitted` → `command_finished` → `native_submitted operation=screen.capture` →
-`command_finished succeeded` → `session_closed`。
-
-### 2.3 尚未实现
-
-- **P1 剩余**：本机 bridge（`qt-client/src/localbridge.cpp` + `localtools.cpp`）的异步完成与有界原生请求体。
-  只影响"没有平台"的本地 demo 后端；平台链路不受影响。
-- **P2 剩余**：无（原生 `click` / `move_mouse` 已由 `yiuk-input-fixture` 真机验收，见 §5.5）。
-- **P3 剩余**：OCR 兜底、`timeout_seconds` / `wait_until_found` 等待语义、固定素材集与命中率验收。
-  图像模板匹配已落地（OpenCV 4.12 静态接入 `yiuk-vision`）。
-- **P4 剩余**：`click_target`（客户端内 find/pick/click 事务）。move/drag 已落地并经真机验收。
-- **P3 起未做**：UIA/OCR 文本定位、`find_on_screen`/`click_target`/`drag`、
-  模板管理、混合 DPI、ROI 缓存、发布。
-- `screen.capture` 现在有 MCP 入口了，但只是 `take_screenshot` 的实现细节：
-  没有独立的原生工具，`InvokeNative` 也不直接暴露给 Agent（工具契约留到 P3 冻结）。
-
-## 3. 未提交的改动（重要）
-
-工作区有 **19 个已修改文件 + 31 个未跟踪条目**，本轮全部未提交。`git status --short` 现状：
-
-- 修改：`docs/{README,development,key-architecture,local-dev}.md`、
-  `internal/platform/{config,protocol}`、`internal/platform/core/{convert,handler,handler_command}`、
-  `internal/platform/device/manager.go`、`internal/platformclient/{client,transport}`、
-  `qt-client/CMakeLists.txt`、`qt-client/src/{mainwindow.h,platformclient.h,platformclient.cpp,platformevents.cpp,platformlink.cpp}`、
-  `qt-client/tests/platform_interop.cpp`
-- 新增（源码）：`internal/platform/core/handler_native.go`、`internal/platformclient/{dispatch.go,tools_native.go}`、
-  `internal/platform/gateway/native_test.go`、`internal/platformclient/native_test.go`、
-  `internal/agenttools/native.go`、`internal/agenttools/desktop_screenshot_native_test.go`、
-  `internal/agenttools/desktop_input_native.go`、`internal/agenttools/desktop_input_native_test.go`、
-  `qt-client/src/nativeops.{h,cpp}`、`qt-client/src/vision/{screengrab,snapshotstore,sessionlimiter,devicegate,visionservice}.{h,cpp}`、
-  `qt-client/src/input/inputcontroller.{h,cpp}`、
-  `qt-client/tests/nativeops_test.cpp`、`qt-client/tests/vision_test.cpp`、`qt-client/tests/input_test.cpp`、
-  `docs/mcp-vision-mouse-plan.md`、`docs/mcp-vision-mouse-implementation-plan.md`、
-  `spike/vision/`（P0 素材/基准/探针源码）
-
-**提交前必读**：
-
-1. 不要 `git add -A`。`spike/vision/` 里只有源码该入库；`build*/`、`out/`、`third_party/`
-   已由 `spike/vision/.gitignore` 排除，`git status -uall spike/vision` 应只列出 19 个源码文件。
-2. 仓库强制 LF（`.gitattributes` 的 `* text=auto eol=lf`）。用 PowerShell 的 `Set-Content`/`Out-File`
-   改文件会引入 CRLF，提交前跑一次转换（本轮已用 Python 统一过）。
-3. 提交建议拆成四个可回归的提交：
-   ① P0 spike + 三份文档；② 平台侧原生通道（protocol/config/device/core + gateway 测试）；
-   ③ Go 客户端并发与 `InvokeNative`；④ Qt 分发器 + `screen.capture` + interop。
-
-## 4. 关键设计与不变量（改动前必须知道）
-
-1. **能力不是授权**。`capabilities` 只决定"这个操作能不能用"，授权仍然只由已批准会话决定；
-   平台与客户端都各自校验一次白名单，任何一层都不能省。
-2. **原生操作与命令共用任务机制**：同一 `task.Manager`（`max_tasks_per_session=2`）、同一
-   `request_id` 幂等域、同一取消语义（`cancel_command`）、同一终态回收。不要为 native 新开一套。
-3. **业务失败 ≠ 任务失败**。设备回 `command_result succeeded` + stdout 信封
-   `{"ok":false,"code":"NOT_FOUND",...}`；断线/超时必须是 `result_unknown`（可能已生效，禁止直接重试）。
-4. **不返回图片**。`screen.capture` 只回几何；图片仍走既有的截图/下载通路（P2 统一）。
-5. **原生操作串行与设备资源**：Qt 侧线程池上限 2；P2 起所有抓屏/视觉必须共用同一把会话级互斥 +
-   500ms 最小间隔（计划 §2.3），否则低内存设备会被拖垮。
-6. **旧客户端不受影响**：平台只在设备自报能力时才下发 `execute_native`；未知能力名在注册时被静默丢弃。
-
-## 5. 怎么验证（复制即用）
-
-### 5.1 Go
-
-```powershell
 go test ./... -count=1
-go test -race ./internal/platform/gateway/ ./internal/platformclient/ -count=1
-go test ./internal/platform/gateway/ -run TestNative -v
-go test ./internal/platformclient/ -run TestInvokeNative -v
+go test -race ./internal/agenttools/ ./internal/platformclient/ ./internal/platform/gateway/ -count=1
 ```
 
-### 5.2 Qt（无平台）
+### 4.2 Qt（不需要平台）
 
 ```powershell
-$env:PATH = "D:\QT\6.11.1\mingw_64\bin;" + $env:PATH
-cmake -S qt-client -B qt-client/build-qt -G Ninja -DCMAKE_BUILD_TYPE=Release `
-  -DCMAKE_PREFIX_PATH=D:/QT/6.11.1/mingw_64 `
-  -DCMAKE_CXX_COMPILER=D:/QT/Tools/mingw1310_64/bin/g++.exe `
-  -DCMAKE_MAKE_PROGRAM=D:/QT/Tools/Ninja/ninja.exe -DYIUK_BUILD_TESTS=ON
-& "D:\QT\Tools\Ninja\ninja.exe" -C qt-client/build-qt
-.\qt-client\build-qt\yiuk-nativeops-test.exe      # 原生分发器
-.\qt-client\build-qt\yiuk-vision-test.exe         # 快照/节流/缩放/编码 + 一次真实抓屏
-.\qt-client\build-qt\yiuk-input-test.exe          # 轨迹/变化判据/采样区域
+& "D:\QT\Tools\Ninja\ninja.exe" -C qt-client\build-qt
+.\qt-client\build-qt\yiuk-vision-test.exe       # 抓屏/快照/节流/设备门/回收/UIA/OpenCV
+.\qt-client\build-qt\yiuk-input-test.exe        # 轨迹/变化判据/采样
+.\qt-client\build-qt\yiuk-nativeops-test.exe    # 分发器能力/取消/超时/去重
 ```
 
-### 5.3 端到端（真实 Qt ↔ 真实 Go 平台）
+### 4.3 真实 Qt ↔ 真实 Go 平台（互操作）
 
-平台三条命令（本机明文，端口 25664/25670/25671/6379），配置要点：
-`allow_insecure: true`、`player_password: "interop-player-password-123456"`、`log_file` 用**当前目录**的相对路径
-（写成 `tmp-interop/core.log` 会启动失败）。
+平台配置要点：`allow_insecure: true`、`player_password: "interop-player-password-123456"`、`log_file` 用当前目录的相对路径。
+**平台是内存态：每次重跑前重启 core+gateway**，否则第二次注册会因为密码已轮换而拿不到同一个设备码。
 
 ```powershell
-cd E:\Yiuk_AgentRemote
-go build -o tmp-interop/dev-redis.exe ./cmd/dev-redis
-go build -o tmp-interop/platform-core.exe ./cmd/platform-core
-go build -o tmp-interop/platform-gateway.exe ./cmd/platform-gateway
-# 依次后台启动 dev-redis / platform-core / platform-gateway（工作目录 tmp-interop）
-
-$env:PATH = "D:\QT\6.11.1\mingw_64\bin;" + $env:PATH
-$env:YIUK_PLATFORM_ADDRESS   = "127.0.0.1:25664"
-$env:YIUK_PLATFORM_PASSWORD  = "interop-player-password-123456"
-$env:YIUK_INTEROP_NATIVE     = "1"
-$env:YIUK_DEVICE_ID          = "123456789"
+$env:YIUK_PLATFORM_ADDRESS  = "127.0.0.1:25664"
+$env:YIUK_PLATFORM_PASSWORD = "interop-player-password-123456"
+$env:YIUK_PLATFORM_INSECURE = "1"
+$env:YIUK_INTEROP_NATIVE    = "1"
 .\qt-client\build-qt\yiuk-platform-interop.exe
 ```
 
-注意：平台是内存态，**每次重跑前重启 core+gateway**，否则第二次注册会因为密码已轮换而拿到新设备码、
-互操作测试失败（这是既有设计，不是 bug）。
+依次应出现：`screen.capture` → `screen.capture(save)` → `screen.release` → `vision.find`。
 
-`YIUK_INTEROP_NATIVE=1` 时这套程序现在连跑三段原生操作，平台日志里应依次出现：
+可选段（都会真的动鼠标/窗口，默认关闭）：
 
-```text
-native_submitted operation=screen.capture          # 只回几何
-native_submitted operation=screen.capture          # max_width=800 + save=true，校验 PNG 真的落盘
-native_submitted operation=screen.release          # 回收临时截图，校验文件已删除
-native_submitted operation=vision.find             # UIA 文本定位，校验返回截图坐标与 screenshot_id
-```
+| 环境变量 | 作用 | 需要的 fixture |
+| --- | --- | --- |
+| `YIUK_INTEROP_INPUT=1` | `input.move` + `input.click` | `yiuk-input-fixture.exe --expect-clicks 1` |
+| `YIUK_INTEROP_DETECT_CHANGE=1` | 左半区换亮度应 `changed=true`，右半区应 `false` | `yiuk-input-fixture.exe --expect-clicks 4` |
+| `YIUK_INTEROP_WINDOW_DRAG=<窗口类名>` | 拖目标窗口标题栏绕屏一圈并校验回到起点 | 任意普通权限窗口；`TaskManagerWindow` 需客户端提权 |
+| `YIUK_INTEROP_DRAG_SMOKE=1` | 只在窗口附近走 300px 闭环，不碰屏幕边缘 | 同上 |
 
-进程退出码 0 才算通过；跑完 `%LOCALAPPDATA%\Yiuk\DeviceAssist\screenshots` 里不应留下文件。
-
-### 5.5 原生输入真机验收（会真的动鼠标）
-
-`yiuk-input-fixture.exe` 打开一个置顶窗口：**左半区等一次左键按下，右半区等一次鼠标移入**，
-两个条件都满足就打印 `FIXTURE OK` 并退出。互操作程序在 `YIUK_INTEROP_INPUT=1` 时按
-`GetWindowRect` 找到这个窗口，把物理坐标换成截图坐标，先 `input.move`（300ms 平滑移动）再
-`input.click`，平台日志会多出 `native_submitted operation=input.move/input.click`。
+### 4.4 用真实客户端验收（推荐路径）
 
 ```powershell
-cd E:\Yiuk_AgentRemote
-.\qt-client\build-qt\yiuk-input-fixture.exe          # 另开一个窗口跑，看到 FIXTURE READY
-# 平台三条命令仍然照 §5.3 启动，然后：
-$env:YIUK_INTEROP_INPUT = "1"
-.\qt-client\build-qt\yiuk-platform-interop.exe
+# 1) 起平台：dev-redis + platform-core + platform-gateway（见 local-dev.md）
+# 2) 以管理员身份启动客户端（要操作提权窗口时必须提权）
+Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\mingw_64\bin;%PATH%" && start "" "E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-device-assist.exe"'
+# 3) MCP 侧：list_devices → request_connection（可直接带临时密码，跳过审批）
+# 4) find_on_screen(image_path=...) → drag(from=..., to=..., screenshot_id=...)
 ```
 
-通过判据：fixture 输出 `FIXTURE OK clicks=1 hover=1 ...`，互操作程序退出码 0。
-测试结束后 fixture 自己退出；如果它打印 `FIXTURE FAIL`，说明输入没落到窗口上
-（锁屏、窗口被遮挡、坐标换算错误）。
+## 5. 真机验收记录（已做）
 
-### 5.5b 窗口拖动真机验收（会真的移动窗口）
+| 项目 | 结果 |
+| --- | --- |
+| 悬停 + 点击（fixture 窗口） | `FIXTURE OK clicks=1 hover=1 hover_in_left=1 click_in_right=0` |
+| `detect_change` | 换亮度区 `changed_ratio 1 / diff_ratio 0.80 / changed=true`；静态区 `0 / 0 / false`，连续两次一致 |
+| `drag`（fixture 窗口） | 全屏 5 段 `reached true`、回到起点；冒烟 4 段同样通过 |
+| OpenCV 定位 | 任务管理器标题栏 `160x30 @758,341` 在全屏 2560×1600 中匹配回同一点，`score 1.0000` |
+| 任务管理器拖动（真实客户端 + 真实平台） | 起点 `(752,337)` → 右 `+592` → 下 `+323` → 左 `−1344` → 上 `−323` → 右 `+752`，最终 `rect = 752,337`，**闭环** |
+| 绿色化 | `data\` 内出现配置/身份/`screenshots\`/`tmp\`；`data\tmp` 可见正在执行的 `.ps1`；C 盘旧目录不再写入 |
 
-`YIUK_INTEROP_WINDOW_DRAG=<窗口类名>` 时，互操作程序会在 `vision.find` 之后把目标窗口的标题栏
-按住，按"右 → 右下 → 左下 → 左 → 回起点"分 5 段拖满整个屏幕，每段都用 `GetWindowRect`
-校验窗口真的跟到了目标位置（允许 6px 误差），最后校验回到起点。
+## 6. 踩过的坑（改输入/视觉前必读）
 
-```powershell
-# 用我们自己的 fixture 窗口验收（普通权限窗口）
-$env:YIUK_INTEROP_WINDOW_DRAG = "YiukInputFixtureWindow"
-.\qt-client\build-qt\yiuk-platform-interop.exe
-```
+1. **UIPI**：任务管理器等自动提权窗口，非提权客户端发的合成点击/拖动会被 Windows **静默丢弃**（`SendInput` 仍返回成功，窗口纹丝不动）。要操作提权窗口，客户端必须同样提权。
+2. **坐标空间必须与 `screenshot_id` 对应**：`take_screenshot(max_width=1568)` 之后截图坐标 ≠ 物理像素（比例 1.633）。混用会让点击落到别处——所有结果都带 `screenshot_id`，用同一张图的坐标系。
+3. **按下点不能被挡住**：活动面板、终端等浮层会盖住目标窗口，点击落到浮层上。验收时把其它窗口最小化，或选一个不被覆盖的标题栏位置。
+4. **激活点击与拖动之间要跳过双击时间**：先点一下标题栏激活，若 500ms 内在同一点再次按下，Windows 会当成"双击标题栏"把窗口最大化（位置 `-9,-9`）。等 700ms，并在 `IsZoomed()` 为真时先 `SW_RESTORE`。
+5. **灰度不是亮度**：`RGB(255,158,96)` 与 `RGB(96,158,255)` 的灰度都是 169，`detect_change` 看不出来。换色要换亮度。
+6. **采样前要等合成**：点击后立刻 `BitBlt` 可能拿到上一帧，`sampleRegion` 里先 `DwmFlush()`。
+7. **模板要在同一状态截取**：标题栏激活/未激活像素不同；窗口被销毁的瞬间会被判成"巨大变化"（换窗口/退出前不要采样）。
+8. **窗口移动有延迟**：拖动后立刻按"新位置"再按，可能还没移到位而点到客户区。每段之前用 `GetWindowRect` 确认，或先 OpenCV 重新定位。
+9. **屏幕边缘有第三方浮层**：这台机器常驻 `MyDockFinder`，会抢边缘点击；验收里用"中部 300px 闭环"的冒烟模式。
+10. **Git Bash 没有 coreutils**：`ls/grep/head/sed` 都不存在，用 `rg`、PowerShell 或 Go；中文控制台是 CP936，看文件用编辑器。
 
-加 `YIUK_INTEROP_DRAG_SMOKE=1` 换成冒烟模式：只在窗口附近走 300px 的闭环，不碰屏幕边缘
-（这台机器上 `MyDockFinder` 常驻屏幕边缘，会抢走边缘的点击）。
-
-实测：
-- 全屏版（fixture 窗口）：5 段全部 `reached true`，`back home: true`，`INTEROP EXIT=0`
-- 冒烟版（fixture 窗口）：4 段全部到达，回到起点，`INTEROP EXIT=0`
-
-实现里有三个必要条件（都是踩出来的）：
-
-1. **宿主不能占据前台**。互操作程序是控制台程序，控制台窗口一出现就盖住目标窗口，
-   点击全落在控制台上。用 `Start-Process -WindowStyle Hidden` 启动，不要在代码里
-   `ShowWindow(SW_MINIMIZE)`——那会误伤父进程的控制台。
-2. **抓标题栏要探测，不能猜**。用 `WM_NCHITTEST` 找真正的 `HTCAPTION` 点：
-   Win11 任务管理器的自绘标题栏和普通窗口位置完全不同。
-3. **激活点击与拖动按下之间必须隔开双击时间**。先点一下标题栏激活窗口，如果 500ms 内
-   再在同一个点按下，Windows 会当成"双击标题栏"，直接把窗口最大化（位置变 -9,-9），
-   之后怎么拖都不动。现在等 700ms，并在 `IsZoomed()` 为真时先 `SW_RESTORE`。
-
-**任务管理器（`TaskManagerWindow`）拖不动**：实测 `taskmgr` 进程 `elevated=1`，
-UIPI 会静默丢弃非提权进程的合成输入，连激活点击都没送到（窗口位置全程不变，也没有被最大化）。
-这和 `click` 早就记录的限制是同一条。要操作提权窗口，客户端必须以同等完整性级别运行。
-
-### 5.6 `detect_change` 真机验收（会真的点两下）
-
-`yiuk-input-fixture` 的左半区**每次点击都换亮度**（深/浅两组灰度），右半区点击**不改任何像素**。
-互操作程序在 `YIUK_INTEROP_DETECT_CHANGE=1` 时各点一次，并按与 Go 侧相同的判据
-（强变化像素占比 ≥ 0.002 或平均差 ≥ 0.02）检查结果：
-
-```powershell
-.\qt-client\build-qt\yiuk-input-fixture.exe --expect-clicks 4
-# 平台照 §5.3 启动后：
-$env:YIUK_INTEROP_DETECT_CHANGE = "1"
-.\qt-client\build-qt\yiuk-platform-interop.exe
-```
-
-实测（连续两次）：
-
-```text
-"interop-native-change" changed_ratio 1 diff_ratio 0.8039 changed true  expect true
-"interop-native-static" changed_ratio 0 diff_ratio 0     changed false expect false
-INTEROP EXIT=0
-FIXTURE OK clicks=4 hover=1 hover_in_left=1 click_in_right=1
-```
-
-两个坑值得记住：
-
-1. **颜色必须换亮度**。采样是灰度（`(R+G+B)/3`），`255,158,96` 与 `96,158,255` 的灰度都是 169，
-   fixture 早期版本就是这样"换了色却测不出变化"。
-2. **判定前不能让目标窗口消失**。fixture 原来在第 3 次点击后立即退出，右半区的"点击后"采样
-   拍到的是它消失后的桌面，`diff_ratio` 高达 0.88 —— 看起来像误报，其实是目标没了。
-   现在多补一次点击（`--expect-clicks 4`），保证最后两次采样时窗口还在。
-
-`sampleRegion` 在采样前会 `DwmFlush()`，避免点击后立刻 BitBlt 拿到上一帧。
-
-### 5.4 P0 基线（视觉相关，重跑约 5–15 分钟）
-
-```powershell
-cd spike\vision
-.\build\make_fixtures.exe out/fixtures
-.\build\vision_selftest.exe
-.\build-cv\vision_bench.exe --manifest out/fixtures/manifest.json --out out/p0-bench.json
-```
-
-OpenCV 静态构建的完整命令在 `spike/vision/README.md` §1。
-
-## 6. 环境与工具链坑（这一台机器）
-
-1. **没有 coreutils**：Git Bash 里没有 `ls`/`grep`/`head`/`sed`/`rm`/`cat`。用 `rg`、PowerShell 或 Go。
-   命令输出别用 `| powershell -Command` 套两层，会静默吞掉结果。
-2. **中文控制台乱码**：CP936；看 UTF-8 文件请用编辑器或 `read` 工具，别据此判断文件损坏。
-3. **MinGW GCC 13.1 的虚调用坑**：`-O2/-O3` 会把纯虚接口（WinRT/UIA）的虚调用编译成
-   `__cxa_pure_virtual`，运行期 `0xC0000005`。现有缓解：`probe_winrt_ocr` 目标加 `-fno-devirtualize`。
-   **P3 引入 UIA/OCR 到 Qt 时必须显式定案**（`-fno-devirtualize` 或所有调用改显式 vtable 索引），否则
-   Release 版必崩。详见 `spike/vision/README.md` §3.4。
-4. **Windows SDK 的 `winrt/*.h` 在 MinGW 下不能编译**（`Windows.Foundation.h` 与 `windows.foundation.h`
-   大小写冲突）。OCR 走自包含 ABI 声明（`spike/vision/src/probe_winrt_ocr.cpp`），可直接照抄。
-5. **Qt 构建目录的编译器会粘在 cache 里**：`build-qt` 一旦用错编译器（例如 PATH 里有 msys64 的 c++），
-   重新 `cmake -DCMAKE_CXX_COMPILER=...` 也不会改。症状是 activity-panel 目标用 `C:\msys64\...\c++.exe`。
-   处理：删掉 `build-qt` 重新按 §5.2 生成（本轮已做过一次）。
-6. **`Out-File`/`Set-Content` 会写 CRLF**：本仓库要求 LF，见 §3。
-7. **OCR 输入细节**（P3 会用到）：`IBufferFactory::Create` 只设 `Capacity`，必须再写 `Length`，
-   否则 `CreateCopyFromBuffer` 返回 `0xC00D7170`；中文 OCR 结果字间带空格（`收 藏 首 页 设 置`）。
-
-## 7. 下一步（按顺序）
-
-### 7.1 收尾 P1（半天）
-
-1. 本机 bridge：`LocalBridge` 目前同步处理并在 5s 后断连，需要支持"异步完成 + 有界原生请求体"。
-   注意它只服务本地 demo 后端，不要为它开新的未鉴权端口；仍然是 loopback + token + 会话校验。
-2. 顺便确认 `localtools.cpp` 的工具表是否要把 `screen.capture` 暴露给本地 backend（可选，不阻塞）。
-
-### 7.2 P2：统一抓屏与快照（第一批视觉的前置）
-
-抓屏、快照、节流、原生鼠标都已落地（见 §2.1）。剩下：
-
-1. 真机验收：`click` / `move_mouse` 的原生分支只在单元测试里验证过，需要在真实 GUI 会话里
-   手动点一次、悬停一次（`yiuk-platform-interop` 只跑 `screen.capture`，不注入键鼠）。
-2. 验收：混用 `take_screenshot` → 后续坐标点击时 ID 与坐标始终一致；旧客户端脚本路径不退化。
-3. 之后进入 P3（UIA/OCR 文本定位 + `find_on_screen`），见实施计划 P3 清单。
-
-### 7.3 P3 起的提醒
-
-- 文本定位优先 UIA（C++ COM，实测 0.048ms/节点，Edge 746 节点 35ms），OCR 兜底；
-  两者都要设节点/时间上限，超限降级而不是无限遍历。
-- 跨缩放命中率目前只有 60.1%（文字控件失败于 0.72–0.93 分）；P3 要么用 UIA/OCR 处理文字，
-  要么做尺度精修。**不要**靠降低阈值掩盖。
-- 负样本 12/496 误报的两类原因（带 padding 的图标模板、近义文本）已写在 P0 README §5.3。
-
-## 8. 已知风险 / 未验证
+## 7. 已知限制与未验证
 
 | 项 | 状态 |
 | --- | --- |
-| 全屏单次 ≤300ms | 未达标：OpenCV 中位 266ms / p95 653ms（8 尺度全屏），ROI 未测 |
-| 跨缩放 ≥95% | 未达标：60.1% |
-| 负样本零命中 | 未达标：12/496 |
-| 真机长稳（20 次抓屏/视觉） | 未测，P2 补 |
-| `-fno-devirtualize` 是否影响性能 | 未测（只在探针里有 16–31ms 的 OCR 数据） |
-| 端到端时延（MCP→平台→设备→回传） | 未测 |
-| 多显示器 / 混合 DPI / 负坐标 | 未测（P5） |
-| Qt 原生通道在真机 GUI 里的人工验收 | 只用互操作程序验证过协议往返，未在真实 GUI 会话里手动点过 |
-| MCP `take_screenshot` 原生全链路 | 未验：互操作里已跑通 `screen.capture`，但"原生抓屏 → `download_file` 取图 → Agent 收到图片"只在单元测试里验证过 |
-| 图像模板匹配 | 已验证：真机截图切下任务管理器标题栏（160x30 @758,341）在 2560x1600 全屏中匹配回同一点，score 1.0000；合成用例覆盖负样本、region、模板过大 |
-| `find_on_screen` 命中率 | 未测：UIA 链路已跑通（0 节点时约 320ms），但记事本/Edge/资源管理器三场景的命中率与 300ms 预算未实测 |
-| `detect_change` 真机行为 | 已验证：换亮度的区域 `changed=true`（changed_ratio 1 / diff_ratio 0.80），静态区域 `changed=false`（0 / 0），连续两次一致 |
-| 原生截图临时文件的长期增长 | 机制已齐（release + 5 张上限 + 定时清理），但未长跑确认 |
-| 提权窗口（任务管理器）的输入 | 已验证被 UIPI 静默丢弃（`taskmgr elevated=1`）：点击与拖动都到不了窗口，位置全程不变；文档与工具描述已写明 |
-| 屏幕边缘的点击/拖动 | 未验：这台机器常驻 `MyDockFinder`，会抢边缘点击；窗口拖动验收因此提供"中部闭环"的冒烟模式 |
-| 原生 `drag` 真机行为 | 已验证：fixture 窗口被 5 段拖动绕屏一圈并回到起点 |
-| 原生 `click` / `move_mouse` 真机行为 | 已验证：`yiuk-input-fixture` 收到左半区左键与右半区移入（2 次运行均 OK）；仍未覆盖多显示器/混合 DPI |
+| `click_target` / `vision.click_target` | 未实现（P4 剩余） |
+| OCR 兜底 | 未实现（UIA 已可用；`OCR_UNAVAILABLE` 语义待补） |
+| `find_on_screen` 的 `timeout_seconds` / `wait_until_found` | 未实现 |
+| 多显示器 / 混合 DPI / 负原点 | 未验证（P5） |
+| 模板管理（`vision.save_template`）、ROI 缓存 | 未实现（P5） |
+| Windows CI + OpenCV 静态构建缓存 | 未做（P6）；本机 exe 因 OpenCV 增加 ~5.7MB |
+| 本机 bridge 异步化 | 未做（P1 剩余，仅影响无平台 demo 后端） |
+| UIA 命中率/耗时三场景实测 | 未做（探针只测了遍历耗时；空文档 0 节点约 320ms） |
+| 平台已知薄弱点 #3/#4/#5/#7/#8/#11 | 未修，见 `key-architecture.md` §4 |
+
+## 8. 下一步（按顺序）
+
+1. **`click_target`**：客户端内 find → pick → click 一笔事务（默认 `unique` + `detect_change`，歧义/未命中时**不按下**）。可直接复用 `VisionService::searchText/matchImage` 与 `clickWithOptions`，注意把设备门持有到点击结束。
+2. **`find_on_screen` 的等待语义**：`timeout_seconds` + `wait_until_found`（每 500ms 一轮、轮间释放设备门、可取消）。
+3. **OCR 兜底**：`Windows.Media.Ocr`（P0 已验 C++ 直连可用），缺语言包返回 `OCR_UNAVAILABLE` + hint。
+4. **P5**：`vision.save_template`（从快照裁剪，配额与路径校验）、多显示器/混合 DPI、ROI 缓存。
+5. **P6**：Windows CI（Qt + OpenCV 固定版本缓存）、绿色包/安装器体积与启动验证、`Release\` 重新打包。
 
 ## 9. 交接检查清单
 
-- [ ] `go test ./...`、`gofmt -l .`、`go vet ./...` 全绿
-- [ ] `yiuk-nativeops-test.exe` / `yiuk-vision-test.exe` / `yiuk-input-test.exe` 通过
-- [ ] 端到端互操作通过（§5.3），并确认平台日志有 `native_submitted`
-- [ ] `git status -uall spike/vision` 只有源码，没有 `build*/out/third_party`
-- [ ] 没有残留的 `platform-core`/`platform-gateway`/`dev-redis` 进程
-- [ ] 没有 `tmp-*` 目录、没有把 `platform.conf`/`local-api.json` 等凭据文件带进提交
-- [ ] 提交信息里写清"P0/P1 完成内容 + 未达标的门禁项"，不要写成视觉功能已完成
+- [ ] `gofmt -l .` 空、`go vet ./...` 干净、`go test ./...` 全绿
+- [ ] `yiuk-vision-test` / `yiuk-input-test` / `yiuk-nativeops-test` 三个都输出 `OK`
+- [ ] 互操作程序 `INTEROP EXIT=0`，日志有四段原生操作
+- [ ] 客户端启动后 `data\` 里有配置与身份，`%LOCALAPPDATA%` 旧目录不再被写
+- [ ] 没有残留的 `platform-core` / `platform-gateway` / `dev-redis` / `yiuk-input-fixture` 进程
+- [ ] 没有把 `platform.json` / `local-api.json` / `data\` 提交进仓库（`.gitignore` 已覆盖常见项，`data` 目录在 `build-qt` 内不会入库）
