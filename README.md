@@ -49,9 +49,10 @@ Agent: get_command_result(session_id, request_id)
 * `upload_file` / `download_file`：分块传输，SHA-256 校验，默认拒绝覆盖
 * `list_dir` / `stat_path`：列目录与看属性，链接只标注不跟随
 
-**桌面与交互（共 23 个工具）**
+**桌面与交互（共 24 个工具）**
 
 * `take_screenshot` / `click` / `move_mouse` / `press_keys` / `type_text`：全屏截图缩放、坐标换算、Unicode 输入或剪贴板投递；截图返回 `screenshot_id`，`click` 绑定时效性与变化检测。抓屏与鼠标操作优先走客户端原生通道，旧客户端自动回退脚本
+* `drag`：按住左键沿确定性路径拖动，用于移动窗口、滑块、进度条与拖拽排序；只在确认抬起后才报成功
 * `find_on_screen`：用 UIA 在前台窗口里按文本找控件，返回截图坐标与 `screenshot_id`，可直接交给 `click`（图像模板匹配尚未实现）
 * `wait` / `wait_for`：本地等待与设备侧条件等待
 * `ask_user` / `get_user_reply`：在已授权会话中弹窗询问设备用户，提供单选项并始终允许自由输入，明确区分回复、取消、超时和断线

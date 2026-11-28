@@ -22,26 +22,51 @@ const (
 
 func (c *Core) findOnScreen(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {
-		SessionID   string `json:"session_id"`
-		Text        string `json:"text"`
-		Match       string `json:"match"`
-		ControlType string `json:"control_type"`
-		Region      []int  `json:"region"`
-		Limit       int    `json:"limit"`
+		SessionID   string  `json:"session_id"`
+		Text        string  `json:"text"`
+		ImagePath   string  `json:"image_path"`
+		ImageB64    string  `json:"image_b64"`
+		Threshold   float64 `json:"threshold"`
+		Match       string  `json:"match"`
+		ControlType string  `json:"control_type"`
+		Region      []int   `json:"region"`
+		Limit       int     `json:"limit"`
 	}
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return nil, &Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
 	}
 	text := strings.TrimSpace(input.Text)
-	if text == "" {
-		return nil, &Error{Code: "INVALID_ARGUMENT", Message: "text is required and must not be blank"}
+	imagePath := strings.TrimSpace(input.ImagePath)
+	imageB64 := strings.TrimSpace(input.ImageB64)
+	given := 0
+	for _, value := range []string{text, imagePath, imageB64} {
+		if value != "" {
+			given++
+		}
 	}
-	arguments := map[string]any{"text": text}
-	if input.Match != "" {
-		arguments["match"] = input.Match
+	if given != 1 {
+		return nil, &Error{Code: "INVALID_ARGUMENT",
+			Message: "give exactly one of text, image_path or image_b64"}
 	}
-	if input.ControlType != "" {
-		arguments["control_type"] = input.ControlType
+	arguments := map[string]any{}
+	if imagePath != "" {
+		arguments["image_path"] = imagePath
+		if input.Threshold > 0 {
+			arguments["threshold"] = input.Threshold
+		}
+	} else if imageB64 != "" {
+		arguments["image_b64"] = imageB64
+		if input.Threshold > 0 {
+			arguments["threshold"] = input.Threshold
+		}
+	} else {
+		arguments["text"] = text
+		if input.Match != "" {
+			arguments["match"] = input.Match
+		}
+		if input.ControlType != "" {
+			arguments["control_type"] = input.ControlType
+		}
 	}
 	if len(input.Region) > 0 {
 		if len(input.Region) != 4 || input.Region[2] <= input.Region[0] || input.Region[3] <= input.Region[1] {
@@ -147,7 +172,7 @@ func (c *Core) findOnScreen(ctx context.Context, raw json.RawMessage) (any, erro
 		"screen_width":  result.ScreenWidth,
 		"screen_height": result.ScreenHeight,
 		// 明确的下一步：把 center 直接喂给 click，坐标基准就是 screenshot_id。
-		"hint": fmt.Sprintf("click with screenshot_id=%s and the center of the chosen match", result.ScreenshotID),
+		"hint": fmt.Sprintf("click or drag with screenshot_id=%s and the center of the chosen match", result.ScreenshotID),
 	}, nil
 }
 

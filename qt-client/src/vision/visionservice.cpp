@@ -131,6 +131,7 @@ bool VisionService::capture(const QString &sessionId, const CaptureOptions &opti
     pruneOrphanScreenshots(screenshotsDirectory(), 5 * 60 * 1000, store_.trackedFiles(),
                            QDateTime::currentMSecsSinceEpoch());
 
+    if (outcome && options.keepImage) outcome->image = image;
     if (outcome) {
         outcome->screenshotId = ref.id;
         outcome->filePath = ref.filePath;
@@ -238,6 +239,54 @@ bool VisionService::clickWithOptions(const QString &sessionId, const QString &sc
         payload.insert(QStringLiteral("diff_ratio"), metrics.diffRatio);
         payload.insert(QStringLiteral("changed_ratio"), metrics.changedRatio);
     }
+    *data = payload;
+    return true;
+}
+
+bool VisionService::matchImage(const QString &sessionId, const QImage &needle, const TemplateOptions &options,
+                               const std::atomic_bool *cancelled, QJsonObject *data, QString *code,
+                               QString *message) {
+    auto fail = [code, message](const QString &failureCode, const QString &failureMessage) {
+        if (code) *code = failureCode;
+        if (message) *message = failureMessage;
+        return false;
+    };
+    if (data == nullptr) return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("data 为空"));
+    if (needle.isNull()) return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("模板图像为空"));
+
+    CaptureOptions captureOptions;
+    captureOptions.saveToDisk = false;
+    captureOptions.keepImage = true;
+    CaptureOutcome shot;
+    if (!capture(sessionId, captureOptions, cancelled, &shot, code, message)) return false;
+    if (shot.image.isNull()) return fail(QStringLiteral("SCREENSHOT_FAILED"), QStringLiteral("抓屏结果为空"));
+
+    QVector<TemplateHit> hits;
+    if (!matchTemplateImage(shot.image, needle, options, &hits, code, message)) return false;
+
+    QJsonArray matches;
+    for (const TemplateHit &hit : hits) {
+        matches.append(QJsonObject{
+            {QStringLiteral("bbox"),
+             QJsonArray{hit.rect.left(), hit.rect.top(), hit.rect.left() + hit.rect.width(),
+                        hit.rect.top() + hit.rect.height()}},
+            {QStringLiteral("center"),
+             QJsonArray{hit.rect.left() + hit.rect.width() / 2, hit.rect.top() + hit.rect.height() / 2}},
+            {QStringLiteral("score"), hit.score},
+            {QStringLiteral("source"), QStringLiteral("opencv")},
+            {QStringLiteral("text"), QString()},
+        });
+    }
+
+    QJsonObject payload = geometryToJson(shot.geometry);
+    payload.insert(QStringLiteral("captured"), true);
+    payload.insert(QStringLiteral("screenshot_id"), shot.screenshotId);
+    payload.insert(QStringLiteral("layout_version"), shot.layoutVersion);
+    payload.insert(QStringLiteral("matches"), matches);
+    payload.insert(QStringLiteral("truncated"), false);
+    payload.insert(QStringLiteral("visited_nodes"), 0);
+    payload.insert(QStringLiteral("elapsed_ms"), 0);
+    payload.insert(QStringLiteral("source"), QStringLiteral("opencv"));
     *data = payload;
     return true;
 }

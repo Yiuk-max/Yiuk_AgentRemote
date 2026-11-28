@@ -9,6 +9,7 @@
 #include "vision/screengrab.h"
 #include "vision/sessionlimiter.h"
 #include "vision/snapshotstore.h"
+#include "vision/templatematcher.h"
 #include "vision/textlocator.h"
 #include "vision/visionservice.h"
 
@@ -234,6 +235,99 @@ void testTextSearchOnDesktop() {
           QStringLiteral("unknown control_type is rejected"));
 }
 
+void testTemplateMatching() {
+    using namespace yiuk::vision;
+    if (!templateMatchingAvailable()) {
+        std::printf("WARN OpenCV template matching is not compiled into this build\n");
+        return;
+    }
+    // 背景必须有纹理：纯色背景会让 TM_CCOEFF_NORMED 退化（方差为 0）。
+    QImage haystack(400, 300, QImage::Format_Grayscale8);
+    for (int y = 0; y < haystack.height(); ++y)
+        for (int x = 0; x < haystack.width(); ++x)
+            haystack.setPixel(x, y, static_cast<uchar>(150 + (x * 3 + y * 5) % 40));
+
+    QImage needle(48, 32, QImage::Format_Grayscale8);
+    for (int y = 0; y < needle.height(); ++y)
+        for (int x = 0; x < needle.width(); ++x)
+            needle.setPixel(x, y, static_cast<uchar>(20 + (x * 7 + y * 13) % 200));
+
+    const QPoint target(120, 80);
+    for (int y = 0; y < needle.height(); ++y)
+        for (int x = 0; x < needle.width(); ++x)
+            haystack.setPixel(target.x() + x, target.y() + y, needle.pixel(x, y));
+
+    TemplateOptions options;
+    options.threshold = 0.90;
+    options.limit = 3;
+    QVector<TemplateHit> hits;
+    QString code;
+    QString message;
+    check(matchTemplateImage(haystack, needle, options, &hits, &code, &message),
+          QStringLiteral("template matching runs"));
+    check(hits.size() == 1, QStringLiteral("exactly one template match"));
+    if (!hits.isEmpty()) {
+        check(hits.first().rect.topLeft() == target, QStringLiteral("template match lands on the exact position"));
+        check(hits.first().score > 0.99, QStringLiteral("template match score is high"));
+    }
+
+    // region 之外不再搜到。
+    TemplateOptions elsewhere = options;
+    elsewhere.region = QRect(0, 220, 200, 80);
+    hits.clear();
+    check(matchTemplateImage(haystack, needle, elsewhere, &hits, &code, &message) && hits.isEmpty(),
+          QStringLiteral("region limits the search area"));
+
+    // 不存在的模板不能命中（负样本）。
+    QImage absent(48, 32, QImage::Format_Grayscale8);
+    for (int y = 0; y < absent.height(); ++y)
+        for (int x = 0; x < absent.width(); ++x)
+            absent.setPixel(x, y, static_cast<uchar>(10 + (x * 11 + y * 3) % 240));
+    hits.clear();
+    check(matchTemplateImage(haystack, absent, options, &hits, &code, &message),
+          QStringLiteral("matching an absent template does not fail"));
+    check(hits.isEmpty(), QStringLiteral("absent template yields no match"));
+
+    // 模板比搜索区域大：明确报错，不是"找不到"。
+    TemplateOptions tooSmall = options;
+    tooSmall.region = QRect(0, 0, 20, 20);
+    hits.clear();
+    check(!matchTemplateImage(haystack, needle, tooSmall, &hits, &code, &message) &&
+              code == QLatin1String("INVALID_ARGUMENT"),
+          QStringLiteral("template larger than the region is rejected"));
+}
+
+// 用真实截图做一次匹配（可选）：YIUK_VISION_MATCH_HAYSTACK / _TEMPLATE 指向两张 PNG。
+void testTemplateMatchingOnFiles() {
+    const QString haystackPath = qEnvironmentVariable("YIUK_VISION_MATCH_HAYSTACK");
+    const QString templatePath = qEnvironmentVariable("YIUK_VISION_MATCH_TEMPLATE");
+    if (haystackPath.isEmpty() || templatePath.isEmpty()) return;
+    if (!yiuk::vision::templateMatchingAvailable()) {
+        std::printf("WARN OpenCV not compiled in; skipping real-pixel match\n");
+        return;
+    }
+    const QImage haystack(haystackPath);
+    const QImage needle(templatePath);
+    if (haystack.isNull() || needle.isNull()) {
+        check(false, QStringLiteral("real screenshots load from disk"));
+        return;
+    }
+    yiuk::vision::TemplateOptions options;
+    options.threshold = 0.85;
+    options.limit = 3;
+    QVector<yiuk::vision::TemplateHit> hits;
+    QString code;
+    QString message;
+    const bool ok = yiuk::vision::matchTemplateImage(haystack, needle, options, &hits, &code, &message);
+    check(ok, QStringLiteral("real-pixel template matching runs"));
+    if (ok && !hits.isEmpty()) {
+        std::printf("     real match: rect=(%d,%d %dx%d) score=%.4f\n", hits.first().rect.left(),
+                    hits.first().rect.top(), hits.first().rect.width(), hits.first().rect.height(),
+                    hits.first().score);
+    }
+    check(ok && !hits.isEmpty(), QStringLiteral("template is found in the real screenshot"));
+}
+
 void testDeviceGate() {
     yiuk::vision::VisionService service;
     QString code;
@@ -412,6 +506,8 @@ int main(int argc, char **argv) {
     testStore();
     testLimiter();
     testScalingAndEncoding();
+    testTemplateMatching();
+    testTemplateMatchingOnFiles();
     testTextNormalization();
     testTextSearchOnDesktop();
     testDeviceGate();

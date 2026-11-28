@@ -22,6 +22,8 @@ add_library(yiuk-vision STATIC
     src/vision/devicegate.h
     src/vision/textlocator.cpp
     src/vision/textlocator.h
+    src/vision/templatematcher.cpp
+    src/vision/templatematcher.h
     src/vision/visionservice.cpp
     src/vision/visionservice.h
 )
@@ -36,6 +38,23 @@ if(WIN32)
         UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
 endif()
 set_target_properties(yiuk-vision PROPERTIES FOLDER "libs")
+
+# OpenCV：P0 已经在 spike/vision 里用同一套 MinGW 静态构建（core + imgproc）。
+# 找不到就关闭图像模板匹配（编译期 YIUK_HAS_OPENCV 区分，运行时返回 UNSUPPORTED_OPERATION），
+# 不让"没有 OpenCV"变成构建失败。
+set(YIUK_OPENCV_STATIC "${CMAKE_CURRENT_SOURCE_DIR}/../spike/vision/third_party/install-opencv/x64/mingw/staticlib")
+if(EXISTS "${YIUK_OPENCV_STATIC}/OpenCVConfig.cmake")
+    set(OpenCV_DIR "${YIUK_OPENCV_STATIC}")
+    find_package(OpenCV QUIET COMPONENTS core imgproc)
+endif()
+if(OpenCV_FOUND)
+    message(STATUS "yiuk-vision: OpenCV ${OpenCV_VERSION} from ${OpenCV_DIR}")
+    target_include_directories(yiuk-vision PUBLIC ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(yiuk-vision PUBLIC ${OpenCV_LIBS})
+    target_compile_definitions(yiuk-vision PUBLIC YIUK_HAS_OPENCV=1)
+else()
+    message(STATUS "yiuk-vision: OpenCV not found, image template matching disabled")
+endif()
 
 # 原生鼠标输入：SendInput 绝对坐标、确定性 ease-in-out 轨迹、按键安全释放、
 # 点击前后的局部变化采样。与 vision 分开成两个库：视觉可以单独测试，

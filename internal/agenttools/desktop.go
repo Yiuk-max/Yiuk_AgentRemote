@@ -41,6 +41,10 @@ var composedTools = map[string]func(ctx context.Context, core *Core, raw json.Ra
 		data, err := core.pressKeys(ctx, raw)
 		return data, nil, err
 	},
+	Drag: func(ctx context.Context, core *Core, raw json.RawMessage) (any, []Image, error) {
+		data, err := core.dragOnScreen(ctx, raw)
+		return data, nil, err
+	},
 	MoveMouse: func(ctx context.Context, core *Core, raw json.RawMessage) (any, []Image, error) {
 		data, err := core.moveMouse(ctx, raw)
 		return data, nil, err

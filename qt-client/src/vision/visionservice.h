@@ -3,6 +3,7 @@
 #include "devicegate.h"
 #include "sessionlimiter.h"
 #include "snapshotstore.h"
+#include "templatematcher.h"
 #include "textlocator.h"
 
 #include <QObject>
@@ -20,6 +21,8 @@ struct CaptureOptions {
     QString format = QStringLiteral("png");
     // 是否落盘。false 时只回几何（视觉查找不需要图片时用）。
     bool saveToDisk = true;
+    // 是否把这一帧像素留在内存里（模板匹配要直接拿当前画面，不落盘、不下载）。
+    bool keepImage = false;
     int jpegQuality = 90;
 };
 
@@ -29,6 +32,8 @@ struct CaptureOutcome {
     qint64 sizeBytes = 0;
     ScreenGeometry geometry;
     QString layoutVersion;
+    // 仅当 CaptureOptions::keepImage 为真时填充。
+    QImage image;
 };
 
 // VisionService 是客户端内所有"重操作"的唯一入口：
@@ -64,6 +69,11 @@ public:
     bool clickWithOptions(const QString &sessionId, const QString &screenshotId, int x, int y,
                           const QString &button, bool doubleClick, bool detectChange, int settleMs,
                           const std::atomic_bool *cancelled, QJsonObject *data, QString *code, QString *message);
+
+    // 一次完整的模板匹配：抓一帧（不落盘）-> OpenCV 灰度匹配 -> 换算成截图坐标 -> 组装 data。
+    // needle 是模板（PNG/JPEG 解码后的 QImage）；region 用新这一帧的坐标。
+    bool matchImage(const QString &sessionId, const QImage &needle, const TemplateOptions &options,
+                    const std::atomic_bool *cancelled, QJsonObject *data, QString *code, QString *message);
 
     // 一次完整的文本查找：确保坐标基准 -> UIA 查找 -> 换算成截图坐标 -> 组装 data。
     // data 里包含截图几何、screenshot_id 与 matches，可直接作为原生操作的业务数据；

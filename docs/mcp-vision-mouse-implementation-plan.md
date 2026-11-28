@@ -211,8 +211,13 @@ MCP 工具 → agenttools 原生桌面调度 → platformclient
 
 ### P3：视觉内核与 find_on_screen（第一批可发布）
 
-- [ ] `TemplateMatcher`：灰度、粗到细、多尺度、ROI、mask、阈值、IoU 0.3 NMS、稳定排序、最高分与 bounded candidates。
-      需要把 OpenCV 接入 Qt 构建（P0 已验静态库可链接，但 Windows CI 与体积预算未定）。
+- [x] `TemplateMatcher`（基础版）：`qt-client/src/vision/templatematcher.{h,cpp}` —— 灰度
+      `TM_CCOEFF_NORMED`、阈值、`region` 限定、IoU 0.3 去重、按分数降序、`limit` 截断。
+      OpenCV 4.12 已接入 `yiuk-vision`（复用 `spike/vision` 的 MinGW 静态构建，exe 增量 +5.7MB）；
+      找不到 OpenCV 时编译期关闭，运行时返回 `UNSUPPORTED_OPERATION`。
+      未做：粗到细的金字塔、多尺度（0.75–1.5）、alpha mask —— 当前假设模板与目标同缩放。
+- [x] `vision.find` 的图像分支：`image_path` / `image_b64`（PNG/JPEG，Qt 解码，≤64 KiB、≤2048x2048），
+      抓一帧不落盘的画面直接匹配，返回截图坐标。
 - [x] `TextLocator`（基础版）：`qt-client/src/vision/textlocator.{h,cpp}` —— UIA 控制视图 `FindAll`，
       限制 `maxNodes`（5000）与 `timeBudgetMs`（300），超限带已有结果返回并标记 truncated；
       归一化全角→半角、去所有空白（OCR 的"收 藏"）、casefold；`exact` / `contains`；
@@ -230,15 +235,27 @@ MCP 工具 → agenttools 原生桌面调度 → platformclient
 
 ### P4：平滑移动、drag、click_target（第二批可发布）
 
-- [ ] 在 `qt-client/input/` 建立 `InputController` 与可替换 `InputSink`；纯函数生成确定性 ease-in-out 路径，8–16ms 调度，终点准确，不随机、不做规避检测。
-- [ ] move：duration 0–2000，默认 0；老客户端仅原有瞬移参数可继续使用。
-- [ ] drag：duration 50–5000、hold 0–1000、两端均须在有效桌面；按下后用 RAII scope guard 保证所有可处理路径抬起，记录 SendInput 返回值。
-- [ ] 取消、超时、关闭会话、断线均触发 release；若进程被强杀/系统崩溃，RAII 不会运行，不宣称绝对保证。测试退出协调与最大持键 watchdog，按 P0 结论评估进程外兜底。
+- [x] 在 `qt-client/input/` 建立 `inputcontroller`：纯函数 `buildPath` 生成确定性 ease-in-out 路径，
+      12ms 步长、终点精确取整、不加随机、不做规避检测；真实客户端与互操作程序共用。
+- [x] move：`duration_ms` 0–2000，默认 0（瞬移）；老客户端仍可用原参数。工具 schema 已暴露。
+- [x] drag：`duration_ms` 50–5000、`hold_ms` 0–1000，两端都先过 `toScreenPoint` 范围校验；
+      `ButtonGuard` 保证任何可处理路径抬起按键，结果用 `released:true` 表示已确认释放，
+      没确认就返回 `DRAG_NOT_RELEASED` 而不是报成功。
+- [x] 取消/超时/关闭会话都会走到 guard；但进程被强杀时 RAII 不会运行，不宣称绝对保证（已在文档写明）。
 - [ ] `click_target`：客户端内事务完成 find/pick/click；默认 unique 与 detect_change，歧义/不命中/过期/取消时没有任何 down 事件。
-- [ ] 结果保留 session/截图坐标/物理坐标/foreground_title；仅在真实释放得到确认时返回 `released:true`。
-- [ ] 新工具描述两句内，输入类工具包含“遇到验证码或人机验证请使用 ask_user 交给用户处理”；不索取验证码，不实现拟人轨迹。
+- [x] 结果保留 session/截图坐标/物理坐标/foreground_title；只在确认释放时返回 `released:true`。
+- [x] 工具描述写明验证码用 `ask_user` 交给用户；输入类工具另外注明提权窗口的限制。
 
-**门禁**：路径端点/单调性/可复现、每个 pick 分支与 0.03 边界、limit 截断、所有 down 之后的故障注入；真机普通滑块、排序列表、悬停菜单由窗口确认事件与最终状态，不只检查 SendInput 成功。
+**门禁**：路径端点/单调性/可复现、每个 pick 分支与 0.03 边界、limit 截断、所有 down 之后的故障注入；
+真机普通滑块、排序列表、悬停菜单由窗口确认事件与最终状态，不只检查 SendInput 成功。
+
+**真机验收（已做）**：`yiuk-input-fixture` 的窗口被 `input.drag` 按"右 → 右下 → 左下 → 左 → 回起点"
+分 5 段拖满整个屏幕，5 段全部到达目标、最终回到起点，`INTEROP EXIT=0`。
+
+**已知限制（实测）**：任务管理器（`TaskManagerWindow`）拖不动。实测该进程 `elevated=1`，
+Windows 的 UIPI 会静默丢弃非提权进程投递的合成输入——这与 `click` 早就写在工具描述里的
+"提权窗口点击被静默丢弃"是同一条限制，不是拖动实现的问题。
+如果要用拖动方式操作提权窗口，MCP/客户端必须以同等完整性级别运行。
 
 ### P5：模板管理、混合 DPI 与 ROI 缓存（第三批）
 

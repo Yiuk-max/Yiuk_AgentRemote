@@ -143,10 +143,12 @@ func (c *Core) pressKeys(ctx context.Context, raw json.RawMessage) (any, error) 
 
 // moveMouseInput 单独命名：原生分支与脚本分支都要把它传给结果构造函数。
 type moveMouseInput struct {
-	SessionID    string `json:"session_id"`
-	X            int    `json:"x"`
-	Y            int    `json:"y"`
-	SettleMS     int    `json:"settle_ms"`
+	SessionID string `json:"session_id"`
+	X         int    `json:"x"`
+	Y         int    `json:"y"`
+	SettleMS  int    `json:"settle_ms"`
+	// DurationMS > 0 时走确定性平滑路径（需要客户端支持 input.move 的 duration_ms）。
+	DurationMS   int    `json:"duration_ms"`
 	ScreenshotID string `json:"screenshot_id"`
 }
 
@@ -164,12 +166,12 @@ func (c *Core) moveMouse(ctx context.Context, raw json.RawMessage) (any, error) 
 	}
 	latest, _ := c.desktop.latest(input.SessionID)
 
-	// 原生优先：duration_ms 目前固定 0（瞬移），等 P4 给工具加参数后再透传。
+	// 原生优先：duration_ms 原样透传（0 = 瞬移，>0 = 确定性平滑移动）。
 	arguments := map[string]any{
 		"x":             input.X,
 		"y":             input.Y,
 		"screenshot_id": latest.ID,
-		"duration_ms":   0,
+		"duration_ms":   input.DurationMS,
 		"settle_ms":     input.SettleMS,
 	}
 	if nativeRaw, nativeErr := c.invokeNative(ctx, input.SessionID, nativeMoveOperation, arguments,
