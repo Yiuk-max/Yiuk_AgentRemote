@@ -10,11 +10,11 @@
 
 ## 1. 一句话状态
 
-**P0 完成、P1 95%（只差本机 bridge 异步化）、P2 完成、P3 文本与图像定位完成（OCR/等待语义未做）、P4 完成（`move_mouse` 平滑移动、`drag`、`click_target`）。**
+**P0 完成、P1 95%（只差本机 bridge 异步化）、P2 完成、P3 文本与图像定位完成（只剩 OCR 兜底）、P4 完成（`move_mouse` 平滑移动、`drag`、`click_target`，含等目标出现）。**
 
 客户端已有两套原生内核：`yiuk-vision`（GDI 抓屏 / 快照 / 节流 / 设备门 / UIA / OpenCV）与 `yiuk-input`（SendInput / 确定性轨迹 / 按键守卫 / 灰度变化检测）。`take_screenshot`、`click`、`move_mouse`、`find_on_screen`、`click_target`、`drag` 现在都优先走客户端原生通道，旧客户端自动回退脚本（`find_on_screen` / `click_target` / `drag` 除外，它们必须原生）。
 
-工作区干净，最新提交 `49fa56c`（本文档自身）。
+工作区干净（`git log -1 --oneline` 看最新提交）。
 
 ## 2. 能做什么
 
@@ -71,12 +71,13 @@
 | `src/vision/snapshotstore.{h,cpp}` | 每会话 5 张 `screenshot_id` + 几何 + 布局版本，布局变化即失效，临时文件回收 |
 | `src/vision/sessionlimiter.{h,cpp}` | 会话级互斥 + 500ms 最小间隔，排队可取消 |
 | `src/vision/devicegate.{h,cpp}` | 进程级互斥：抓屏与输入不能并发 |
-| `src/vision/visionservice.{h,cpp}` | 唯一入口：`capture` / `clickWithOptions` / `searchText` / `matchImage` / `toScreenPoint` / `screenRectToScreenshot` / `releaseScreenshotFile` / `pruneOrphanScreenshots` |
+| `src/vision/visionservice.{h,cpp}` | 唯一入口：`capture` / `clickWithOptions` / `clickTarget` / `searchText` / `matchImage` / `toScreenPoint` / `screenRectToScreenshot` / `releaseScreenshotFile` / `pruneOrphanScreenshots`；`pickTarget` 与歧义判据是纯函数 |
+| `src/vision/requestparser.{h,cpp}` | 原生操作参数 → `VisionService` 入参的**唯一**解析处（三选一、region、阈值/limit 钳制、click_target 默认值与等待预算）；客户端 handler 与互操作程序共用，纯函数可测 |
 | `src/vision/textlocator.{h,cpp}` | UIA 控制视图查询（节点 5000 / 时间 300ms 上限）、全半角与空白归一化、control_type 与 region 过滤、阅读顺序排序 |
 | `src/vision/templatematcher.{h,cpp}` | OpenCV 灰度 `TM_CCOEFF_NORMED`、阈值、region、IoU 0.3 去重；未编译 OpenCV 时返回 `UNSUPPORTED_OPERATION` |
 | `src/input/inputcontroller.{h,cpp}` | `SendInput` 绝对坐标、`buildPath` 确定性缓动、`ButtonGuard`、`drag`、灰度采样与变化判据、前台标题 |
 | `src/platformevents.cpp` | 注册 `screen.capture` / `input.click` / `input.move` / `input.drag` / `screen.release`；会话结束清理 |
-| `src/platformevents_vision.cpp` | `vision.find`：参数校验 + 调用 `searchText` / `matchImage` |
+| `src/platformevents_vision.cpp` | `vision.find` / `vision.click_target`：解析（`requestparser`）+ 调用 `searchText` / `matchImage` / `clickTarget`，失败信封带 hint 与现场 |
 | `src/apphelpers.cpp` | 配置根 = `programDataPath()`（含旧配置一次性迁移）、默认命令工作目录 = `data\work` |
 
 ### 3.2 MCP / 平台（Go）
@@ -220,8 +221,9 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 ## 9. 交接检查清单
 
 - [ ] `gofmt -l .` 空、`go vet ./...` 干净、`go test ./...` 全绿
-- [ ] `yiuk-vision-test` / `yiuk-input-test` / `yiuk-nativeops-test` 三个都输出 `OK`
-- [ ] 互操作程序 `INTEROP EXIT=0`，日志有四段原生操作
+- [ ] `yiuk-vision-test` / `yiuk-input-test` / `yiuk-nativeops-test` 输出 `OK`；
+      `yiuk-click-target-test` 输出 `CLICKTARGET OK`（会动鼠标）
+- [ ] 互操作程序 `INTEROP EXIT=0`；平台审计有 6 条 `native_submitted`（`screen.capture` ×2、`screen.release`、`vision.find`、`vision.click_target` ×2）
 - [ ] 客户端启动后 `data\` 里有配置与身份，`%LOCALAPPDATA%` 旧目录不再被写
 - [ ] 没有残留的 `platform-core` / `platform-gateway` / `dev-redis` / `yiuk-input-fixture` 进程
 - [ ] 没有把 `platform.json` / `local-api.json` / `data\` 提交进仓库（`.gitignore` 已覆盖常见项，`data` 目录在 `build-qt` 内不会入库）

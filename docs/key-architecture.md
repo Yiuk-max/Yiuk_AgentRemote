@@ -105,7 +105,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [标识符与凭据](identifiers.md) | 6 个 ID + 3 个凭据：谁生成、什么生命周期、泄露后果 |
-| [MCP 工具](mcp-tools-improvement-plan.md) | 24 个工具清单、使用约束、待办 |
+| [MCP 工具](mcp-tools-improvement-plan.md) | 25 个工具清单、使用约束、待办 |
 | [Agent 询问设备用户](user-questions.md) | `ask_user` / `get_user_reply` 的状态语义 |
 | [开发与构建](development.md) | 构建、测试、打包、部署 |
 | [本机开发环境](local-dev.md) | 本机路径、快捷命令、已知坑 |

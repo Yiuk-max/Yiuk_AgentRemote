@@ -25,6 +25,7 @@
 #include "platformclient.h"
 #include "nativeops.h"
 #include "vision/screengrab.h"
+#include "vision/requestparser.h"
 #include "vision/visionservice.h"
 
 #include <QCoreApplication>
@@ -85,20 +86,22 @@ int main(int argc, char *argv[]) {
             if (!outcome.filePath.isEmpty()) data.insert(QStringLiteral("path"), outcome.filePath);
             return NativeOperationDispatcher::envelopeOk(data);
         });
-    // 文本定位：与真实客户端共用 VisionService::searchText，连坐标换算都不另写一份。
+    // 文本定位：参数解析与真实客户端共用 buildLocateRequest，定位共用 VisionService::searchText。
     dispatcher.registerOperation(
         QStringLiteral("vision.find"),
         [vision](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
-            yiuk::vision::TextQuery query;
-            query.text = arguments.value(QStringLiteral("text")).toString();
-            query.match = arguments.value(QStringLiteral("match")).toString(QStringLiteral("contains"));
-            query.controlType = arguments.value(QStringLiteral("control_type")).toString();
-            query.limit = qBound(1, arguments.value(QStringLiteral("limit")).toInt(5), 20);
-            QJsonObject data;
+            yiuk::vision::LocateRequest request;
             QString code;
             QString message;
-            if (!vision->searchText(sessionId, query, cancelled, &data, &code, &message))
+            if (!yiuk::vision::buildLocateRequest(arguments, &request, &code, &message))
                 return NativeOperationDispatcher::envelopeError(code, message);
+            QJsonObject data;
+            const bool ok =
+                request.locate.useImage
+                    ? vision->matchImage(sessionId, request.locate.needle, request.image, cancelled, &data, &code,
+                                         &message)
+                    : vision->searchText(sessionId, request.text, cancelled, &data, &code, &message);
+            if (!ok) return NativeOperationDispatcher::envelopeError(code, message);
             return NativeOperationDispatcher::envelopeOk(data);
         });
     // click_target：与真实客户端共用 VisionService::clickTarget。
@@ -107,22 +110,11 @@ int main(int argc, char *argv[]) {
         QStringLiteral("vision.click_target"),
         [vision](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
             yiuk::vision::ClickTargetOptions options;
-            options.text.text = arguments.value(QStringLiteral("text")).toString();
-            options.text.match = arguments.value(QStringLiteral("match")).toString(QStringLiteral("contains"));
-            options.text.controlType = arguments.value(QStringLiteral("control_type")).toString();
-            options.text.limit = qBound(1, arguments.value(QStringLiteral("limit")).toInt(5), 20);
-            options.pick = arguments.value(QStringLiteral("pick")).toString(QStringLiteral("unique"));
-            options.detectChange = arguments.value(QStringLiteral("detect_change")).toBool(true);
-            if (arguments.contains(QStringLiteral("settle_ms")))
-                options.settleMs = qBound(0, arguments.value(QStringLiteral("settle_ms")).toInt(), 2000);
-            // 与真实客户端一致：等目标出现时每 500ms 一轮、轮间放设备门。
-            options.waitUntilFound = arguments.value(QStringLiteral("wait_until_found")).toBool();
-            if (options.waitUntilFound)
-                options.waitTimeoutMs =
-                    qBound(1, arguments.value(QStringLiteral("timeout_seconds")).toInt(10), 20) * 1000;
-            QJsonObject data;
             QString code;
             QString message;
+            if (!yiuk::vision::buildClickTargetOptions(arguments, &options, &code, &message))
+                return NativeOperationDispatcher::envelopeError(code, message);
+            QJsonObject data;
             if (!vision->clickTarget(sessionId, options, cancelled, &data, &code, &message))
                 return NativeOperationDispatcher::envelopeError(code, message, QString(), data);
             return NativeOperationDispatcher::envelopeOk(data);

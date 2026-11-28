@@ -11,14 +11,18 @@
 #include "vision/snapshotstore.h"
 #include "vision/templatematcher.h"
 #include "vision/textlocator.h"
+#include "vision/requestparser.h"
 #include "vision/visionservice.h"
 
 #include <QCoreApplication>
+#include <QBuffer>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QTemporaryDir>
 
 #include <atomic>
@@ -574,6 +578,139 @@ void testVisionServiceCapture() {
     }
 }
 
+// QJsonArray 在 MinGW/Qt6 下不接受 QJsonArray{0,0,100,50} 这种写法，包一层。
+QJsonArray intArray(std::initializer_list<int> values) {
+    QJsonArray array;
+    for (int value : values) array.append(value);
+    return array;
+}
+
+// 原生操作参数解析：客户端 handler 与互操作程序共用 buildLocateRequest /
+// buildClickTargetOptions，这里把默认值与边界钉住（纯函数，不碰屏幕）。
+void testRequestParsing() {
+    using namespace yiuk::vision;
+    QString code;
+    QString message;
+
+    // 1) 文本定位：默认值来自 TextQuery（contains / limit 5），不塞不该有的东西。
+    LocateRequest textRequest;
+    check(buildLocateRequest(QJsonObject{{QStringLiteral("text"), QStringLiteral("收藏")}}, &textRequest, &code,
+                             &message),
+          QStringLiteral("text locate request parses"));
+    check(!textRequest.locate.useImage && textRequest.text.text == QStringLiteral("收藏"),
+          QStringLiteral("text request keeps the query text"));
+    check(textRequest.text.match == QStringLiteral("contains") && textRequest.text.limit == 5,
+          QStringLiteral("text request uses contains/limit=5 defaults"));
+    check(!textRequest.locate.hasRegion && textRequest.text.region.isEmpty(),
+          QStringLiteral("text request has no region by default"));
+
+    // 2) 显式参数与钳制：limit 99 -> 20；threshold 0.01 -> 0.10（图像路径）。
+    LocateRequest explicitRequest;
+    check(buildLocateRequest(QJsonObject{{QStringLiteral("text"), QStringLiteral("收藏")},
+                                         {QStringLiteral("match"), QStringLiteral("exact")},
+                                         {QStringLiteral("control_type"), QStringLiteral("Button")},
+                                         {QStringLiteral("region"), intArray({0, 0, 100, 50})},
+                                         {QStringLiteral("limit"), 99}},
+                             &explicitRequest, &code, &message),
+          QStringLiteral("explicit locate arguments parse"));
+    check(explicitRequest.text.match == QStringLiteral("exact") &&
+              explicitRequest.text.controlType == QStringLiteral("Button"),
+          QStringLiteral("match/control_type are forwarded"));
+    check(explicitRequest.text.limit == 20, QStringLiteral("limit is clamped to 20"));
+    check(explicitRequest.text.region == QRect(0, 0, 100, 50),
+          QStringLiteral("region [left,top,right,bottom] becomes a QRect"));
+
+    // 3) 拒绝：text 与图像同时给 / 都不给 / region 空面积。
+    LocateRequest rejected;
+    check(!buildLocateRequest(QJsonObject{{QStringLiteral("text"), QStringLiteral("收藏")},
+                                          {QStringLiteral("image_path"), QStringLiteral("C:\tpl\a.png")}},
+                              &rejected, &code, &message) &&
+              code == QStringLiteral("INVALID_ARGUMENT"),
+          QStringLiteral("text + image is rejected"));
+    check(!buildLocateRequest(QJsonObject{}, &rejected, &code, &message) &&
+              code == QStringLiteral("INVALID_ARGUMENT"),
+          QStringLiteral("an empty target is rejected"));
+    check(!buildLocateRequest(QJsonObject{{QStringLiteral("text"), QStringLiteral("收藏")},
+                                          {QStringLiteral("region"), intArray({10, 10, 10, 90})}},
+                              &rejected, &code, &message) &&
+              code == QStringLiteral("INVALID_ARGUMENT"),
+          QStringLiteral("a degenerate region is rejected"));
+
+    // 4) 图像路径：合法 PNG 走 OpenCV（未编译 OpenCV 时跳过）。
+    if (templateMatchingAvailable()) {
+        QImage needle(8, 8, QImage::Format_ARGB32);
+        needle.fill(Qt::red);
+        QByteArray png;
+        QBuffer buffer(&png);
+        buffer.open(QIODevice::WriteOnly);
+        needle.save(&buffer, "PNG");
+        buffer.close();
+        const QString encoded = QString::fromLatin1(png.toBase64());
+        LocateRequest imageRequest;
+        check(buildLocateRequest(QJsonObject{{QStringLiteral("image_b64"), encoded},
+                                             {QStringLiteral("threshold"), 0.01},
+                                             {QStringLiteral("limit"), 3}},
+                                 &imageRequest, &code, &message),
+              QStringLiteral("image_b64 request parses"));
+        check(imageRequest.locate.useImage && imageRequest.locate.needle.size() == QSize(8, 8),
+              QStringLiteral("image_b64 decodes into the template"));
+        check(imageRequest.image.threshold > 0.099 && imageRequest.image.threshold < 0.101,
+              QStringLiteral("threshold is clamped to 0.10"));
+        check(imageRequest.image.limit == 3, QStringLiteral("image limit is forwarded"));
+
+        // 超过 64 KiB 的解码上限：宁可报错，也不悄悄截断模板。
+        const QString huge = QString::fromLatin1(QByteArray(70 * 1024, 'A').toBase64());
+        check(!buildLocateRequest(QJsonObject{{QStringLiteral("image_b64"), huge}}, &imageRequest, &code,
+                                  &message) &&
+                  code == QStringLiteral("INVALID_ARGUMENT"),
+              QStringLiteral("an oversized image_b64 is rejected"));
+    } else {
+        std::printf("WARN OpenCV is not compiled in; image parsing is not covered\n");
+    }
+
+    // 5) click_target 的冻结默认值：unique / left / 不双击 / 检测变化 / settle 250 / 不等待。
+    ClickTargetOptions clickOptions;
+    check(buildClickTargetOptions(QJsonObject{{QStringLiteral("text"), QStringLiteral("收藏")}}, &clickOptions,
+                                  &code, &message),
+          QStringLiteral("click_target options parse"));
+    check(clickOptions.pick == QStringLiteral("unique") && clickOptions.button == QStringLiteral("left") &&
+              !clickOptions.doubleClick,
+          QStringLiteral("click_target defaults are unique/left/no double click"));
+    check(clickOptions.detectChange && clickOptions.settleMs == 250,
+          QStringLiteral("click_target detects change with a 250ms settle by default"));
+    check(!clickOptions.waitUntilFound, QStringLiteral("click_target does not wait by default"));
+
+    // 6) 显式值优先，0 与 false 不能被当成"没给"。
+    ClickTargetOptions explicitClick;
+    check(buildClickTargetOptions(QJsonObject{{QStringLiteral("text"), QStringLiteral("收藏")},
+                                              {QStringLiteral("pick"), QStringLiteral("index:2")},
+                                              {QStringLiteral("button"), QStringLiteral("right")},
+                                              {QStringLiteral("double"), true},
+                                              {QStringLiteral("detect_change"), false},
+                                              {QStringLiteral("settle_ms"), 0}},
+                                  &explicitClick, &code, &message),
+          QStringLiteral("explicit click_target arguments parse"));
+    check(explicitClick.pick == QStringLiteral("index:2") && explicitClick.button == QStringLiteral("right") &&
+              explicitClick.doubleClick,
+          QStringLiteral("pick/button/double are forwarded"));
+    check(!explicitClick.detectChange && explicitClick.settleMs == 0,
+          QStringLiteral("detect_change=false and settle_ms=0 survive parsing"));
+
+    // 7) 等待预算：省略 -> 10 秒；超上限 -> 20 秒（平台 25 秒留 5 秒余量）。
+    ClickTargetOptions waitDefault;
+    buildClickTargetOptions(QJsonObject{{QStringLiteral("text"), QStringLiteral("收藏")},
+                                        {QStringLiteral("wait_until_found"), true}},
+                            &waitDefault, &code, &message);
+    check(waitDefault.waitUntilFound && waitDefault.waitTimeoutMs == 10000,
+          QStringLiteral("waiting defaults to a 10s budget"));
+    ClickTargetOptions waitCapped;
+    buildClickTargetOptions(QJsonObject{{QStringLiteral("text"), QStringLiteral("收藏")},
+                                        {QStringLiteral("wait_until_found"), true},
+                                        {QStringLiteral("timeout_seconds"), 25}},
+                            &waitCapped, &code, &message);
+    check(waitCapped.waitTimeoutMs == 20000, QStringLiteral("wait budget is capped at 20s"));
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -589,6 +726,7 @@ int main(int argc, char **argv) {
     testTemplateMatchingOnFiles();
     testTextNormalization();
     testPickTarget();
+    testRequestParsing();
     testTextSearchOnDesktop();
     testDeviceGate();
     testPrune();

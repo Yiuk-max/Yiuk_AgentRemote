@@ -28,6 +28,8 @@ add_library(yiuk-vision STATIC
     src/vision/apppaths.h
     src/vision/visionservice.cpp
     src/vision/visionservice.h
+    src/vision/requestparser.cpp
+    src/vision/requestparser.h
 )
 target_include_directories(yiuk-vision PUBLIC src)
 # 点击（含变化检测）需要输入内核：vision 依赖 input，反向不依赖。

@@ -5,7 +5,8 @@
 //   1. 没有命中时返回 NOT_FOUND，且一次 down 都不发；
 //   2. 两个同文本按钮位于不同位置时返回 AMBIGUOUS_TARGET，一次 down 都不发；
 //   3. pick=index:N 真的点到第 N 个，pick=best 点到唯一那个；
-//   4. 点击落点等于命中框中心（与 find_on_screen 的 center 同一算法）。
+//   4. 点击落点等于命中框中心（与 find_on_screen 的 center 同一算法）；
+//   5. 等目标出现的预算被遵守：超时返回 timed_out 且一次 down 都不发。
 //
 // 为什么 fixture 用裸 Win32 而不是 Qt 控件：Qt 的无障碍桥把 UIA 包围盒上报成
 // 逻辑像素（125% 下比物理像素小一圈），用它验收会把"坐标换算正确"误判成点歪了。
@@ -18,7 +19,6 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QJsonArray>
-#include <QJsonDocument>
 #include <QJsonObject>
 #include <QThread>
 
