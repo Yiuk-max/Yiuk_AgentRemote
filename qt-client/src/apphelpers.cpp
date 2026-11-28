@@ -1,5 +1,7 @@
 #include "apphelpers.h"
 
+#include "vision/apppaths.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -88,11 +90,56 @@ QPushButton *makeDangerButton(const QString &text, int height) {
     return button;
 }
 
+namespace {
+
+// 首次切到"程序目录 + data"时，把旧版放在 %LOCALAPPDATA%/%APPDATA% 的身份与配置搬过来，
+// 否则同一台设备会被平台当成新设备（设备码/临时密码全变）。只搬一次，且不覆盖已有文件。
+void migrateLegacyConfigOnce(const QString &target) {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    const QStringList legacyRoots = [] {
+        QStringList roots;
+        if (const QString local = qEnvironmentVariable("LOCALAPPDATA"); !local.isEmpty())
+            roots << QDir(local).filePath(QStringLiteral("Yiuk/DeviceAssist"));
+        if (const QString roaming = qEnvironmentVariable("APPDATA"); !roaming.isEmpty())
+            roots << QDir(roaming).filePath(QStringLiteral("Yiuk/DeviceAssist"));
+        return roots;
+    }();
+    const QStringList names{QStringLiteral("platform.json"), QStringLiteral("platform-client.json"),
+                            QStringLiteral("device.json"), QStringLiteral("sessions.json"),
+                            QStringLiteral("identity.json"), QStringLiteral("local-api.json"),
+                            QStringLiteral("identity.json")};
+    for (const QString &name : names) {
+        const QString destination = QDir(target).filePath(name);
+        if (QFileInfo::exists(destination)) continue;
+        for (const QString &root : legacyRoots) {
+            const QString source = QDir(root).filePath(name);
+            if (!QFileInfo::exists(source)) continue;
+            QFile::copy(source, destination);
+            break;
+        }
+    }
+    // 旧的活动面板状态也一起搬。
+    const QString panel = QDir(target).filePath(QStringLiteral("activity-panel.state"));
+    if (!QFileInfo::exists(panel)) {
+        for (const QString &root : legacyRoots) {
+            const QString source = QDir(root).filePath(QStringLiteral("activity-panel.state"));
+            if (!QFileInfo::exists(source)) continue;
+            QFile::copy(source, panel);
+            break;
+        }
+    }
+}
+
+}  // namespace
+
+// 所有配置/会话/截图/脚本都放在程序目录下的 data\，跟随绿色目录一起走；
+// 目录不可写时才回退到用户目录。
 QString yiukConfigRoot() {
-    QString root = qEnvironmentVariable("LOCALAPPDATA");
-    if (root.isEmpty()) root = qEnvironmentVariable("APPDATA");
-    if (root.isEmpty()) root = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-    return QDir(root).filePath("Yiuk/DeviceAssist");
+    const QString root = yiuk::vision::programDataPath(QString());
+    migrateLegacyConfigOnce(root);
+    return root;
 }
 
 QString legacyYiukConfigRoot() {
@@ -113,8 +160,8 @@ QString existingOrDefaultConfigPath(const QString &name) {
 }
 
 QString defaultCommandWorkingDirectory() {
-    const QString home = QDir::homePath();
-    return home.isEmpty() ? QDir::currentPath() : home;
+    // 命令的相对路径落点也留在程序目录里（data\work），不写到用户目录。
+    return yiuk::vision::programDataPath(QStringLiteral("work"));
 }
 
 QString formatDeviceCode(const QString &digits) {

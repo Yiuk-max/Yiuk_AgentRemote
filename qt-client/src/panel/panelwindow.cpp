@@ -161,14 +161,13 @@ UINT QueryDpi(HWND window) {
 }
 
 std::wstring StatePath() {
-    wchar_t folder[MAX_PATH] = {0};
-    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA | CSIDL_FLAG_CREATE, nullptr,
-                                SHGFP_TYPE_CURRENT, folder)))
-        return std::wstring();
-    std::wstring directory = folder;
-    directory += L"\\Yiuk";
-    CreateDirectoryW(directory.c_str(), nullptr);
-    directory += L"\\DeviceAssist";
+    // 与主程序同一套约定：<exe 目录>\data\activity-panel.state（绿色目录自包含）。
+    wchar_t module[MAX_PATH] = {0};
+    if (GetModuleFileNameW(nullptr, module, MAX_PATH) == 0) return std::wstring();
+    std::wstring directory = module;
+    const size_t slash = directory.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return std::wstring();
+    directory = directory.substr(0, slash) + L"\\data";
     CreateDirectoryW(directory.c_str(), nullptr);
     directory += L"\\activity-panel.state";
     return directory;

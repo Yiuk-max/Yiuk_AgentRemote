@@ -24,6 +24,8 @@ add_library(yiuk-vision STATIC
     src/vision/textlocator.h
     src/vision/templatematcher.cpp
     src/vision/templatematcher.h
+    src/vision/apppaths.cpp
+    src/vision/apppaths.h
     src/vision/visionservice.cpp
     src/vision/visionservice.h
 )

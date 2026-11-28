@@ -62,10 +62,10 @@ E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-device-assist.exe
 
 ## 4. 本机数据、端口与证书
 
-客户端数据目录（新版）：
+客户端数据目录（绿色版：跟着 exe 走，`data\` 与 `yiuk-device-assist.exe` 同级）：
 
 ```text
-%LOCALAPPDATA%\Yiuk\DeviceAssist\
+<exe 目录>\data\
   platform-client.json    MCP 侧平台配置（地址、固定证书指纹）
   platform.json           客户端平台凭证（DPAPI）
   local-api.json          本机 bridge token
@@ -73,9 +73,13 @@ E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-device-assist.exe
   activity-panel.state    活动面板位置尺寸（删掉面板回到屏幕居中默认大小）
   downloads\              远端文件默认落盘目录
   screenshots\            原生抓屏的临时截图（每会话最多 5 张，会话结束自动删除）
+  tmp\                    PowerShell 脚本（每次任务一个 .ps1，执行完删除）
+  work\                   命令的默认工作目录（相对路径落点）
+  uploads\                远端上传到本机的文件
 ```
 
-旧的 `%APPDATA%\Yiuk\DeviceAssist\` 仍会被读取，本机 `device.json`（设备码）还在那边：`{"device_id":"556604822"}`。
+升级时会自动把旧的 `%LOCALAPPDATA%\Yiuk\DeviceAssist\`（以及更旧的 `%APPDATA%\`）里的身份与配置
+**复制**到 `data\`，设备码不变；旧目录此后只读不写，确认没问题可以删掉。
 
 端口与配置：
 

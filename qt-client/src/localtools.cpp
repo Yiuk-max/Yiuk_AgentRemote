@@ -1,5 +1,7 @@
 #include "mainwindow.h"
 
+#include "vision/apppaths.h"
+
 #include "powershellrunner.h"
 
 
@@ -131,8 +133,9 @@ QJsonObject MainWindow::downloadLocalFile(const QJsonObject &input) {
         if (!QFileInfo(destination).isAbsolute()) return localToolErrorResult("INVALID_ARGUMENT", "destination_path 必须是绝对路径");
         if (QFileInfo::exists(destination)) return localToolErrorResult("LOCAL_PATH_EXISTS", "destination_path 已存在，拒绝覆盖");
     } else {
-        const QString generatedDestinationPath = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
-            .filePath(QString("yiuk-downloads/%1-%2").arg(QDateTime::currentMSecsSinceEpoch()).arg(remoteInfo.fileName()));
+        const QString generatedDestinationPath =
+            QDir(yiuk::vision::programDataPath(QStringLiteral("downloads")))
+                .filePath(QString("%1-%2").arg(QDateTime::currentMSecsSinceEpoch()).arg(remoteInfo.fileName()));
         destination = generatedDestinationPath;
     }
     if (!QDir().mkpath(QFileInfo(destination).absolutePath())) return localToolErrorResult("LOCAL_WRITE_FAILED", "无法创建下载目录");

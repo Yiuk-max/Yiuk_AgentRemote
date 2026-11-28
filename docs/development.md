@@ -360,7 +360,7 @@ docker run -d --name yiuk-gateway --network yiuk --restart unless-stopped -e YIU
 
 ## 7. 客户端配置与证书
 
-平台配置：`%LOCALAPPDATA%/Yiuk/DeviceAssist/platform-client.json`，兼容读取 `%APPDATA%/Yiuk/DeviceAssist`。
+平台配置：**exe 同级的 `data/platform-client.json`**（绿色版，跟着程序目录走）；`data/` 不可写时才回退 `%LOCALAPPDATA%/Yiuk/DeviceAssist`。升级时会从旧位置复制身份与配置一次，之后旧目录只读不写。MCP（`yiuk-mcp.exe`）用同一套规则：`<exe>/data/` 优先，旧路径作为回退读取。
 
 自签名证书：设置页填服务器地址（部署脚本默认 `:29564`，`configs/platform.yaml` 为 `:25664`）→ 首次连接显示证书名称与 SHA-256 指纹 → 「信任此证书」后固定指纹。更换地址清除旧指纹；证书变更显示警告。指纹同步到 MCP 配置的 `pinned_cert_sha256`。
 

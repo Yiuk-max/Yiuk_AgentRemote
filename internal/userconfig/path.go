@@ -13,10 +13,44 @@ import (
 	"runtime"
 )
 
+// ProgramDataRoot 是程序本地数据目录：**可执行文件旁边的 data\**。
+// 绿色目录里所有配置、缓存、下载都跟着程序走；目录不可写时才回退用户目录。
+func ProgramDataRoot() string {
+	executable, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	root := filepath.Join(filepath.Dir(executable), "data")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return ""
+	}
+	probe := filepath.Join(root, ".yiuk-write-test")
+	if err := os.WriteFile(probe, []byte("1"), 0o600); err != nil {
+		return ""
+	}
+	_ = os.Remove(probe)
+	return root
+}
+
 // Candidates returns the possible paths for name in preference order.
+//
+// 顺序：程序目录 data\（绿色版）→ %LOCALAPPDATA% → %APPDATA% → os.UserConfigDir。
+// 新写入落在第一个可写位置；后面的只用于读取旧配置（升级后仍能找到设备身份）。
 func Candidates(name string) []string {
 	if name == "" {
 		return nil
+	}
+	out := make([]string, 0, 4)
+	seen := make(map[string]bool, 4)
+	add := func(path string) {
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	if root := ProgramDataRoot(); root != "" {
+		add(filepath.Join(root, name))
 	}
 	var roots []string
 	if runtime.GOOS == "windows" {
@@ -30,18 +64,8 @@ func Candidates(name string) []string {
 	if root, err := os.UserConfigDir(); err == nil {
 		roots = append(roots, root)
 	}
-	out := make([]string, 0, len(roots))
-	seen := make(map[string]bool, len(roots))
 	for _, root := range roots {
-		if root == "" {
-			continue
-		}
-		path := filepath.Join(root, "Yiuk", "DeviceAssist", name)
-		if seen[path] {
-			continue
-		}
-		seen[path] = true
-		out = append(out, path)
+		add(filepath.Join(root, "Yiuk", "DeviceAssist", name))
 	}
 	return out
 }

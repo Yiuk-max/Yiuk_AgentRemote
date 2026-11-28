@@ -1,5 +1,7 @@
 #include "powershellrunner.h"
 
+#include "vision/apppaths.h"
+
 #include <QDir>
 #include <QFile>
 #include <QProcess>
@@ -55,7 +57,8 @@ PowerShellRunner::~PowerShellRunner() {
 }
 
 bool PowerShellRunner::start(QString *error) {
-    scriptPath_ = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+    // 脚本不落在系统临时目录：跟着程序目录走（data	mp），绿色目录删掉就什么都不留。
+    scriptPath_ = QDir(yiuk::vision::programDataPath(QStringLiteral("tmp")))
                       .filePath(QStringLiteral("yiuk-") + requestId_ + QStringLiteral(".ps1"));
     if (!writeUtf8PowerShellScript(scriptPath_, command_, error)) return false;
 
@@ -79,6 +82,10 @@ bool PowerShellRunner::start(QString *error) {
     });
 #endif
     if (QDir(workingDirectory_).exists()) process_->setWorkingDirectory(workingDirectory_);
+    // 脚本里的临时产物（截图、导出）也放程序目录：scripts.go 优先读这个变量。
+    QProcessEnvironment processEnvironment = QProcessEnvironment::systemEnvironment();
+    processEnvironment.insert(QStringLiteral("YIUK_DATA_DIR"), yiuk::vision::programDataPath(QString()));
+    process_->setProcessEnvironment(processEnvironment);
 
     connect(process_, &QProcess::readyReadStandardOutput, this, [this] { readAndLimitOutput(false); });
     connect(process_, &QProcess::readyReadStandardError, this, [this] { readAndLimitOutput(true); });

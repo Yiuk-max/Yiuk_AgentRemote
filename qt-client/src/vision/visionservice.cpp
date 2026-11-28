@@ -1,5 +1,7 @@
 #include "visionservice.h"
 
+#include "apppaths.h"
+
 #include "input/inputcontroller.h"
 
 #include <QDateTime>
@@ -54,13 +56,8 @@ VisionService::DeviceLock::~DeviceLock() {
 }
 
 QString VisionService::screenshotsDirectory() {
-    // 与 apphelpers.cpp 的 yiukConfigRoot() 用同一套解析顺序：LOCALAPPDATA -> APPDATA ->
-    // Qt 的 AppLocalDataLocation。vision 库属于低层，不能反过来依赖 UI 层，
-    // 但必须落到同一个客户端数据目录，否则会出现互不相干的两份截图。
-    QString root = qEnvironmentVariable("LOCALAPPDATA");
-    if (root.isEmpty()) root = qEnvironmentVariable("APPDATA");
-    if (root.isEmpty()) root = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-    return QDir(root).filePath(QStringLiteral("Yiuk/DeviceAssist/screenshots"));
+    // 跟配置同一个根：程序目录 data\screenshots（绿色版），不可写时才回退用户目录。
+    return programDataPath(QStringLiteral("screenshots"));
 }
 
 bool VisionService::capture(const QString &sessionId, const CaptureOptions &options,

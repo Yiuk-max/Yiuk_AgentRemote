@@ -71,7 +71,9 @@ $left = [YiukDesktop]::GetSystemMetrics(76)
 $top = [YiukDesktop]::GetSystemMetrics(77)
 $screenWidth = [YiukDesktop]::GetSystemMetrics(78)
 $screenHeight = [YiukDesktop]::GetSystemMetrics(79)
-$dir = Join-Path $env:TEMP 'yiuk-screenshots'
+$root = $env:YIUK_DATA_DIR
+if ([string]::IsNullOrEmpty($root)) { $root = $env:TEMP }
+$dir = Join-Path $root 'screenshots'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Get-ChildItem -Path $dir -File | Remove-Item -Force -ErrorAction SilentlyContinue
 $bitmap = New-Object System.Drawing.Bitmap $screenWidth, $screenHeight
