@@ -13,6 +13,7 @@
 #include "vision/textlocator.h"
 #include "vision/ocrlocator.h"
 #include "vision/requestparser.h"
+#include "vision/roicache.h"
 #include "vision/visionservice.h"
 
 #include <QCoreApplication>
@@ -1087,6 +1088,109 @@ void testFailureHints() {
           QStringLiteral("unknown codes get no invented hint"));
 }
 
+
+// ROI 缓存（P5）：只在"只要一个命中"的只读查找里用；命中必须在当前帧上重新验证；
+// 换目标/换布局/过期都不许命中旧位置；click_target 一律不用它。
+void testRoiCache() {
+    using namespace yiuk::vision;
+
+    // 纯逻辑：键、扩框、TTL、条目上限。
+    TemplateOptions options;
+    QImage needle(16, 16, QImage::Format_Grayscale8);
+    needle.fill(0x40);
+    const QString keyA = RoiCache::imageKey(needle, options, QStringLiteral("layout-a"));
+    QImage other = needle;
+    other.fill(0x80);
+    check(keyA != RoiCache::imageKey(other, options, QStringLiteral("layout-a")),
+          QStringLiteral("a different template yields a different ROI key"));
+    check(keyA != RoiCache::imageKey(needle, options, QStringLiteral("layout-b")),
+          QStringLiteral("a layout change invalidates the ROI key"));
+    TemplateOptions stricter = options;
+    stricter.threshold = 0.95;
+    check(keyA != RoiCache::imageKey(needle, stricter, QStringLiteral("layout-a")),
+          QStringLiteral("a threshold change invalidates the ROI key"));
+
+    const QRect area(0, 0, 1000, 800);
+    check(RoiCache::expand(QRect(100, 100, 40, 20), 10, area) == QRect(90, 90, 60, 40),
+          QStringLiteral("the ROI grows around the previous hit"));
+    check(RoiCache::expand(QRect(0, 0, 40, 20), 10, area) == QRect(0, 0, 50, 30),
+          QStringLiteral("the ROI is clamped to the search area"));
+
+    RoiCache cache;
+    cache.store(keyA, QRect(120, 200, 40, 20), 1000);
+    check(cache.lookup(keyA, 1000).topLeft() == QPoint(120, 200),
+          QStringLiteral("a stored hit is returned inside the TTL"));
+    check(cache.lookup(keyA, 1000 + RoiCache::kTtlMs + 1).isNull(),
+          QStringLiteral("an expired ROI entry is ignored"));
+    for (int i = 0; i < RoiCache::kMaxEntries * 2; ++i)
+        cache.store(keyA + QString::number(i), QRect(i, i, 10, 10), 2000);
+    check(cache.size() <= RoiCache::kMaxEntries, QStringLiteral("the ROI cache stays bounded"));
+
+    // 真机：同一个模板连查两次，第二次应该只在旧位置附近搜。
+    VisionService service;
+    CaptureOutcome shot;
+    QString code;
+    QString message;
+    CaptureOptions captureOptions;
+    captureOptions.saveToDisk = false;
+    captureOptions.keepImage = true;
+    if (!service.capture(QStringLiteral("session-roi"), captureOptions, nullptr, &shot, &code, &message)) {
+        std::printf("WARN ROI cache end-to-end skipped: capture failed (%s)\n", qPrintable(code));
+        return;
+    }
+    // 从这一帧里裁一小块当模板（保证第一次就能命中）。
+    const QRect templateRect(shot.image.width() / 3, shot.image.height() / 3, 48, 32);
+    const QImage templ = shot.image.copy(templateRect);
+
+    TemplateOptions search;
+    search.limit = 1;
+    QJsonObject first;
+    if (!service.matchImage(QStringLiteral("session-roi"), templ, search, nullptr, &first, &code, &message)) {
+        std::printf("WARN ROI cache end-to-end skipped: %s %s\n", qPrintable(code), qPrintable(message));
+        return;
+    }
+    check(first.value(QStringLiteral("roi_cached")).toBool() == false,
+          QStringLiteral("the first lookup searches the whole screen"));
+    const int fullArea = first.value(QStringLiteral("search_area")).toInt();
+    const int firstSearched = first.value(QStringLiteral("searched_area")).toInt();
+    check(fullArea > 0 && firstSearched == fullArea, QStringLiteral("the first lookup reports the full area"));
+
+    QJsonObject second;
+    if (service.matchImage(QStringLiteral("session-roi"), templ, search, nullptr, &second, &code, &message)) {
+        check(second.value(QStringLiteral("roi_cached")).toBool() == true,
+              QStringLiteral("a repeated lookup reuses the ROI"));
+        check(second.value(QStringLiteral("searched_area")).toInt() < fullArea / 2,
+              QStringLiteral("the ROI is much smaller than the whole screen"));
+        const QJsonArray matches = second.value(QStringLiteral("matches")).toArray();
+        const QJsonArray firstMatches = first.value(QStringLiteral("matches")).toArray();
+        check(matches.size() == 1, QStringLiteral("the ROI hit is a real match on the current frame"));
+        if (!matches.isEmpty() && !firstMatches.isEmpty()) {
+            // 缓存必须保持"同一次匹配的落点"：与第一次全屏命中的中心一致（±2px 像素取整）。
+            const QJsonArray center = matches.at(0).toObject().value(QStringLiteral("center")).toArray();
+            const QJsonArray firstCenter = firstMatches.at(0).toObject().value(QStringLiteral("center")).toArray();
+            const bool sameSpot =
+                center.size() == 2 && firstCenter.size() == 2 &&
+                std::abs(center.at(0).toInt() - firstCenter.at(0).toInt()) <= 2 &&
+                std::abs(center.at(1).toInt() - firstCenter.at(1).toInt()) <= 2;
+            std::printf("     roi hit %d,%d vs full hit %d,%d\n", center.at(0).toInt(),
+                        center.at(1).toInt(), firstCenter.at(0).toInt(), firstCenter.at(1).toInt());
+            check(sameSpot, QStringLiteral("the ROI hit lands on the same target as the full search"));
+        }
+    } else {
+        check(false, QStringLiteral("a repeated lookup still succeeds"));
+    }
+
+    // 要多个候选时不许用缓存（否则会少报）。
+    TemplateOptions many = search;
+    many.limit = 5;
+    QJsonObject limited;
+    if (service.matchImage(QStringLiteral("session-roi"), templ, many, nullptr, &limited, &code, &message))
+        check(limited.value(QStringLiteral("roi_cached")).toBool() == false,
+              QStringLiteral("limit > 1 never uses the ROI shortcut"));
+
+    service.forgetSession(QStringLiteral("session-roi"));
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -1111,6 +1215,7 @@ int main(int argc, char **argv) {
     testVisionServiceCapture();
     testTemplates();
     testFailureHints();
+    testRoiCache();
 
     std::printf(failures == 0 ? "VISION OK\n" : "VISION FAILED (%d)\n", failures);
     return failures == 0 ? 0 : 1;

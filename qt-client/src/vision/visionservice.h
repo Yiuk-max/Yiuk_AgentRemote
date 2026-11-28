@@ -1,6 +1,7 @@
 #pragma once
 
 #include "devicegate.h"
+#include "roicache.h"
 #include "sessionlimiter.h"
 #include "snapshotstore.h"
 #include "templatematcher.h"
@@ -234,6 +235,8 @@ private:
                           const std::atomic_bool *cancelled, QJsonObject *data, QString *code, QString *message);
 
     DeviceGate deviceGate_;
+    // 图像模板的 ROI 缓存：只服务于 limit == 1 的只读查找（click_target 不用）。
+    RoiCache roiCache_;
     SessionLimiter limiter_;
     SnapshotStore store_;
     // 最近一次观察到的桌面布局；变化时清空所有快照。

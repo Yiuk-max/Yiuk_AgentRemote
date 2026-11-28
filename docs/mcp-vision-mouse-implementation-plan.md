@@ -292,7 +292,11 @@ Windows 的 UIPI 会静默丢弃非提权进程投递的合成输入——这与
 - [x] `find_on_screen` / `click_target` 支持 `template_id`（与 text/image_path/image_b64 四选一）；
       索引里存宽高与**来源缩放**（截图宽/物理宽），活动日志只记 operation 名，不含图片与正文。
 - [ ] 多显示器与混合 DPI：100/125/150%、左/上负原点、插拔、分辨率变化；增加独立 monitor_id 参数与互斥规则，不悄悄改变既有 region 数组语义。
-- [ ] ROI 缓存以目标内容摘要+参数+布局版本为键，TTL/数量有界。find 可优先查旧位置，失配回全屏；click_target 默认 unique/best 必须验证全域是否有竞争候选，不能只因 ROI 命中就跳过歧义判断。
+- [x] ROI 缓存（`qt-client/src/vision/roicache.{h,cpp}`）：键 = 模板像素摘要 + 阈值 + region + **布局版本**，
+      TTL 10 s、上限 32 条（满了先清过期再丢最早）。只对**图像模板**且在 `limit == 1` 时启用——
+      要多个候选却只查旧位置会悄悄少报；命中必须在**当前帧**的 ROI 上重新匹配，不是直接信旧坐标；
+      ROI 失配就回全屏并刷新缓存。**click_target 一律不用**：`unique`/`best` 必须验证全域竞争候选。
+      结果带 `roi_cached` / `searched_area` / `search_area`，Agent 能看出这次是不是走的短路。
 - [x] hint 根据现场生成（`yiuk::vision::failureHint(code, data)`，纯函数）：
       纯色搜索区（灰度标准差 < 2）说"没有可用纹理"，普通未命中报"最高得分 X < 阈值 Y"，
       两个定位器都空时报 OCR 的原因，歧义报候选数与 `pick` 用法，缺语言包/模板配额/模板不存在各有具体动作。

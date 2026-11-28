@@ -32,6 +32,8 @@ add_library(yiuk-vision STATIC
     src/vision/requestparser.h
     src/vision/ocrlocator.cpp
     src/vision/ocrlocator.h
+    src/vision/roicache.cpp
+    src/vision/roicache.h
 )
 target_include_directories(yiuk-vision PUBLIC src)
 # 点击（含变化检测）需要输入内核：vision 依赖 input，反向不依赖。

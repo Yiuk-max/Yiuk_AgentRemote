@@ -79,6 +79,7 @@
 | `src/vision/visionservice.{h,cpp}` | 唯一入口：`capture` / `clickWithOptions` / `clickTarget` / `searchText` / `matchImage` / `saveTemplate` / `loadTemplate` / `toScreenPoint` / `screenRectToScreenshot` / `releaseScreenshotFile` / `pruneOrphanScreenshots`；`pickTarget`、`screenshotRectToScreen` 与歧义判据是纯函数 |
 | `src/vision/requestparser.{h,cpp}` | 原生操作参数 → `VisionService` 入参的**唯一**解析处（三选一、`source=auto/uia/ocr`、region、阈值/limit 钳制、click_target 默认值与等待预算）；客户端 handler 与互操作程序共用，纯函数可测 |
 | `src/vision/textlocator.{h,cpp}` | UIA 控制视图查询（节点 5000 / 时间 300ms 上限）、全半角与空白归一化、control_type 与 region 过滤、阅读顺序排序 |
+| `src/vision/roicache.{h,cpp}` | 图像模板的 ROI 缓存：键 = 像素摘要+阈值+region+布局版本，TTL 10 s / 32 条；只给 `limit==1` 的只读查找，`click_target` 不用 |
 | `src/vision/ocrlocator.{h,cpp}` | Windows.Media.Ocr 兜底：手写 WinRT ABI（无 winrt 头/C++/WinRT）、按查询文本挑语言、词窗口匹配（去字间空格）、词框并集、按面积去重；**必须 `-fno-devirtualize` 编译** |
 | `src/vision/templatematcher.{h,cpp}` | OpenCV 灰度 `TM_CCOEFF_NORMED`、阈值、region、IoU 0.3 去重；未编译 OpenCV 时返回 `UNSUPPORTED_OPERATION` |
 | `src/input/inputcontroller.{h,cpp}` | `SendInput` 绝对坐标、`buildPath` 确定性缓动、`ButtonGuard`、`drag`、灰度采样与变化判据、前台标题 |
@@ -182,6 +183,7 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 | OCR 端到端（`yiuk-click-target-test`，`source=ocr` + `region`） | 中文按钮「收藏 首页 设置」被 OCR 读到并点中：`source=ocr`、`clicks[5]==1`，其余按钮 0 次 |
 | 发布包 0.1.9 | `Release/YiukDeviceAssist-0.1.9-win64`（82 MB / 24 个文件）+ zip（34 MB）+ sha256 `6ce3df6d…8787`；在**不含 Qt/MinGW 的 PATH** 下启动成功（含 `save_template`/OCR/hint），`data` 就地创建 |
 | 失败 hint（`yiuk-vision-test`） | 纯色区域说"没有可用纹理"（不提阈值）、普通未命中带"最高分 0.71 < 阈值 0.88"、歧义带候选数与 `pick` 用法、缺语言包/模板配额/模板不存在各指向具体动作、未知错误码不编造 |
+| ROI 缓存（`yiuk-vision-test`，真实抓屏） | 同一个模板连查两次：第二次 `roi_cached=true`、搜索面积为整屏 <½、落点与全屏命中一致 `(877,549)`；`limit>1` 时不走短路；换模板/换布局/换阈值/过期都命中不到旧条目 |
 | 绿色化 | `data\` 内出现配置/身份/`screenshots\`/`tmp\`；`data\tmp` 可见正在执行的 `.ps1`；C 盘旧目录不再写入 |
 
 ## 6. 踩过的坑（改输入/视觉前必读）
@@ -219,7 +221,6 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 | --- | --- |
 | 非原生 Win32 目标（Qt/WPF）的 UIA 坐标 | 已验证 Qt 目标上报逻辑像素（见 §6.11），未做修正 |
 | 多显示器 / 混合 DPI / 负原点 | 未验证（P5） |
-| ROI 缓存（同一目标优先在上次命中位置附近找） | 未实现（P5） |
 | Windows CI | 已加 `windows-qt` job（Qt 6.11.1 + MinGW + OpenCV 4.12 缓存 + ctest），**还没在 GitHub 上跑绿过** |
 | 安装器（ISCC）重打 / 安装卸载回归 | 未做（绿色 zip 已重打，见 §5） |
 | UIA 命中率/耗时三场景实测 | 未做（探针只测了遍历耗时；空文档 0 节点约 320ms） |
@@ -228,8 +229,8 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 ## 8. 下一步（按顺序）
 
 1. **P6 收尾**：把 `windows-qt` CI 第一次跑绿（安装器可选）、Edge→抖音回归需设备所有者授权。
-2. **P5**：`vision.save_template`（从快照裁剪，配额与路径校验）、多显示器/混合 DPI、ROI 缓存；
-   OCR 目前每次全帧识别（2560×1600 约 200–400ms），可以先按 `region` 裁剪再识别。
+2. **P5 剩余**：多显示器/混合 DPI + `monitor_id`（本机单屏无法验证，需要有多屏的机器）；
+   OCR 目前每次全帧识别（2560×1600 约 200–400ms），可以把 ROI 缓存扩展到 OCR 裁剪。
 
 ## 9. 交接检查清单
 

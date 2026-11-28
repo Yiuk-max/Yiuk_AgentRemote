@@ -458,6 +458,8 @@ bool VisionService::clickTarget(const QString &sessionId, const ClickTargetOptio
     int locateMs = 0;
     QString ocrLanguage;
     QString ocrNote;
+    // 注意：click_target **不用** ROI 缓存。unique/best 必须验证全域有没有竞争候选，
+    // 只看旧位置会漏掉歧义、点错目标——慢一点没关系，点错不行。
     TemplateStats stats;  // 图像分支的现场（零命中也要带回去给 hint 用）
     if (options.useImage) {
         TemplateOptions imageOptions = options.image;
@@ -646,9 +648,42 @@ bool VisionService::matchImage(const QString &sessionId, const QImage &needle, c
     if (!capture(sessionId, captureOptions, cancelled, &shot, code, message)) return false;
     if (shot.image.isNull()) return fail(QStringLiteral("SCREENSHOT_FAILED"), QStringLiteral("抓屏结果为空"));
 
+    // ROI 缓存：只在这个调用只想要一个命中时启用（limit == 1）。
+    // 要多个候选却只查旧位置，会悄悄少报结果——那比慢更糟。
+    const QString roiKey = RoiCache::imageKey(needle, options, shot.layoutVersion);
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const QRect searchArea = options.region.isNull()
+                                 ? QRect(0, 0, shot.image.width(), shot.image.height())
+                                 : options.region.intersected(QRect(0, 0, shot.image.width(), shot.image.height()));
+    bool roiCached = false;
+    QRect searchedArea = searchArea;
+
     QVector<TemplateHit> hits;
     TemplateStats stats;
-    if (!matchTemplateImage(shot.image, needle, options, &hits, &stats, code, message)) return false;
+    if (qBound(1, options.limit, 20) == 1) {
+        const QRect cached = roiCache_.lookup(roiKey, nowMs);
+        const QRect roi = RoiCache::expand(cached, RoiCache::kMarginPx, searchArea);
+        if (!roi.isNull() && roi.width() >= needle.width() && roi.height() >= needle.height()) {
+            TemplateOptions narrowed = options;
+            narrowed.region = roi;
+            QVector<TemplateHit> roiHits;
+            if (matchTemplateImage(shot.image, needle, narrowed, &roiHits, &stats, code, message) &&
+                !roiHits.isEmpty()) {
+                hits = roiHits;
+                roiCached = true;
+                searchedArea = roi;
+            }
+        }
+    }
+    if (hits.isEmpty()) {
+        TemplateOptions full = options;
+        full.region = options.region.isNull() ? QRect() : options.region;
+        if (!matchTemplateImage(shot.image, needle, full, &hits, &stats, code, message)) return false;
+        searchedArea = searchArea;
+        // 记住这次的位置，下一次可以先在它附近找。
+        if (!hits.isEmpty()) roiCache_.store(roiKey, hits.first().rect, nowMs);
+    }
+
 
     QJsonArray matches;
     for (const TemplateHit &hit : hits) {
@@ -678,6 +713,12 @@ bool VisionService::matchImage(const QString &sessionId, const QImage &needle, c
     payload.insert(QStringLiteral("max_score"), stats.bestScore);
     payload.insert(QStringLiteral("uniform_area"), stats.uniformArea);
     payload.insert(QStringLiteral("area_stddev"), stats.areaStdDev);
+    // ROI 缓存的现场：命中来自旧位置附近就标注出来，并给出实际搜索面积与整屏面积。
+    payload.insert(QStringLiteral("roi_cached"), roiCached);
+    payload.insert(QStringLiteral("searched_area"),
+                   searchedArea.isNull() ? 0 : searchedArea.width() * searchedArea.height());
+    payload.insert(QStringLiteral("search_area"),
+                   searchArea.isNull() ? 0 : searchArea.width() * searchArea.height());
     *data = payload;
     return true;
 }

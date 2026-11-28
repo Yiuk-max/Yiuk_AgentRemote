@@ -69,6 +69,7 @@
 | `terminal_record_retain_sec` / `terminal_output_retain_bytes` | 900 / 64 MiB | 终态记录与输出保留 |
 | `transfer.MaxChunkBytes` / `MaxChunks` | 96 KiB（解码后）/ 4096 | 单块与块数 |
 | 模板配额（客户端，P5 冻结） | 100 个 / 总 32 MiB / 单个 4 MiB / 2048×2048 | `save_template`；超限回报 `TEMPLATE_QUOTA_EXCEEDED`，不静默驱逐 |
+| ROI 缓存（客户端） | 32 条 / TTL 10 s | 图像模板的“上次出现在哪”；键含布局版本，失效即弃 |
 | 快照像素内存 | 一张全屏帧（ARGB32，2560×1600 ≈ 16 MB） | 只有最近一张快照保留像素，`save_template` 依赖它 |
 
 抓屏节流有两份实现，都不同时构成授权：客户端原生路径用

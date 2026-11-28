@@ -64,6 +64,10 @@
   截图保留的像素裁剪：旧 `screenshot_id` 或已换帧时返回 `STALE_SCREENSHOT`，不会悄悄重抓一张冒充旧图。
   配额 100 个 / 32 MiB / 单个 4 MiB / 2048×2048，超了是 `TEMPLATE_QUOTA_EXCEEDED`；清理 = 删设备上的
   `data\templates` 目录。
+- **图像查找会用 ROI 缓存**。`limit=1` 时，重复查同一个模板会先在上次命中位置附近（±64 px）找，
+  命中就带 `roi_cached:true` 与 `searched_area` 返回；没命中就回全屏并刷新缓存。
+  缓存键含模板像素摘要、阈值、region 与桌面布局版本，TTL 10 秒。`click_target` **不用**缓存——
+  歧义判断必须基于全域。
 - **错误自带现场**。失败回复带 `hint`（下一步建议）和 `data.devices`（最多 20 台在线设备）。
 - **schema 是唯一校验来源**。`validateInput` 直接把 `InputSchema` 交给 JSON Schema 校验器，不再手写一遍约束。
 - **分发走注册表**。agenttools 分本地工具（`localTools`）、组合工具（`composedTools`）、后端工具（`BackendTools()`）三层；`TestEveryToolHasExactlyOneHandler` 与 `TestEveryBackendToolHasAHandler` 拦“加了工具忘实现”。
