@@ -37,7 +37,10 @@ const (
 	TypeOpenSessionChannel = "open_session_channel"
 	TypeCloseSession       = "close_session"
 
-	TypeExecuteCommand   = "execute_command"
+	TypeExecuteCommand = "execute_command"
+	// 原生操作帧：与 execute_command 共用任务、幂等与取消机制，
+	// 但不接受脚本文本，operation 必须是平台白名单里的名字。
+	TypeExecuteNative    = "execute_native"
 	TypeCommandAccepted  = "command_accepted"
 	TypeCommandOutput    = "command_output"
 	TypeCommandResult    = "command_result"
@@ -96,6 +99,14 @@ const (
 // 默认最大消息体字节数
 const DefaultMaxMessageBytes = 256 << 10
 
+// 原生操作的输入边界。operation 名字要短，capabilities 是设备自报的短名单；
+// arguments 的上限由配置 max_frame_bytes 与 native_argument_max_bytes 共同约束。
+const (
+	MaxNativeOperationLen    = 64
+	MaxCapabilityLen         = 64
+	MaxCapabilitiesPerDevice = 32
+)
+
 var ErrMessageTooLarge = errors.New("protocol message exceeds configured maximum")
 
 // Message 是每个平台消息的通用信封。字段仅在需要它们的消息类型中填充。密码字段仅在身份验证/设备注册消息中有效，且从不记录。
@@ -141,6 +152,13 @@ type Message struct {
 	Answer        string   `json:"answer,omitempty"`
 	AnswerSource  string   `json:"answer_source,omitempty"`
 	SelectedIndex *int     `json:"selected_index,omitempty"`
+
+	// 原生操作：operation 是白名单名字，arguments 是有界 JSON（默认 ≤128 KiB）。
+	// client_version / capabilities 只在设备注册与设备快照里出现，不出现在命令帧里。
+	Operation     string          `json:"operation,omitempty"`
+	Arguments     json.RawMessage `json:"arguments,omitempty"`
+	ClientVersion string          `json:"client_version,omitempty"`
+	Capabilities  []string        `json:"capabilities,omitempty"`
 
 	// 命令：cursor 用于分页拉取输出，必须单调递增。
 	Command          string `json:"command,omitempty"`
@@ -197,6 +215,10 @@ type DeviceInfo struct {
 	PasswordExpiresAt int64  `json:"password_expires_at,omitempty"`
 	LastHeartbeat     int64  `json:"last_heartbeat,omitempty"`
 	ActiveSessions    int    `json:"active_sessions,omitempty"`
+	// 客户端自报的原生能力（如 "vision.find"）与版本号。
+	// 平台只透传与校验，不假定客户端一定实现了某个能力。
+	ClientVersion string   `json:"client_version,omitempty"`
+	Capabilities  []string `json:"capabilities,omitempty"`
 }
 
 // SessionInfo 不用加密保密

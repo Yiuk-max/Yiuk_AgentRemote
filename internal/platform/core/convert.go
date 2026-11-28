@@ -18,6 +18,8 @@ func protocolDeviceInfo(info device.Info) protocol.DeviceInfo {
 		PasswordExpiresAt: unixTimestampOrZero(info.PasswordExpiresAt),
 		LastHeartbeat:     unixTimestampOrZero(info.LastHeartbeat),
 		ActiveSessions:    info.ActiveSessions,
+		ClientVersion:     info.ClientVersion,
+		Capabilities:      append([]string(nil), info.Capabilities...),
 	}
 }
 

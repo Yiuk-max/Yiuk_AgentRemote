@@ -75,6 +75,8 @@ func (s *Service) dispatch(caller *Caller, message protocol.Message) error {
 		return s.handleUserReply(caller, message)
 	case protocol.TypeExecuteCommand:
 		return s.handleExecuteCommand(caller, message)
+	case protocol.TypeExecuteNative:
+		return s.handleExecuteNative(caller, message)
 	case protocol.TypeCommandOutput:
 		return s.handleCommandOutput(caller, message)
 	case protocol.TypeCommandResult:
@@ -144,6 +146,13 @@ func (s *Service) handleRegisterDevice(caller *Caller, message protocol.Message)
 	if len(message.Platform) > 32 {
 		return newProtocolError("INVALID_ARGUMENT", "platform is too long")
 	}
+	if len(message.ClientVersion) > 32 {
+		return newProtocolError("INVALID_ARGUMENT", "client_version is too long")
+	}
+	capabilities, err := sanitizeCapabilities(message.Capabilities)
+	if err != nil {
+		return err
+	}
 	if message.TemporaryPassword != "" && len(message.TemporaryPassword) < 32 {
 		return newProtocolError("WEAK_TEMPORARY_PASSWORD", "temporary password must be at least 32 characters")
 	}
@@ -177,6 +186,8 @@ func (s *Service) handleRegisterDevice(caller *Caller, message protocol.Message)
 		TemporaryPass:   message.TemporaryPassword,
 		PasswordVersion: message.PasswordVersion,
 		TTL:             passwordTTL,
+		ClientVersion:   message.ClientVersion,
+		Capabilities:    capabilities,
 	})
 	if err != nil {
 		s.audit.Warn("device_registration_failed", "device", audit.RedactID(message.DeviceID), "code", auditErrorCode(err))

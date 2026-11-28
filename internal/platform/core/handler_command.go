@@ -43,45 +43,24 @@ func (s *Service) handleExecuteCommand(caller *Caller, message protocol.Message)
 	if !ok || deviceConnectionID != sessionRecord.DeviceConnectionID {
 		return newProtocolError("DEVICE_OFFLINE", "device is no longer online")
 	}
-	// 开始创建命令
-	commandTask, created, err := s.tasks.Start(sessionRecord.ID, message.RequestID, time.Duration(timeoutSeconds)*time.Second)
-	if err != nil {
-		return s.taskProtocolError(err)
-	}
-	if !created {
-		return s.sendResponse(caller, message, protocol.Message{
-			Type:      protocol.TypeCommandAccepted,
-			SessionID: sessionRecord.ID,
-			RequestID: commandTask.RequestID,
-			Status:    string(commandTask.Status),
-		})
-	}
-	// 会话生命周期状态标记为活跃
-	if _, err := s.sessions.Activate(sessionRecord.ID, caller.ConnectionID); err != nil {
-		s.tasks.Finish(sessionRecord.ID, message.RequestID, task.StatusResultUnknown, nil, false)
-		return s.sessionProtocolError(err)
-	}
-
-	forward := protocol.Message{
-		Type:             protocol.TypeExecuteCommand,
-		SessionID:        sessionRecord.ID,
-		RequestID:        commandTask.RequestID,
-		Command:          message.Command,
-		WorkingDirectory: message.WorkingDirectory,
-		TimeoutSeconds:   timeoutSeconds,
-	}
-	// 发送给设备执行命令
-	if !s.send(sessionRecord.DeviceConnectionID, forward) {
-		s.tasks.Finish(sessionRecord.ID, message.RequestID, task.StatusResultUnknown, nil, false)
-		return newProtocolError("DEVICE_UNAVAILABLE", "could not deliver command to device")
-	}
-	s.audit.Event("command_submitted", "session", audit.RedactID(sessionRecord.ID), "request", audit.RedactID(commandTask.RequestID), "device", audit.RedactID(sessionRecord.DeviceID))
-	// 返回命令已接受
-	return s.sendResponse(caller, message, protocol.Message{
-		Type:      protocol.TypeCommandAccepted,
-		SessionID: sessionRecord.ID,
-		RequestID: commandTask.RequestID,
-		Status:    string(commandTask.Status),
+	// 提交到设备：任务限额、request_id 幂等、会话激活、投递与回执都在 submitTask 里，
+	// 与原生操作共用同一套语义（见 handler_native.go）。
+	return s.submitTask(caller, taskSubmission{
+		message: message,
+		session: sessionRecord,
+		frame: func(requestID string) protocol.Message {
+			return protocol.Message{
+				Type:             protocol.TypeExecuteCommand,
+				SessionID:        sessionRecord.ID,
+				RequestID:        requestID,
+				Command:          message.Command,
+				WorkingDirectory: message.WorkingDirectory,
+				TimeoutSeconds:   timeoutSeconds,
+			}
+		},
+		timeout:    time.Duration(timeoutSeconds) * time.Second,
+		auditEvent: "command_submitted",
+		deliverErr: "could not deliver command to device",
 	})
 }
 

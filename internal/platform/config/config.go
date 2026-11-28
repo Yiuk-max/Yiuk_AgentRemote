@@ -58,6 +58,7 @@ type Config struct {
 	CloseReasonMaxLen      int    `yaml:"close_reason_max_len"`       // 关闭原因最大长度
 	PurposeMaxLen          int    `yaml:"purpose_max_len"`            // 目的最大长度，客户端信息面板的标语
 	CommandMaxLen          int    `yaml:"command_max_len"`            // 命令最大长度
+	NativeArgumentMaxBytes int    `yaml:"native_argument_max_bytes"`  // 原生操作 arguments 的最大字节数
 	WorkingDirMaxLen       int    `yaml:"working_directory_max_len"`  // 工作目录最大长度
 	IdentifierMaxLen       int    `yaml:"identifier_max_len"`         // 标识符最大长度，用于唯一标识设备或用户
 	ObserverSlowClientBuf  int    `yaml:"slow_client_buffer"`         // 慢客户端缓冲区大小
@@ -111,8 +112,9 @@ func Default() Config {
 		OfflineDeviceKeepSec:      24 * 3600,
 		CloseReasonMaxLen:         256,
 		PurposeMaxLen:             512,
-		CommandMaxLen:             32768, //32 KiB
-		WorkingDirMaxLen:          4096,  //4 KiB
+		CommandMaxLen:             32768,     //32 KiB
+		NativeArgumentMaxBytes:    128 << 10, //128 KiB
+		WorkingDirMaxLen:          4096,      //4 KiB
 		IdentifierMaxLen:          128,
 		ObserverSlowClientBuf:     64,
 		LogFile:                   "platform.log",
@@ -252,6 +254,11 @@ func (c Config) Validate() error {
 	}
 	if c.CloseReasonMaxLen < 1 || c.PurposeMaxLen < 1 || c.CommandMaxLen < 1 || c.WorkingDirMaxLen < 1 || c.IdentifierMaxLen < 1 {
 		return errors.New("length limits must be positive")
+	}
+	// 原生操作的参数必须是帧预算的一部分：太小会让图像模板无法上传，
+	// 太大会让一帧 JSON 直接超过 max_frame_bytes。
+	if c.NativeArgumentMaxBytes < 1024 || c.NativeArgumentMaxBytes > c.MaxFrameBytes/2 {
+		return errors.New("native_argument_max_bytes must be between 1 KiB and half of max_frame_bytes")
 	}
 	if c.ObserverSlowClientBuf < 1 {
 		return errors.New("slow_client_buffer must be positive")

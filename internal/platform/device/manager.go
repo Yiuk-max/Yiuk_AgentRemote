@@ -41,6 +41,10 @@ type Info struct {
 	LastHeartbeat     time.Time
 	ActiveSessions    int
 	CreatedAt         time.Time
+	// 客户端自报的原生能力与版本。平台只用于能力校验与展示，
+	// 不据此放宽任何授权：所有操作仍然要求已批准的会话。
+	ClientVersion string
+	Capabilities  []string
 }
 
 // Registration describes a device registration request.
@@ -51,6 +55,8 @@ type Registration struct {
 	TemporaryPass   string
 	PasswordVersion int
 	TTL             time.Duration
+	ClientVersion   string
+	Capabilities    []string
 }
 
 type device struct {
@@ -216,6 +222,10 @@ func (m *Manager) Register(registration Registration) (Info, string, error) {
 	existing.info.PasswordVersion = version
 	existing.info.PasswordExpiresAt = now.Add(passwordTTL)
 	existing.info.LastHeartbeat = now
+	// 重连时以本次自报为准：客户端升级/降级后能力集合必须整体替换，
+	// 否则旧连接遗留的能力会让平台误判它“支持”某个操作。
+	existing.info.ClientVersion = registration.ClientVersion
+	existing.info.Capabilities = cloneStrings(registration.Capabilities)
 	existing.info.Online = false
 	existing.info.CreatedAt = now
 	existing.passwordSalt = salt
@@ -269,6 +279,8 @@ func (m *Manager) createDevice(registration Registration, requestedID string, cr
 		PasswordExpiresAt: now.Add(passwordTTL),
 		LastHeartbeat:     now,
 		CreatedAt:         createdAt,
+		ClientVersion:     registration.ClientVersion,
+		Capabilities:      cloneStrings(registration.Capabilities),
 	}
 	record.passwordSalt = salt
 	record.passwordHash = hashPassword(salt, password)
@@ -585,11 +597,21 @@ func (m *Manager) TombstoneCount() int {
 
 func (d *device) snapshot(now time.Time) Info {
 	info := d.info
+	// 切片必须复制：Info 会穿过 core、gRPC 与网关，共享底层数组会让
+	// “读设备状态”意外改到设备表里的能力集合。
+	info.Capabilities = cloneStrings(d.info.Capabilities)
 	info.ActiveSessions = len(d.sessions)
 	if !d.info.PasswordExpiresAt.IsZero() && !now.Before(d.info.PasswordExpiresAt) {
 		info.Online = d.onlineConnectionID != ""
 	}
 	return info
+}
+
+func cloneStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	return append([]string(nil), values...)
 }
 
 func hashPassword(salt []byte, password string) []byte {
