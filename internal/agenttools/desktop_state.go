@@ -117,6 +117,13 @@ func (s *desktopState) latest(sessionID string) (screenshotRef, bool) {
 	return history[0], true
 }
 
+// countInHistory 返回该会话保留的截图条数（测试与诊断用）。
+func (s *desktopState) countInHistory(sessionID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.recent[sessionID])
+}
+
 // find 返回指定 id 在历史中的位置（0 = 最新）。
 func (s *desktopState) find(sessionID, id string) (screenshotRef, int, bool) {
 	s.mu.Lock()

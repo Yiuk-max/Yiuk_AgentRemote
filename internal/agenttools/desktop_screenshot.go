@@ -11,7 +11,7 @@ import (
 )
 
 // nativeScreenshotOperation 是设备端注册的原生抓屏操作名。
-// 与 MCP 侧 22 个工具名无关：它是协议层的内部操作，不直接暴露给 Agent。
+// 与 MCP 侧 23 个工具名无关：它是协议层的内部操作，不直接暴露给 Agent。
 const nativeScreenshotOperation = "screen.capture"
 
 // nativeScreenshotTimeoutSeconds 覆盖一次抓屏（含设备排队与 PNG 编码），

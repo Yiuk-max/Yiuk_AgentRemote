@@ -10,7 +10,7 @@
 
 | 层 | 当前入口与事实 | 本次影响 |
 | --- | --- | --- |
-| MCP 契约 | `internal/agenttools/catalog.go`，22 个工具，schema 是校验唯一来源 | 新增 schema、注解、错误与注册表覆盖 |
+| MCP 契约 | `internal/agenttools/catalog.go`，23 个工具（P3 已加 `find_on_screen`），schema 是校验唯一来源 | 新增 schema、注解、错误与注册表覆盖 |
 | 桌面组合 | `desktop*.go` + `scripts.go`，PowerShell 抓屏与输入 | 新客户端逐步迁到原生路径；旧客户端保留脚本 |
 | 截图状态 | `desktop_state.go`，Go 进程内每会话保存最近 5 个 ID/几何；500ms 节流 | 原生路径必须统一状态与锁，不能平行生成两套 ID |
 | 操作者连接 | `internal/platformclient/client.go`，`requestMu` 串行化请求 | 长等待不能阻塞取消；需要可并发的响应分发 |
@@ -212,10 +212,18 @@ MCP 工具 → agenttools 原生桌面调度 → platformclient
 ### P3：视觉内核与 find_on_screen（第一批可发布）
 
 - [ ] `TemplateMatcher`：灰度、粗到细、多尺度、ROI、mask、阈值、IoU 0.3 NMS、稳定排序、最高分与 bounded candidates。
-- [ ] `TextLocator`：UIA 限定查询与缓存、Unicode 全半角/大小写归一化、exact/contains；复用记事本/Edge/资源管理器场景重测，低于 80% 则 UIA 仅显式可选。
+      需要把 OpenCV 接入 Qt 构建（P0 已验静态库可链接，但 Windows CI 与体积预算未定）。
+- [x] `TextLocator`（基础版）：`qt-client/src/vision/textlocator.{h,cpp}` —— UIA 控制视图 `FindAll`，
+      限制 `maxNodes`（5000）与 `timeBudgetMs`（300），超限带已有结果返回并标记 truncated；
+      归一化全角→半角、去所有空白（OCR 的"收 藏"）、casefold；`exact` / `contains`；
+      `control_type` 名称过滤；`region` 相交过滤；过滤 offscreen 与零尺寸矩形；按阅读顺序排序。
+      未做：UIA 结果缓存、三种 DPI/两主题下的命中率重测（仍按计划低于 80% 则降级为显式来源）。
 - [ ] OCR：系统语言检查、lang 校验、图像尺寸上限、行/词匹配框与去重；缺语言包返回 `OCR_UNAVAILABLE` + hint，不影响图像/UIA。
-- [ ] `find_on_screen`：四选一契约先实现前三种，limit 1–20、timeout 1–25、每 500ms 可取消等待、局部结果/超时反馈，不返回图片。
-- [ ] `agenttools` schema/注册表/注解（ReadOnly、Idempotent）、backend 与 bridge 接线、平台链路互操作。
+- [x] `find_on_screen`（文本路径）：`limit` 1–20、`region`、`control_type`、`match`，返回截图坐标 bbox/center
+      与 `screenshot_id`，不返回图片；没有截图时先抓一张不落盘的建立基准。
+      未做：`timeout_seconds` / `wait_until_found`（每 500ms 可取消等待）、图像分支。
+- [x] `agenttools` schema/注册表/注解（ReadOnly、Idempotent）、原生 backend 接线、平台链路互操作
+      （`yiuk-platform-interop` 已跑通 `vision.find`）。本地 bridge 仍返回 `UNSUPPORTED_CLIENT`。
 - [ ] 固定素材入库：约 30 类控件在三 DPI/两主题下的截图与至少 15 个负样本，使用自建界面或许可清楚的素材，不含用户真实桌面隐私。
 
 **门禁**：素材命中率 ≥95%，负样本零合格命中；region/alpha/纯色/超大解码/取消/超时均覆盖；性能达 P0 口径、20 次稳态无持续增长。没有真机 OCR 环境时明确未验收，不用 mock 替代结论。
@@ -275,7 +283,7 @@ P1–P2 作为第一批视觉的前置，不独立宣称视觉完成；P3/P4/P5 
 1. P0–P6 清单与测试报告齐全，所有阻塞项关闭；完整工具数 26。
 2. 找不到/歧义绝不点击，取消/异常收尾不留可处理的持键状态；不把未知结果说成未生效。
 3. 命中率、负样本、全屏/ROI 耗时、30 秒调用预算、三端峰值与稳态内存均有可复现证据。
-4. 新旧平台/客户端兼容矩阵验证，权限不变式与现有 22 个工具回归通过。
+4. 新旧平台/客户端兼容矩阵验证，权限不变式与现有 23 个工具回归通过。
 5. Windows 可复现构建、第三方许可、绿色包/安装器、版本与升级顺序完整。
 
 仍需 P0 实测，而不是继续阅读代码就能回答：OpenCV 静态包体与速度、MinGW 的 Windows OCR 接入方式、UIA 硬超时隔离方案、目标机器语言包覆盖、完整回归调用数与内存基线。

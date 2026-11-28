@@ -25,6 +25,10 @@ var composedTools = map[string]func(ctx context.Context, core *Core, raw json.Ra
 	TakeScreenshot: func(ctx context.Context, core *Core, raw json.RawMessage) (any, []Image, error) {
 		return core.takeScreenshot(ctx, raw)
 	},
+	FindOnScreen: func(ctx context.Context, core *Core, raw json.RawMessage) (any, []Image, error) {
+		data, err := core.findOnScreen(ctx, raw)
+		return data, nil, err
+	},
 	Click: func(ctx context.Context, core *Core, raw json.RawMessage) (any, []Image, error) {
 		data, err := core.click(ctx, raw)
 		return data, nil, err

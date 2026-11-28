@@ -13,7 +13,7 @@ import (
 // NewServer 将 agenttools 中的工具目录注册为 MCP 服务，并转换工具调用及其返回值。
 //
 // handler 的签名是固定的，拿不到工具名，所以用闭包工厂：每注册一个工具就生成一个
-// “记住自己叫什么”的 handler，避免给 22 个工具各写一份几乎相同的样板代码。
+// “记住自己叫什么”的 handler，避免给 23 个工具各写一份几乎相同的样板代码。
 func NewServer(core *agenttools.Core) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "agentremote", Version: "0.1.0"}, nil)
 	newHandler := func(toolName string) mcp.ToolHandler {

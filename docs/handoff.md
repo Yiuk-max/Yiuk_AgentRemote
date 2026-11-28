@@ -9,12 +9,14 @@
 
 ## 1. 一句话状态
 
-**P0 完成、P1 完成约 90%（只差本机 bridge）、P2 进行中。**
+**P0 完成、P1 完成约 95%（只差本机 bridge）、P2 完成、P3 进行中（UIA 文本定位已落地）。**
 原生操作通道（`execute_native`）已从 MCP 侧协议、Go 平台、Go 客户端一路通到 Qt 客户端，并用真实 Qt ↔ 真实 Go 平台验证过。
 P2 实质完成：客户端有了 `yiuk-vision`（抓屏/快照/节流/设备门）与 `yiuk-input`（原生鼠标）两个静态库，
 `take_screenshot` / `click` / `move_mouse` 都优先走原生通道，变化检测在设备侧完成，
 临时截图由 `screen.release` + 每会话保留 5 张 + 定时清理三重兜底（见 §2.1）。
-唯一没做的是原生 `click` / `move_mouse` 的真机 GUI 人工验收。视觉定位（P3）、`drag`（P4）仍未实现。
+唯一没做的是原生 `click` / `move_mouse` 的真机 GUI 人工验收。
+P3 第一步已完成：`find_on_screen`（UIA 文本定位）是第 23 个工具，返回截图坐标并可直接 click；
+图像模板匹配（OpenCV）、OCR 兜底与 `drag`（P4）仍未实现。
 
 ## 2. 现在到底有什么
 
@@ -37,6 +39,9 @@ P2 实质完成：客户端有了 `yiuk-vision`（抓屏/快照/节流/设备门
 | MCP 鼠标 | `click` / `move_mouse` 优先原生通道；只有 `UNSUPPORTED_CLIENT/OPERATION` 回退脚本，`STALE_SCREENSHOT` 等业务错误原样上报；结果带 `input_source` | `internal/agenttools/desktop_click.go`、`desktop_input.go`、`desktop_input_native.go` |
 | 设备级门 | `DeviceGate`：进程级互斥，抓屏与输入动作排队，排队可取消 | `qt-client/src/vision/devicegate.{h,cpp}` |
 | 临时截图回收 | 新原生操作 `screen.release`（只删截图目录内）；MCP 读完图片后尽力回收；每次抓屏清理 5 分钟前的残留 | `internal/agenttools/desktop_screenshot.go`、`internal/platform/core/handler_native.go`、`platformevents.cpp` |
+| Qt 文本定位 | `textlocator`：UIA 控制视图、节点/时间上限、全半角与空白归一化、exact/contains、control_type 与 region 过滤、阅读顺序排序 | `qt-client/src/vision/textlocator.{h,cpp}` |
+| 原生 `vision.find` | 参数解析 + `VisionService::searchText`（确保坐标基准 → UIA → 换算成截图坐标 → JSON） | `qt-client/src/platformevents_vision.cpp`、`platformevents.cpp` |
+| MCP `find_on_screen` | 第 23 个工具：校验/转发/登记坐标基准；能力缺失返回 `UNSUPPORTED_CLIENT`，**没有脚本回退** | `internal/agenttools/desktop_vision.go`、`catalog.go` |
 | Qt 接线 | 注册上报能力与版本；`execute_native` → 分发；结果走 `command_output`+`command_result`；取消/会话结束联动 | `qt-client/src/platformclient.{h,cpp}`、`platformevents.cpp`、`platformlink.cpp`、`mainwindow.h` |
 
 ### 2.2 测试与验证（当前全绿）
@@ -54,9 +59,10 @@ go vet ./...
 
 用例数量：平台侧原生通道 10 个（`internal/platform/gateway/native_test.go`）、
 Go 客户端 5 个（`internal/platformclient/native_test.go`）、Qt 分发器 18 项
-（`qt-client/tests/nativeops_test.cpp`）、Qt 视觉内核 66 项（`qt-client/tests/vision_test.cpp`）、Qt 原生输入 20 项
+（`qt-client/tests/nativeops_test.cpp`）、Qt 视觉内核 78 项（`qt-client/tests/vision_test.cpp`，含文本归一化与一次真实 UIA 查询）、Qt 原生输入 20 项
 （`qt-client/tests/input_test.cpp`）、Go 侧原生抓屏 4 个用例含 3 个畸形信封子用例
-（`desktop_screenshot_native_test.go`）、Go 侧原生鼠标 4 个用例（`desktop_input_native_test.go`）。
+（`desktop_screenshot_native_test.go`）、Go 侧原生鼠标 4 个用例（`desktop_input_native_test.go`）、
+Go 侧 `find_on_screen` 4 个用例（`desktop_vision_test.go`）。
 
 端到端（真实 Qt ↔ 真实 Go 平台）已验证过一次，命令见 §5.3。平台日志应出现：
 `command_submitted` → `command_finished` → `native_submitted operation=screen.capture` →
@@ -67,6 +73,8 @@ Go 客户端 5 个（`internal/platformclient/native_test.go`）、Qt 分发器 
 - **P1 剩余**：本机 bridge（`qt-client/src/localbridge.cpp` + `localtools.cpp`）的异步完成与有界原生请求体。
   只影响"没有平台"的本地 demo 后端；平台链路不受影响。
 - **P2 剩余**：只有真机 GUI 里对原生 `click` / `move_mouse` 的人工验收（单元测试与端到端协议都已通过）。
+- **P3 剩余**：图像模板匹配（需把 OpenCV 接进 Qt 构建）、OCR 兜底、`timeout_seconds` /
+  `wait_until_found` 等待语义、固定素材集与命中率验收。
 - **P3 起未做**：UIA/OCR 文本定位、`find_on_screen`/`click_target`/`drag`、
   模板管理、混合 DPI、ROI 缓存、发布。
 - `screen.capture` 现在有 MCP 入口了，但只是 `take_screenshot` 的实现细节：
@@ -169,6 +177,7 @@ $env:YIUK_DEVICE_ID          = "123456789"
 native_submitted operation=screen.capture          # 只回几何
 native_submitted operation=screen.capture          # max_width=800 + save=true，校验 PNG 真的落盘
 native_submitted operation=screen.release          # 回收临时截图，校验文件已删除
+native_submitted operation=vision.find             # UIA 文本定位，校验返回截图坐标与 screenshot_id
 ```
 
 进程退出码 0 才算通过；跑完 `%LOCALAPPDATA%\Yiuk\DeviceAssist\screenshots` 里不应留下文件。
@@ -240,6 +249,7 @@ OpenCV 静态构建的完整命令在 `spike/vision/README.md` §1。
 | 多显示器 / 混合 DPI / 负坐标 | 未测（P5） |
 | Qt 原生通道在真机 GUI 里的人工验收 | 只用互操作程序验证过协议往返，未在真实 GUI 会话里手动点过 |
 | MCP `take_screenshot` 原生全链路 | 未验：互操作里已跑通 `screen.capture`，但"原生抓屏 → `download_file` 取图 → Agent 收到图片"只在单元测试里验证过 |
+| `find_on_screen` 命中率 | 未测：UIA 链路已跑通（0 节点时约 320ms），但记事本/Edge/资源管理器三场景的命中率与 300ms 预算未实测 |
 | 原生截图临时文件的长期增长 | 机制已齐（release + 5 张上限 + 定时清理），但未长跑确认 |
 | 原生 `click` / `move_mouse` 真机行为 | 未验：只在单元测试里验证参数/坐标/回退；真实桌面上的点击与悬停需人工确认 |
 
