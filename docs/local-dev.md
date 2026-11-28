@@ -15,7 +15,8 @@
 | Qt | `D:\QT\6.11.1\mingw_64` | Qt 6.11.1 |
 | MinGW | `D:\QT\Tools\mingw1310_64\bin\g++.exe` | 13.1.0 posix-seh |
 | windeployqt | `D:\QT\6.11.1\mingw_64\bin\windeployqt.exe` | |
-| `rg` | `C:\Users\34345\.pi\agent\bin\rg.exe`（pi 自带，不在 Git Bash 的 coreutils 里） | |
+| `rg` | `C:\Users\34345\.pi\agent\bin\rg.exe`（pi 自带） | |
+| coreutils | 已修：`~/.pi/agent/bin` 的包装脚本转发到 `C:\msys64\usr\bin`（`node ~/.pi/agent/fix-bash-coreutils.mjs` 可重建） | |
 | 已有构建目录 | `E:\Yiuk_AgentRemote\qt-client\build-qt`（Ninja + Release，已配置好） | |
 
 主机：Windows 10/11 x64，系统语言中文（代码页 936），显示 2560×1600 @125%。
@@ -191,7 +192,10 @@ fixture 30 秒内没等到事件会打印 `FIXTURE FAIL` 并退出 1。
 
 ## 6. 本机已知坑
 
-1. **这个 Git Bash 没有 coreutils**：`ls`、`grep`、`head`、`sed`、`mkdir` 都不存在，`cat` 也不可靠。脚本里用 PowerShell 或 `rg`（路径见 §1）。
+1. **Git Bash 没有 coreutils（已修）**：根因是 pi 的 `shellPath` 用 MSYS2 的 `bash.exe` 非登录启动，
+   拿不到 `C:\msys64\usr\bin`。现在 `~/.pi/agent/bin` 里有一层包装脚本转发到同一个 MSYS 根，
+   重建命令 `node ~/.pi/agent/fix-bash-coreutils.mjs`。**不要**把包装脚本指向别的 MSYS 根
+   （`E:\Git\usr\bin` 会让带引号的通配符被提前展开）。仍缺 `xxd/patch/zip/tree/strings`。
 2. **中文控制台乱码**：系统代码页 936，UTF-8 内容在 `cmd` / Git Bash 里会显示成乱码（文件本身没问题）。要看清先 `[Console]::OutputEncoding = [Text.Encoding]::UTF8`，或把输出重定向到文件再用编辑器打开。
 3. **PowerShell 5.1 按 ANSI 读无 BOM 的 .ps1**：脚本里出现中文会变成乱码字符串，进而把参数传给子进程也一起坏。临时脚本要么只写 ASCII，要么存成 UTF-8 with BOM；给面板传中文参数建议走上面 §5.3 的写法。
 4. **125% 缩放**：客户端与活动面板都是 Per-Monitor V2 DPI 感知，按物理像素工作；从 PowerShell（DPI 未感知）取到的窗口矩形是虚拟化坐标，`CopyFromScreen` 抓到的是 2048×1280 的重采样桌面，像素级核对要按 `×1.25` 换算回物理坐标。

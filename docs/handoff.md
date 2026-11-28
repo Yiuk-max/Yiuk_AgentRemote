@@ -14,7 +14,7 @@
 
 客户端已有两套原生内核：`yiuk-vision`（GDI 抓屏 / 快照 / 节流 / 设备门 / UIA / OpenCV）与 `yiuk-input`（SendInput / 确定性轨迹 / 按键守卫 / 灰度变化检测）。`take_screenshot`、`click`、`move_mouse`、`find_on_screen`、`drag` 现在都优先走客户端原生通道，旧客户端自动回退脚本（`find_on_screen` / `drag` 除外，它们必须原生）。
 
-工作区干净，最新提交 `ce1e5e7`。
+工作区干净，最新提交 `49fa56c`（本文档自身）。
 
 ## 2. 能做什么
 
@@ -159,7 +159,14 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 7. **模板要在同一状态截取**：标题栏激活/未激活像素不同；窗口被销毁的瞬间会被判成"巨大变化"（换窗口/退出前不要采样）。
 8. **窗口移动有延迟**：拖动后立刻按"新位置"再按，可能还没移到位而点到客户区。每段之前用 `GetWindowRect` 确认，或先 OpenCV 重新定位。
 9. **屏幕边缘有第三方浮层**：这台机器常驻 `MyDockFinder`，会抢边缘点击；验收里用"中部 300px 闭环"的冒烟模式。
-10. **Git Bash 没有 coreutils**：`ls/grep/head/sed` 都不存在，用 `rg`、PowerShell 或 Go；中文控制台是 CP936，看文件用编辑器。
+10. **Git Bash 的 coreutils（已修）**：pi 的 `shellPath` 指向 `C:\msys64\usr\bin\bash.exe`，以 `bash -c`
+    非登录方式启动，不读 `/etc/profile`，而 Windows PATH 里没有 `C:\msys64\usr\bin`，所以
+    `ls/grep/head/sed/find` 曾经全部 `command not found`。修法：在 `~/.pi/agent/bin`（pi 已把它放在
+    子进程 PATH 首位）放一层包装脚本，转发到**同一个 MSYS 根**的 exe，重建命令
+    `node ~/.pi/agent/fix-bash-coreutils.mjs`（幂等）。两条纪律：① **不要跨 MSYS 根**
+    （指向 `E:\Git\usr\bin\*` 会让 `'*.md'` 这类带引号的通配符被提前展开，`/tmp` 也会解析到另一个根）；
+    ② `settings.shellPath` 别改成 Git 的 `bash.exe`，同样原因。仍缺 `xxd/patch/zip/tree/strings`
+    （`pacman -S` 可装；`diff/cmp/unzip` 已补）。中文控制台仍是 CP936，看文件用编辑器。
 
 ## 7. 已知限制与未验证
 
