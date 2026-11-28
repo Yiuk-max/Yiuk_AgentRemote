@@ -17,10 +17,17 @@ namespace {
 
 // 每个 worker 线程自己 CoInitializeEx，离开作用域就 CoUninitialize；
 // UIA 用 MTA 就够（探针里也是这个用法），不需要消息泵。
+//
+// 注意 RPC_E_CHANGED_MODE：调用线程已经用别的 apartment 初始化过 COM（典型是 Qt 主线程
+// 被 OleInitialize 拉成 STA）。这种情况下 CoInitializeEx 失败但 COM **是**可用的，
+// UIA 在 STA 线程里照样能当客户端用；把它当“COM 不可用”会让 find/click_target
+// 在主线程里直接降级成 UIA_UNAVAILABLE。只在自己初始化成功时才配对 Uninitialize。
 struct ComScope {
     HRESULT result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    bool owns = SUCCEEDED(result);
+    bool usable() const { return owns || result == RPC_E_CHANGED_MODE; }
     ~ComScope() {
-        if (SUCCEEDED(result)) CoUninitialize();
+        if (owns) CoUninitialize();
     }
 };
 
@@ -135,7 +142,7 @@ bool findText(const TextQuery &query, TextSearchOutcome *outcome, QString *code,
                     QStringLiteral("未知的 control_type：%1").arg(query.controlType));
 
     ComScope com;
-    if (FAILED(com.result))
+    if (!com.usable())
         return fail(QStringLiteral("UIA_UNAVAILABLE"),
                     QStringLiteral("UIA 初始化失败（COM 不可用），可能处于受限会话"));
 

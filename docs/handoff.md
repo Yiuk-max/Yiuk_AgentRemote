@@ -98,9 +98,10 @@ go test -race ./internal/agenttools/ ./internal/platformclient/ ./internal/platf
 
 ```powershell
 & "D:\QT\Tools\Ninja\ninja.exe" -C qt-client\build-qt
-.\qt-client\build-qt\yiuk-vision-test.exe       # 抓屏/快照/节流/设备门/回收/UIA/OpenCV
+.\qt-client\build-qt\yiuk-vision-test.exe       # 抓屏/快照/节流/设备门/回收/UIA/OpenCV/pickTarget
 .\qt-client\build-qt\yiuk-input-test.exe        # 轨迹/变化判据/采样
 .\qt-client\build-qt\yiuk-nativeops-test.exe    # 分发器能力/取消/超时/去重
+.\qt-client\build-qt\yiuk-click-target-test.exe # 真机：真窗口 + 真 UIA + 真 SendInput（会动鼠标）
 ```
 
 ### 4.3 真实 Qt ↔ 真实 Go 平台（互操作）
@@ -147,6 +148,7 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 | `drag`（fixture 窗口） | 全屏 5 段 `reached true`、回到起点；冒烟 4 段同样通过 |
 | OpenCV 定位 | 任务管理器标题栏 `160x30 @758,341` 在全屏 2560×1600 中匹配回同一点，`score 1.0000` |
 | 任务管理器拖动（真实客户端 + 真实平台） | 起点 `(752,337)` → 右 `+592` → 下 `+323` → 左 `−1344` → 上 `−323` → 右 `+752`，最终 `rect = 752,337`，**闭环** |
+| `click_target` 真机（`yiuk-click-target-test`，裸 Win32 按钮 fixture） | 未命中 `NOT_FOUND` 且 0 次 down；两个同标签按钮 `AMBIGUOUS_TARGET` 且 0 次 down；`pick=index:2` 只点到第二个（`clicks[2]==1`，其余 0）；`pick=best` 点到唯一按钮；落点 `(969,348)` 在命中框 `[799,322,1139,374]` 内 |
 | 绿色化 | `data\` 内出现配置/身份/`screenshots\`/`tmp\`；`data\tmp` 可见正在执行的 `.ps1`；C 盘旧目录不再写入 |
 
 ## 6. 踩过的坑（改输入/视觉前必读）
@@ -160,6 +162,15 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 7. **模板要在同一状态截取**：标题栏激活/未激活像素不同；窗口被销毁的瞬间会被判成"巨大变化"（换窗口/退出前不要采样）。
 8. **窗口移动有延迟**：拖动后立刻按"新位置"再按，可能还没移到位而点到客户区。每段之前用 `GetWindowRect` 确认，或先 OpenCV 重新定位。
 9. **屏幕边缘有第三方浮层**：这台机器常驻 `MyDockFinder`，会抢边缘点击；验收里用"中部 300px 闭环"的冒烟模式。
+10. **UIA 的逗号坑（已修）**：`findText` 把 `CoInitializeEx` 返回的 `RPC_E_CHANGED_MODE` 当"COM 不可用"，
+    导致在**已经初始化过 COM 的线程**里（典型是 Qt 主线程，被 OleInitialize 拉成 STA）
+    `find_on_screen` / `click_target` 直接降级成 `UIA_UNAVAILABLE`。现在把该返回值当"COM 可用、只是不归我管"，
+    只在自己初始化成功时才配对 `CoUninitialize`。客户端 handler 本来跑在线程池里，所以日常路径碰不到；
+    但写测试/工具直接在主线程调用时会中。
+11. **Qt 窗口的 UIA 包围盒是逻辑像素**：Qt 的无障碍桥按 DIP 上报 `BoundingRectangle`，
+    在 125% 缩放下比物理像素小一圈（实测按钮 `784,477` vs UIA `980,596`）。原生 Win32 窗口没这个问题。
+    所以验收 fixture 用裸 Win32 BUTTON 而不是 Qt 控件；对真实 Qt 目标做 `text` 定位时，
+    命中的中心会落在真实位置左上方向，需要靠 `image` 模板或 `region` 修正（待评估）。
 10. **Git Bash 的 coreutils（已修）**：pi 的 `shellPath` 指向 `C:\msys64\usr\bin\bash.exe`，以 `bash -c`
     非登录方式启动，不读 `/etc/profile`，而 Windows PATH 里没有 `C:\msys64\usr\bin`，所以
     `ls/grep/head/sed/find` 曾经全部 `command not found`。修法：在 `~/.pi/agent/bin`（pi 已把它放在
@@ -174,7 +185,8 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 | 项 | 状态 |
 | --- | --- |
 | OCR 兜底 | 未实现（UIA 已可用；`OCR_UNAVAILABLE` 语义待补） |
-| `find_on_screen` 的 `timeout_seconds` / `wait_until_found` | 未实现 |
+| `find_on_screen` / `click_target` 的等待语义 | 未实现（`timeout_seconds` + `wait_until_found`） |
+| 非原生 Win32 目标（Qt/WPF）的 UIA 坐标 | 已验证 Qt 目标上报逻辑像素（见 §6.11），未做修正 |
 | 多显示器 / 混合 DPI / 负原点 | 未验证（P5） |
 | 模板管理（`vision.save_template`）、ROI 缓存 | 未实现（P5） |
 | Windows CI + OpenCV 静态构建缓存 | 未做（P6）；本机 exe 因 OpenCV 增加 ~5.7MB |

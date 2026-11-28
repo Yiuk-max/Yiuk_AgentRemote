@@ -227,6 +227,13 @@ if(YIUK_BUILD_TESTS)
         target_link_libraries(yiuk-input-fixture PRIVATE user32 gdi32)
     endif()
 
+    # click_target 真机验收：真窗口 + 真 UIA + 真 SendInput，判据是窗口收到的点击事件。
+    # 会真的动鼠标，所以只在 YIUK_BUILD_TESTS 里构建、且由人手动跑。
+    qt_add_executable(yiuk-click-target-test tests/click_target_test.cpp)
+    set_target_properties(yiuk-click-target-test PROPERTIES WIN32_EXECUTABLE FALSE)
+    target_include_directories(yiuk-click-target-test PRIVATE src)
+    target_link_libraries(yiuk-click-target-test PRIVATE Qt6::Widgets yiuk-vision)
+
     # 原生输入的行为测试：轨迹端点/单调性/可复现性、灰度变化判据、点击区域采样。
     # 不注入键鼠：只验证纯逻辑与"采样能拿到数据"，真实点击由真机验收。
     qt_add_executable(yiuk-input-test tests/input_test.cpp)

@@ -190,6 +190,17 @@ fixture 30 秒内没等到事件会打印 `FIXTURE FAIL` 并退出 1。
 并设置 `$env:YIUK_INTEROP_DETECT_CHANGE = "1"`。左半区会深/浅换色（应 `changed=true`），
 右半区点击不改像素（应 `changed=false`）。
 
+### 5.5 `click_target` 真机验收（会真的动鼠标）
+
+```powershell
+E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-click-target-test.exe   # 退出码 0 + CLICKTARGET OK
+```
+
+自己建一个裸 Win32 窗口（5 个按钮：1 个唯一标签、2 个同标签、2 个占位），
+依次验收：未命中 `NOT_FOUND` 不点、同标签 `AMBIGUOUS_TARGET` 不点、`pick=index:2` 只点第二个、
+`pick=best` 点唯一那个、落点在命中框内。不需要平台，也不需要客户端。
+**要看得到桌面**：拿不到前台窗口时它打印 `SKIP ...` 并返回 2（不当失败）。
+
 ## 6. 本机已知坑
 
 1. **Git Bash 没有 coreutils（已修）**：根因是 pi 的 `shellPath` 用 MSYS2 的 `bash.exe` 非登录启动，
