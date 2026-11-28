@@ -94,7 +94,9 @@ E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-device-assist.exe
 
 本机已有一份 TLS 联调用的自签证书：`tmp-tls\server.crt`、`tmp-tls\server.key`（`tmp-*` 与证书都在 `.gitignore` 里，不会进仓库）。
 
-起本地平台服务要三个东西：Redis + core + gateway。注意 `platform.yaml` 里的证书是相对路径，要在证书目录运行。
+起本地平台服务要三个东西：Redis + core + gateway。注意 `platform.yaml` 里的证书是相对路径，
+**gateway 必须在证书目录（`tmp-tls`）里运行**，否则报 `open server.crt: The system cannot find the file specified`
+（`allow_insecure: true` 也绕不过：它只表示允许不校验证书，TLS 监听仍然要证书文件）。
 
 ```powershell
 cd E:\Yiuk_AgentRemote
@@ -104,8 +106,10 @@ go run ./cmd/dev-redis              # 挂在 127.0.0.1:6379；有真 Redis 就�
 
 # 2) 同一份配置，两个进程各取自己那一侧（先把 player_password 换掉）
 Copy-Item configs\platform.yaml tmp-tls\platform.yaml
+# gateway 会读 server.crt/server.key（即使 allow_insecure: true 也要文件存在），必须从 tmp-tls 里跑：
+openssl req -x509 -newkey rsa:2048 -nodes -keyout tmp-tls\server.key -out tmp-tls\server.crt -days 2 -subj "//CN=127.0.0.1"
 go run ./cmd/platform-core    -config tmp-tls\platform.yaml
-go run ./cmd/platform-gateway -config tmp-tls\platform.yaml   # 另开一个窗口
+cd tmp-tls; go build -o platform-gateway.exe ..\cmd\platform-gateway; .\platform-gateway.exe -config platform.yaml; cd ..
 
 # 3) 看路由表：网关存活键 + 每条连接的归属 + 设备路由
 go run ./cmd/dev-routes
@@ -120,8 +124,14 @@ Redis 里应该能看到 `agentremote:gateway:gw-1`；客户端连上后会多�
 ```powershell
 $env:YIUK_PLATFORM_ADDRESS = "127.0.0.1:25664"
 $env:YIUK_PLATFORM_PASSWORD = "<platform.yaml 的 player_password>"
+$env:YIUK_PLATFORM_TLS = "1"
+$env:YIUK_PLATFORM_CA = "E:\Yiuk_AgentRemote\tmp-tls\server.crt"
 E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-platform-interop.exe
 ```
+
+注意：`allow_insecure: true` 时网关**仍然只服务 TLS**（客户端发明文会得到
+`client sent an HTTP request to an HTTPS server`），所以上面是 TLS + CA，不是明文。
+它是 GUI 子系统的 exe，控制台看不到输出，**只看退出码**。
 
 覆盖认证、注册、申请、批准、执行、结果回传、关闭会话。需要 `-DYIUK_BUILD_TESTS=ON` 的构建。
 
@@ -177,7 +187,8 @@ E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-input-fixture.exe   # 置顶窗口�
 # 按 §4 起 Redis + core + gateway 之后：
 $env:YIUK_PLATFORM_ADDRESS  = "127.0.0.1:25664"
 $env:YIUK_PLATFORM_PASSWORD = "<player-password>"
-$env:YIUK_PLATFORM_INSECURE = "1"
+$env:YIUK_PLATFORM_TLS      = "1"
+$env:YIUK_PLATFORM_CA       = "E:\Yiuk_AgentRemote\tmp-tls\server.crt"
 $env:YIUK_INTEROP_NATIVE    = "1"
 $env:YIUK_INTEROP_INPUT     = "1"
 E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-platform-interop.exe

@@ -108,13 +108,19 @@ go test -race ./internal/agenttools/ ./internal/platformclient/ ./internal/platf
 
 平台配置要点：`allow_insecure: true`、`player_password: "interop-player-password-123456"`、`log_file` 用当前目录的相对路径。
 **平台是内存态：每次重跑前重启 core+gateway**，否则第二次注册会因为密码已轮换而拿不到同一个设备码。
+证书是相对路径，**gateway 必须从证书目录启动**（`cd tmp-tls && ./platform-gateway.exe -config platform.yaml`）；
+并且 `allow_insecure: true` 时网关仍然只服务 TLS，所以客户端要带 CA：
+`allow_insecure` 只意味着“允许不校验证书”，不是“可以用明文”。
 
 ```powershell
+# tmp-tls 下一次性的准备（自签证书 + 配置拷贝）
+openssl req -x509 -newkey rsa:2048 -nodes -keyout server.key -out server.crt -days 2 -subj "//CN=127.0.0.1"
 $env:YIUK_PLATFORM_ADDRESS  = "127.0.0.1:25664"
 $env:YIUK_PLATFORM_PASSWORD = "interop-player-password-123456"
-$env:YIUK_PLATFORM_INSECURE = "1"
+$env:YIUK_PLATFORM_TLS      = "1"
+$env:YIUK_PLATFORM_CA       = "E:\Yiuk_AgentRemote\tmp-tls\server.crt"
 $env:YIUK_INTEROP_NATIVE    = "1"
-.\qt-client\build-qt\yiuk-platform-interop.exe
+.\qt-client\build-qt\yiuk-platform-interop.exe   # 看退出码：INTEROP=0
 ```
 
 依次应出现：`screen.capture` → `screen.capture(save)` → `screen.release` → `vision.find` →
@@ -149,6 +155,7 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 | OpenCV 定位 | 任务管理器标题栏 `160x30 @758,341` 在全屏 2560×1600 中匹配回同一点，`score 1.0000` |
 | 任务管理器拖动（真实客户端 + 真实平台） | 起点 `(752,337)` → 右 `+592` → 下 `+323` → 左 `−1344` → 上 `−323` → 右 `+752`，最终 `rect = 752,337`，**闭环** |
 | `click_target` 真机（`yiuk-click-target-test`，裸 Win32 按钮 fixture） | 未命中 `NOT_FOUND` 且 0 次 down；两个同标签按钮 `AMBIGUOUS_TARGET` 且 0 次 down；`pick=index:2` 只点到第二个（`clicks[2]==1`，其余 0）；`pick=best` 点到唯一按钮；落点 `(969,348)` 在命中框 `[799,322,1139,374]` 内 |
+| 互操作（真实 Qt ↔ 真实 Go 平台） | `INTEROP EXIT=0`；平台审计里 5 条 `native_submitted`：`screen.capture` ×2、`screen.release`、`vision.find`、`vision.click_target` |
 | 绿色化 | `data\` 内出现配置/身份/`screenshots\`/`tmp\`；`data\tmp` 可见正在执行的 `.ps1`；C 盘旧目录不再写入 |
 
 ## 6. 踩过的坑（改输入/视觉前必读）
