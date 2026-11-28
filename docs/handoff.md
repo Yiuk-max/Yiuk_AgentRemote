@@ -180,7 +180,7 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 | 模板（`yiuk-vision-test`，真实抓屏） | 从最近一帧裁 160×80：`template_id` 12 位 hex、`loadTemplate` 读回同尺寸；旧 `screenshot_id` → `STALE_SCREENSHOT`；越界/超大 region → `INVALID_ARGUMENT`/`TEMPLATE_TOO_LARGE`；`../../windows/win.ini` → `INVALID_ARGUMENT`；损坏文件 → `TEMPLATE_CORRUPTED`；索引写满 100 条 → `TEMPLATE_QUOTA_EXCEEDED` |
 | OCR（`yiuk-vision-test`，GDI 画字，不读桌面） | `zh-Hans-CN`、2 行、**29 ms**；归一化后命中「收 藏」与 `Settings`，词框并集落在画字位置 `(32,49) 78×39` |
 | OCR 端到端（`yiuk-click-target-test`，`source=ocr` + `region`） | 中文按钮「收藏 首页 设置」被 OCR 读到并点中：`source=ocr`、`clicks[5]==1`，其余按钮 0 次 |
-| 发布包 0.1.9 | `Release/YiukDeviceAssist-0.1.9-win64`（82 MB，目录）+ zip（35.7 MB）+ sha256；在**不含 Qt/MinGW 的 PATH** 下启动成功，标题 `Yiuk Device Assist 0.1.9`，`data` 就地创建 |
+| 发布包 0.1.9 | `Release/YiukDeviceAssist-0.1.9-win64`（82 MB / 24 个文件）+ zip（34 MB）+ sha256 `6ce3df6d…8787`；在**不含 Qt/MinGW 的 PATH** 下启动成功（含 `save_template`/OCR/hint），`data` 就地创建 |
 | 失败 hint（`yiuk-vision-test`） | 纯色区域说"没有可用纹理"（不提阈值）、普通未命中带"最高分 0.71 < 阈值 0.88"、歧义带候选数与 `pick` 用法、缺语言包/模板配额/模板不存在各指向具体动作、未知错误码不编造 |
 | 绿色化 | `data\` 内出现配置/身份/`screenshots\`/`tmp\`；`data\tmp` 可见正在执行的 `.ps1`；C 盘旧目录不再写入 |
 
