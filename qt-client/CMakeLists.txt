@@ -20,14 +20,19 @@ add_library(yiuk-vision STATIC
     src/vision/sessionlimiter.h
     src/vision/devicegate.cpp
     src/vision/devicegate.h
+    src/vision/textlocator.cpp
+    src/vision/textlocator.h
     src/vision/visionservice.cpp
     src/vision/visionservice.h
 )
 target_include_directories(yiuk-vision PUBLIC src)
 target_link_libraries(yiuk-vision PUBLIC Qt6::Gui)
 if(WIN32)
-    # 抓屏走 GDI：MinGW 下必须显式链接 gdi32/user32。
-    target_link_libraries(yiuk-vision PUBLIC gdi32 user32)
+    # 抓屏走 GDI，文本定位走 UIA（COM）：MinGW 下必须显式链接这些系统库。
+    target_link_libraries(yiuk-vision PUBLIC gdi32 user32 ole32 oleaut32 uuid)
+    # NOMINMAX 防止 windows.h 的 min/max 宏破坏 std::max；UIA 需要 _WIN32_WINNT >= Win7。
+    target_compile_definitions(yiuk-vision PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
 endif()
 set_target_properties(yiuk-vision PROPERTIES FOLDER "libs")
 
@@ -65,6 +70,7 @@ qt_add_executable(yiuk-device-assist WIN32
     src/pages_settings.cpp
     src/platformlink.cpp
     src/platformevents.cpp
+    src/platformevents_vision.cpp
     src/sessionflow.cpp
     src/activity.cpp
     src/activitypanel.cpp

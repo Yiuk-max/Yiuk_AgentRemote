@@ -3,6 +3,7 @@
 #include "devicegate.h"
 #include "sessionlimiter.h"
 #include "snapshotstore.h"
+#include "textlocator.h"
 
 #include <QObject>
 #include <QString>
@@ -57,6 +58,17 @@ public:
         VisionService *service_ = nullptr;
         bool held_ = false;
     };
+
+    // 一次完整的文本查找：确保坐标基准 -> UIA 查找 -> 换算成截图坐标 -> 组装 data。
+    // data 里包含截图几何、screenshot_id 与 matches，可直接作为原生操作的业务数据；
+    // 只有 text 定位放在这里，图像匹配（OpenCV）等实现后再扩展。
+    bool searchText(const QString &sessionId, const TextQuery &query, const std::atomic_bool *cancelled,
+                    QJsonObject *data, QString *code, QString *message);
+
+    // 把物理屏幕矩形换算成最近一张截图的坐标（vision.find 的返回坐标）。
+    // 没有截图、或几何无效时返回 false，并通过 code 说明原因。
+    bool screenRectToScreenshot(const QString &sessionId, const QRect &screenRect, QRect *out, SnapshotRef *ref,
+                                QString *code, QString *message) const;
 
     // 删除一张已下载完的临时截图：只删文件，保留快照元数据（screenshot_id 仍然有效）。
     // 只接受 screenshots 目录内的路径，避免把任意文件删除变成远程能力。

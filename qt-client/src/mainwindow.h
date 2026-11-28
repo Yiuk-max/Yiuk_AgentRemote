@@ -55,6 +55,8 @@
 #include <QSaveFile>
 #include <QTimer>
 
+#include <atomic>
+
 #ifndef YIUK_CLIENT_VERSION
 #define YIUK_CLIENT_VERSION "dev"
 #endif
@@ -204,6 +206,8 @@ private:
     void onPlatformNativeRequested(const QString &sessionId, const QString &requestId, const QString &operation,
                                    const QJsonObject &arguments, int timeoutSeconds);
     void setupNativeOperations();
+    // 原生操作 vision.find：UIA 文本定位，返回最近截图的坐标与 screenshot_id。
+    QJsonObject runVisionFind(const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled);
     void sendNativeEnvelope(const QString &sessionId, const QString &requestId, const QJsonObject &envelope);
     struct FileDownloadState {
         QString sessionId;

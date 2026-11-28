@@ -5,6 +5,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QtMath>
 #include <QStandardPaths>
 
@@ -166,6 +168,93 @@ bool VisionService::validateScreenshotId(const QString &sessionId, const QString
 
 bool VisionService::latestScreenshot(const QString &sessionId, SnapshotRef *out) const {
     return store_.latest(sessionId, out);
+}
+
+bool VisionService::searchText(const QString &sessionId, const TextQuery &query,
+                               const std::atomic_bool *cancelled, QJsonObject *data, QString *code,
+                               QString *message) {
+    auto fail = [code, message](const QString &failureCode, const QString &failureMessage) {
+        if (code) *code = failureCode;
+        if (message) *message = failureMessage;
+        return false;
+    };
+    if (data == nullptr) return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("data 为空"));
+
+    // 坐标基准：没有就必须先抓一张（不落盘），否则返回的坐标无处可用。
+    SnapshotRef ref;
+    if (!latestScreenshot(sessionId, &ref)) {
+        CaptureOptions options;
+        options.saveToDisk = false;
+        CaptureOutcome outcome;
+        if (!capture(sessionId, options, cancelled, &outcome, code, message)) return false;
+        if (!latestScreenshot(sessionId, &ref))
+            return fail(QStringLiteral("SCREENSHOT_FAILED"), QStringLiteral("无法建立坐标基准"));
+    }
+
+    TextSearchOutcome outcome;
+    if (!findText(query, &outcome, code, message)) return false;
+
+    QJsonArray matches;
+    for (const TextMatch &hit : outcome.matches) {
+        QRect shotRect;
+        SnapshotRef ignored;
+        if (!screenRectToScreenshot(sessionId, hit.rect, &shotRect, &ignored, code, message)) continue;
+        const int left = shotRect.left();
+        const int top = shotRect.top();
+        // bbox 为 [left,top,right,bottom]，右下开区间；center 取像素中心。
+        matches.append(QJsonObject{
+            {QStringLiteral("bbox"), QJsonArray{left, top, left + shotRect.width(), top + shotRect.height()}},
+            {QStringLiteral("center"),
+             QJsonArray{left + shotRect.width() / 2, top + shotRect.height() / 2}},
+            {QStringLiteral("score"), hit.score},
+            {QStringLiteral("source"), hit.source},
+            {QStringLiteral("text"), hit.name},
+            {QStringLiteral("control_type"), hit.controlType},
+        });
+    }
+
+    QJsonObject payload = geometryToJson(ref.geometry);
+    payload.insert(QStringLiteral("captured"), true);
+    payload.insert(QStringLiteral("screenshot_id"), ref.id);
+    payload.insert(QStringLiteral("layout_version"), ref.layoutVersion);
+    payload.insert(QStringLiteral("matches"), matches);
+    payload.insert(QStringLiteral("truncated"), outcome.truncated);
+    payload.insert(QStringLiteral("visited_nodes"), outcome.visitedNodes);
+    payload.insert(QStringLiteral("elapsed_ms"), outcome.elapsedMs);
+    payload.insert(QStringLiteral("source"), QStringLiteral("uia"));
+    *data = payload;
+    return true;
+}
+
+bool VisionService::screenRectToScreenshot(const QString &sessionId, const QRect &screenRect, QRect *out,
+                                            SnapshotRef *ref, QString *code, QString *message) const {
+    auto fail = [code, message](const QString &failureCode, const QString &failureMessage) {
+        if (code) *code = failureCode;
+        if (message) *message = failureMessage;
+        return false;
+    };
+    SnapshotRef latest;
+    if (!store_.latest(sessionId, &latest))
+        return fail(QStringLiteral("SCREENSHOT_REQUIRED"),
+                    QStringLiteral("该会话还没有截图；坐标必须以最近一次截图为基准"));
+    const ScreenGeometry &geometry = latest.geometry;
+    if (geometry.width <= 0 || geometry.height <= 0 || geometry.screenWidth <= 0 || geometry.screenHeight <= 0)
+        return fail(QStringLiteral("SCREENSHOT_FAILED"), QStringLiteral("快照缺少有效的几何信息"));
+    if (ref) *ref = latest;
+    if (out) {
+        const auto scaleX = [&](int value) {
+            return qRound(static_cast<double>(value - geometry.left) * geometry.width / geometry.screenWidth);
+        };
+        const auto scaleY = [&](int value) {
+            return qRound(static_cast<double>(value - geometry.top) * geometry.height / geometry.screenHeight);
+        };
+        const int left = scaleX(screenRect.left());
+        const int top = scaleY(screenRect.top());
+        const int right = scaleX(screenRect.left() + screenRect.width());
+        const int bottom = scaleY(screenRect.top() + screenRect.height());
+        *out = QRect(left, top, qMax(1, right - left), qMax(1, bottom - top));
+    }
+    return true;
 }
 
 bool VisionService::releaseScreenshotFile(const QString &sessionId, const QString &path, QString *code,

@@ -77,6 +77,22 @@ int main(int argc, char *argv[]) {
             if (!outcome.filePath.isEmpty()) data.insert(QStringLiteral("path"), outcome.filePath);
             return NativeOperationDispatcher::envelopeOk(data);
         });
+    // 文本定位：与真实客户端共用 VisionService::searchText，连坐标换算都不另写一份。
+    dispatcher.registerOperation(
+        QStringLiteral("vision.find"),
+        [vision](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
+            yiuk::vision::TextQuery query;
+            query.text = arguments.value(QStringLiteral("text")).toString();
+            query.match = arguments.value(QStringLiteral("match")).toString(QStringLiteral("contains"));
+            query.controlType = arguments.value(QStringLiteral("control_type")).toString();
+            query.limit = qBound(1, arguments.value(QStringLiteral("limit")).toInt(5), 20);
+            QJsonObject data;
+            QString code;
+            QString message;
+            if (!vision->searchText(sessionId, query, cancelled, &data, &code, &message))
+                return NativeOperationDispatcher::envelopeError(code, message);
+            return NativeOperationDispatcher::envelopeOk(data);
+        });
     // 临时截图回收：下载完由 MCP 调用，这里验证"只删截图目录内的文件"这条路径能跑通。
     dispatcher.registerOperation(
         QStringLiteral("screen.release"),
@@ -102,7 +118,8 @@ int main(int argc, char *argv[]) {
     deviceConfig.caFile = caFile;
     deviceConfig.enabled = true;
     deviceConfig.clientVersion = QStringLiteral("interop");
-    deviceConfig.capabilities = QStringList{QStringLiteral("screen.capture"), QStringLiteral("screen.release")};
+    deviceConfig.capabilities = QStringList{QStringLiteral("screen.capture"), QStringLiteral("screen.release"),
+                                            QStringLiteral("vision.find")};
     device->setConfig(deviceConfig);
 
     auto *operatorClient = new PlatformClient(&app);
@@ -135,6 +152,7 @@ int main(int argc, char *argv[]) {
     bool nativeResultOk = false;
     bool savedResultOk = false;
     bool releasedResultOk = false;
+    bool findResultOk = false;
     QString savedScreenshotPath;
     bool sessionClosed = false;
     int failures = 0;
@@ -272,6 +290,21 @@ int main(int argc, char *argv[]) {
             }
             releasedResultOk = true;
             qInfo() << "operator saw screenshot release";
+            return;
+        }
+        if (requestId == QLatin1String("interop-native-find")) {
+            // 只要求链路通：前台窗口里本来就不该有这串测试文本，空结果也算成功。
+            const QString screenshotId = payload.value(QStringLiteral("screenshot_id")).toString();
+            if (!payload.value(QStringLiteral("captured")).toBool() || screenshotId.size() != 12 ||
+                !payload.value(QStringLiteral("matches")).isArray() ||
+                payload.value(QStringLiteral("width")).toInt() <= 0) {
+                qWarning() << "vision.find payload is wrong" << payload;
+                ++failures;
+                return;
+            }
+            findResultOk = true;
+            qInfo() << "operator saw vision.find result" << payload.value(QStringLiteral("visited_nodes")).toInt()
+                    << "nodes" << payload.value(QStringLiteral("elapsed_ms")).toInt() << "ms";
         }
     });
     QObject::connect(operatorClient, &PlatformClient::commandResultReceived, &app,
@@ -304,6 +337,16 @@ int main(int argc, char *argv[]) {
         }
         if (requestId == QLatin1String("interop-native-release")) {
             if (!releasedResultOk) ++failures;
+            qInfo() << "submitting native operation vision.find";
+            operatorClient->submitNative(sessionId, QStringLiteral("interop-native-find"),
+                                         QStringLiteral("vision.find"),
+                                         QJsonObject{{QStringLiteral("text"), QStringLiteral("yiuk-interop-absent-9f3a")},
+                                                     {QStringLiteral("limit"), 3}},
+                                         10);
+            return;
+        }
+        if (requestId == QLatin1String("interop-native-find")) {
+            if (!findResultOk) ++failures;
             operatorClient->requestSessionClose(sessionId);
             return;
         }
@@ -368,10 +411,12 @@ int main(int argc, char *argv[]) {
         qWarning() << "command round trip did not complete";
         return 1;
     }
-    if (nativeEnabled && (!nativeSent || !nativeSeen || !nativeResultOk || !savedResultOk || !releasedResultOk)) {
+    if (nativeEnabled && (!nativeSent || !nativeSeen || !nativeResultOk || !savedResultOk || !releasedResultOk ||
+                          !findResultOk)) {
         qWarning() << "native round trip did not complete"
                    << "sent:" << nativeSent << "seen:" << nativeSeen << "ok:" << nativeResultOk
-                   << "saved:" << savedResultOk << "released:" << releasedResultOk;
+                   << "saved:" << savedResultOk << "released:" << releasedResultOk
+                   << "find:" << findResultOk;
         return 1;
     }
     return result == 0 && sessionClosed ? 0 : 1;

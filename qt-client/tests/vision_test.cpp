@@ -9,6 +9,7 @@
 #include "vision/screengrab.h"
 #include "vision/sessionlimiter.h"
 #include "vision/snapshotstore.h"
+#include "vision/textlocator.h"
 #include "vision/visionservice.h"
 
 #include <QCoreApplication>
@@ -180,6 +181,57 @@ void testLimiter() {
         interval.release(QStringLiteral("s1"));
     }
     check(intervalClock.elapsed() >= 200, QStringLiteral("min interval is enforced between captures"));
+}
+
+void testTextNormalization() {
+    using yiuk::vision::normalizeText;
+    check(normalizeText(QStringLiteral("Save As")) == normalizeText(QStringLiteral("saveas")),
+          QStringLiteral("normalization ignores spaces and case"));
+    check(normalizeText(QStringLiteral("收 藏")) == normalizeText(QStringLiteral("收藏")),
+          QStringLiteral("normalization removes spaces between CJK characters"));
+    check(normalizeText(QStringLiteral("ＳＡＶＥ")) == normalizeText(QStringLiteral("save")),
+          QStringLiteral("normalization folds full-width ASCII to half-width"));
+    check(normalizeText(QStringLiteral("　設置　")) == normalizeText(QStringLiteral("設置")),
+          QStringLiteral("normalization drops the ideographic space"));
+    check(normalizeText(QString()).isEmpty(), QStringLiteral("empty text normalizes to empty"));
+
+    check(yiuk::vision::controlTypeName(50000) == QLatin1String("Button"),
+          QStringLiteral("control type name for button"));
+    check(yiuk::vision::controlTypeId(QStringLiteral("edit")) == 50004,
+          QStringLiteral("control type id lookup is case-insensitive"));
+    check(yiuk::vision::controlTypeId(QStringLiteral("Nope")) == 0,
+          QStringLiteral("unknown control type has no id"));
+}
+
+void testTextSearchOnDesktop() {
+    // 在真实桌面上查一个几乎不可能存在的字符串：只验证 UIA 链路能跑通并给出空结果。
+    yiuk::vision::TextQuery query;
+    query.text = QStringLiteral("yiuk-nonexistent-label-9f3a");
+    query.limit = 3;
+    yiuk::vision::TextSearchOutcome outcome;
+    QString code;
+    QString message;
+    if (yiuk::vision::findText(query, &outcome, &code, &message)) {
+        check(outcome.matches.isEmpty(), QStringLiteral("UIA search for a missing label returns no matches"));
+        check(outcome.visitedNodes >= 0, QStringLiteral("UIA search reports visited nodes"));
+        std::printf("     uia: %d nodes, %d ms\n", outcome.visitedNodes, outcome.elapsedMs);
+    } else {
+        // 锁屏 / 无前台窗口 / CI 服务会话：不判失败，但必须说清楚没有验收。
+        std::printf("WARN UIA search unavailable in this session: %s (%s)\n", qPrintable(code),
+                    qPrintable(message));
+    }
+
+    // 空查询必须被拒绝，而不是遍历整棵树。
+    yiuk::vision::TextQuery empty;
+    check(!yiuk::vision::findText(empty, &outcome, &code, &message) && code == QLatin1String("INVALID_ARGUMENT"),
+          QStringLiteral("empty text query is rejected"));
+
+    // 未知 control_type 同样在遍历前拒绝。
+    yiuk::vision::TextQuery badType;
+    badType.text = QStringLiteral("x");
+    badType.controlType = QStringLiteral("NotAControlType");
+    check(!yiuk::vision::findText(badType, &outcome, &code, &message) && code == QLatin1String("INVALID_ARGUMENT"),
+          QStringLiteral("unknown control_type is rejected"));
 }
 
 void testDeviceGate() {
@@ -360,6 +412,8 @@ int main(int argc, char **argv) {
     testStore();
     testLimiter();
     testScalingAndEncoding();
+    testTextNormalization();
+    testTextSearchOnDesktop();
     testDeviceGate();
     testPrune();
     testVisionServiceCapture();

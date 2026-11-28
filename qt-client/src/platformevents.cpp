@@ -770,6 +770,14 @@ void MainWindow::setupNativeOperations() {
             return NativeOperationDispatcher::envelopeOk(data);
         });
 
+    // vision.find：UIA 文本定位。坐标以最近一张截图为准，返回里的 screenshot_id
+    // 可以直接交给 click；图像模板匹配尚未实现（见 platformevents_vision.cpp）。
+    nativeOps->registerOperation(
+        QStringLiteral("vision.find"),
+        [this](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
+            return runVisionFind(sessionId, arguments, cancelled);
+        });
+
     // screen.release：MCP 下载完截图后让设备删掉临时文件。只删截图目录内的文件；
     // 快照元数据保留，screenshot_id 仍然可以作为坐标基准。
     nativeOps->registerOperation(
