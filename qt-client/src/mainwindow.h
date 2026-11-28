@@ -60,6 +60,10 @@
 #endif
 
 class PowerShellRunner;
+class NativeOperationDispatcher;
+namespace yiuk::vision {
+class VisionService;
+}
 
 class MainWindow final : public QMainWindow {
 public:
@@ -116,6 +120,11 @@ private:
     QHash<QString, QJsonObject> tasks;
     // 每条执行中的命令对应一个运行器；运行器负责管理 QProcess 和临时脚本文件
     QHash<QString, PowerShellRunner *> commandRunners;
+    // 原生操作分发器：注册了哪些操作就上报哪些能力（见 platformlink.cpp 的注册 message）。
+    NativeOperationDispatcher *nativeOps = nullptr;
+    // 抓屏 / 视觉重操作的唯一入口：会话级互斥、最小间隔、快照与临时文件。
+    yiuk::vision::VisionService *vision = nullptr;
+    QSet<QString> nativeRequestIds;
     QHash<QString, bool> activeFileDownloads;
     struct FileUploadState {
         QString sessionId;
@@ -190,6 +199,12 @@ private:
     void onPlatformSessionCreated(const QJsonObject &session);
     void onPlatformCloseRequested(const QString &sessionId);
     void onPlatformCancelRequested(const QString &sessionId, const QString &requestId);
+    // 原生操作（抓屏 / 鼠标 / 视觉定位）：由 NativeOperationDispatcher 在工作线程执行，
+    // 结果回到主线程后走 command_output + command_result 回给平台。
+    void onPlatformNativeRequested(const QString &sessionId, const QString &requestId, const QString &operation,
+                                   const QJsonObject &arguments, int timeoutSeconds);
+    void setupNativeOperations();
+    void sendNativeEnvelope(const QString &sessionId, const QString &requestId, const QJsonObject &envelope);
     struct FileDownloadState {
         QString sessionId;
         QString requestId;

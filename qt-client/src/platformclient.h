@@ -31,6 +31,10 @@ public:
         // 设置后，客户端只接受该证书，而不依赖公共 CA
         // 这样使用自签名证书时无需关闭对任意证书的验证
         QString pinnedFingerprint;
+        // 客户端自报的原生能力（如 "screen.capture"）与版本号。
+        // 平台据此决定能不能下发 execute_native；旧的 MCP/平台不认识这些字段也不会受影响。
+        QStringList capabilities;
+        QString clientVersion;
         // 大多数 TUN 适配器只提供 IPv4 路由
         // 同时避免服务器使用 IP 地址配置时，IPv6 路由绕过 VPN
         bool forceIPv4 = true;
@@ -78,6 +82,10 @@ public:
                         const QStringList &permissions, const QString &temporaryPassword);
     void submitCommand(const QString &sessionId, const QString &requestId, const QString &command,
                         const QString &workingDirectory, int timeoutSeconds);
+    // 操作端提交原生操作（execute_native）。设备端只会在命令行工具里用到，
+    // MCP 侧走 Go 的 platformclient；这里保留是为了让互操作测试能覆盖整条线。
+    void submitNative(const QString &sessionId, const QString &requestId, const QString &operation,
+                      const QJsonObject &arguments, int timeoutSeconds);
 
 signals:
     void stateChanged(const QString &state);
@@ -92,6 +100,9 @@ signals:
     void userQuestionCanceled(const QJsonObject &request);
     void commandRequested(const QString &sessionId, const QString &requestId, const QString &command,
                           const QString &workingDirectory, int timeoutSeconds);
+    // 原生操作：operation 必须在客户端注册过，arguments 是结构化 JSON。
+    void nativeRequested(const QString &sessionId, const QString &requestId, const QString &operation,
+                         const QJsonObject &arguments, int timeoutSeconds);
     void commandOutputReceived(const QString &sessionId, const QString &requestId, const QString &stream,
                        const QString &data, quint64 sequence, bool truncated);
     void commandResultReceived(const QString &sessionId, const QString &requestId, const QString &status,

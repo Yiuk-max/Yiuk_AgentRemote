@@ -1,8 +1,14 @@
 #include "mainwindow.h"
 
+#include "input/inputcontroller.h"
+#include "nativeops.h"
+#include "vision/screengrab.h"
+#include "vision/visionservice.h"
+
 #include "powershellrunner.h"
 
 #include <QDateTime>
+#include <QThread>
 
 
 // storeIncomingDeviceSession 记录本客户端作为被协助设备参与的会话
@@ -98,9 +104,9 @@ void MainWindow::onPlatformSessionUpdated(const QJsonObject &session) {
         sessionRecord.insert("expires_at_ms", sessionRecord.value("expires_at").toDouble() * 1000.0);
     if (sessionRecord.value("source").toString() == QLatin1String("platform")) {
         if (sessionRecord.value("requester").toString().isEmpty())
-            sessionRecord.insert("requester", sessionRecord.value("operator").toString("平台操作者"));
+            sessionRecord.insert("requester", session.value("operator").toString("平台操作者"));
         if (sessionRecord.value("source_device").toString().isEmpty())
-            sessionRecord.insert("source_device", sessionRecord.value("operator_device").toString());
+            sessionRecord.insert("source_device", session.value("operator_device").toString());
     }
     const bool statusChanged = existing.value("status").toString() != sessionRecord.value("status").toString();
     sessions.insert(sessionId, sessionRecord);
@@ -111,6 +117,9 @@ void MainWindow::onPlatformSessionUpdated(const QJsonObject &session) {
     const QString status = session.value("status").toString();
     if (status != "active" && status != "approved" && status != "pending_approval") {
         cancelSessionCommands(sessionId, status == "closed" ? "cancelled" : "result_unknown");
+        if (nativeOps) nativeOps->cancelSession(sessionId);
+        // 会话结束时删掉本会话的临时截图，并让旧 screenshot_id 失效。
+        if (vision) vision->forgetSession(sessionId);
         discardSessionUploads(sessionId);
     }
     refreshPendingRequests();
@@ -146,6 +155,7 @@ void MainWindow::onPlatformSessionCreated(const QJsonObject &session) {
 void MainWindow::onPlatformCloseRequested(const QString &sessionId) {
     appendActivity(sessionId, "平台已请求结束会话", ActivityKind::Session);
     cancelSessionCommands(sessionId, "cancelled");
+    if (vision) vision->forgetSession(sessionId);
     QJsonObject session = sessions.value(sessionId);
     session.insert("status", "closed");
     sessions.insert(sessionId, session);
@@ -158,6 +168,8 @@ void MainWindow::onPlatformCloseRequested(const QString &sessionId) {
 
 void MainWindow::onPlatformCancelRequested(const QString &sessionId, const QString &requestId) {
     appendActivity(sessionId, QString("Agent 请求停止任务：%1").arg(requestId.left(8)));
+    // 原生操作与命令共用 cancel 语义：先置位取消标记，处理器自己决定要多久退出。
+    if (nativeOps) nativeOps->cancel(requestId);
     QJsonObject commandTask = tasks.value(requestId);
     commandTask.insert("status", "cancelled");
     commandTask.insert("exit_code", QJsonValue(QJsonValue::Null));
@@ -569,6 +581,276 @@ void MainWindow::onPlatformFileUploadChunk(const QString &sessionId, const QStri
     reportUploadResultAndCleanup(transferState, QStringLiteral("succeeded"));
 }
 
+
+namespace {
+
+// 可取消的等待：点击后的 settle 与移动后的 settle 都不能吞掉取消，
+// 否则"取消一个已经点完的请求"要等满 settle 才会退出。
+bool waitCancellable(int milliseconds, const std::atomic_bool *cancelled) {
+    int remaining = milliseconds;
+    while (remaining > 0) {
+        if (cancelled != nullptr && cancelled->load()) return false;
+        const int slice = qMin(remaining, 10);
+        QThread::msleep(static_cast<unsigned long>(slice));
+        remaining -= slice;
+    }
+    return cancelled == nullptr || !cancelled->load();
+}
+
+// 视觉/输入类错误的下一步建议：不要只说"失败了"。
+QString nativeHintForCode(const QString &code) {
+    if (code == QLatin1String("STALE_SCREENSHOT"))
+        return QStringLiteral("重新 take_screenshot，并用新截图的坐标重试");
+    if (code == QLatin1String("SCREENSHOT_REQUIRED"))
+        return QStringLiteral("先调用 take_screenshot 建立坐标基准");
+    if (code == QLatin1String("INPUT_FAILED") || code == QLatin1String("SCREENSHOT_FAILED"))
+        return QStringLiteral("确认设备未锁屏、没有停留在 UAC 安全桌面");
+    return QString();
+}
+
+}  // namespace
+
+
+void MainWindow::setupNativeOperations() {
+    if (nativeOps) return;
+    nativeOps = new NativeOperationDispatcher(this);
+    // 所有抓屏/视觉重操作都走同一个 VisionService：会话级互斥、500ms 最小间隔、
+    // 统一 screenshot_id 与临时文件生命周期，不允许另建一套坐标基准。
+    if (!vision) vision = new yiuk::vision::VisionService(this);
+
+    // screen.capture：支持 max_width 缩放与 PNG/JPEG 落盘，但**仍然不回图片本体**：
+    // 图片走既有的文件下载通路，与旧客户端的 take_screenshot 行为一致。
+    nativeOps->registerOperation(
+        QStringLiteral("screen.capture"),
+        [this](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
+            yiuk::vision::CaptureOptions options;
+            const QJsonValue maxWidth = arguments.value(QStringLiteral("max_width"));
+            if (maxWidth.isDouble()) options.maxWidth = maxWidth.toInt();
+            options.maxWidth = qBound(0, options.maxWidth, yiuk::vision::VisionService::kMaxOutputWidth);
+            const QString format = arguments.value(QStringLiteral("format")).toString();
+            if (!format.isEmpty()) options.format = format;
+            // save 显式给 false 时只回几何（视觉查找不需要图片时用）。
+            options.saveToDisk = arguments.value(QStringLiteral("save")).toBool(true);
+            const QJsonValue quality = arguments.value(QStringLiteral("jpeg_quality"));
+            if (quality.isDouble()) options.jpegQuality = quality.toInt();
+
+            yiuk::vision::CaptureOutcome outcome;
+            QString code;
+            QString message;
+            if (!vision->capture(sessionId, options, cancelled, &outcome, &code, &message)) {
+                const QString hint = code == QLatin1String("SCREENSHOT_FAILED")
+                                         ? QStringLiteral("确认设备未锁屏、没有停留在 UAC 安全桌面")
+                                         : QString();
+                return NativeOperationDispatcher::envelopeError(code, message, hint);
+            }
+
+            QJsonObject data = yiuk::vision::geometryToJson(outcome.geometry);
+            data.insert(QStringLiteral("captured"), true);
+            data.insert(QStringLiteral("screenshot_id"), outcome.screenshotId);
+            data.insert(QStringLiteral("layout_version"), outcome.layoutVersion);
+            data.insert(QStringLiteral("format"),
+                        options.format.compare(QLatin1String("jpeg"), Qt::CaseInsensitive) == 0
+                            || options.format.compare(QLatin1String("jpg"), Qt::CaseInsensitive) == 0
+                            ? QStringLiteral("jpeg")
+                            : QStringLiteral("png"));
+            data.insert(QStringLiteral("size_bytes"), static_cast<double>(outcome.sizeBytes));
+            // 只有落盘后才有 path；没有 path 时调用方不能下载图片，只能用几何。
+            if (!outcome.filePath.isEmpty()) data.insert(QStringLiteral("path"), outcome.filePath);
+            return NativeOperationDispatcher::envelopeOk(data);
+        });
+
+    // input.click：截图坐标 -> 物理坐标 -> 原生点击，可选点击前后的局部变化采样。
+    // 坐标一律以 VisionService 的快照为准，不给"客户端另算一遍坐标"的口子。
+    nativeOps->registerOperation(
+        QStringLiteral("input.click"),
+        [this](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
+            const int x = arguments.value(QStringLiteral("x")).toInt();
+            const int y = arguments.value(QStringLiteral("y")).toInt();
+            const QString screenshotId = arguments.value(QStringLiteral("screenshot_id")).toString();
+            QString button = arguments.value(QStringLiteral("button")).toString();
+            if (button.isEmpty()) button = QStringLiteral("left");
+            const int count = arguments.value(QStringLiteral("double")).toBool() ? 2 : 1;
+            const bool detectChange = arguments.value(QStringLiteral("detect_change")).toBool();
+            const int settleMs = qMax(0, arguments.value(QStringLiteral("settle_ms")).toInt());
+
+            // 输入动作与抓屏共用设备级串行门：多会话同时点击会把坐标和前台窗口打乱。
+            QString code;
+            QString message;
+            yiuk::vision::VisionService::DeviceLock deviceLock(*vision, cancelled, &code, &message);
+            if (!deviceLock.held())
+                return NativeOperationDispatcher::envelopeError(code, message);
+
+            int screenX = 0;
+            int screenY = 0;
+            if (!vision->toScreenPoint(sessionId, screenshotId, x, y, &screenX, &screenY, &code, &message))
+                return NativeOperationDispatcher::envelopeError(code, message, nativeHintForCode(code));
+
+            // 前台标题必须在点击**之前**取：点击本身可能切换前台窗口。
+            const QString foreground = yiuk::input::foregroundTitle();
+            QVector<uchar> before;
+            if (detectChange && !yiuk::input::sampleRegion(screenX, screenY, &before, &message))
+                return NativeOperationDispatcher::envelopeError(QStringLiteral("INPUT_FAILED"), message,
+                                                               nativeHintForCode(QStringLiteral("INPUT_FAILED")));
+
+            QString error;
+            if (!yiuk::input::click(screenX, screenY, button, count, cancelled, &error)) {
+                const bool cancelledByCaller = cancelled != nullptr && cancelled->load();
+                return NativeOperationDispatcher::envelopeError(
+                    cancelledByCaller ? QStringLiteral("CANCELLED") : QStringLiteral("INPUT_FAILED"), error,
+                    nativeHintForCode(QStringLiteral("INPUT_FAILED")));
+            }
+
+            QJsonObject data{
+                {QStringLiteral("x"), x},
+                {QStringLiteral("y"), y},
+                {QStringLiteral("screen_x"), screenX},
+                {QStringLiteral("screen_y"), screenY},
+                {QStringLiteral("button"), button},
+                {QStringLiteral("double"), count > 1},
+                {QStringLiteral("foreground_title"), foreground},
+            };
+            if (detectChange) {
+                if (!waitCancellable(settleMs, cancelled))
+                    return NativeOperationDispatcher::envelopeError(QStringLiteral("CANCELLED"),
+                                                                   QStringLiteral("操作已被取消"));
+                QVector<uchar> after;
+                QString sampleError;
+                if (!yiuk::input::sampleRegion(screenX, screenY, &after, &sampleError))
+                    return NativeOperationDispatcher::envelopeError(QStringLiteral("INPUT_FAILED"), sampleError,
+                                                                   nativeHintForCode(QStringLiteral("INPUT_FAILED")));
+                const yiuk::input::ChangeMetrics metrics = yiuk::input::compareSamples(before, after);
+                data.insert(QStringLiteral("diff_ratio"), metrics.diffRatio);
+                data.insert(QStringLiteral("changed_ratio"), metrics.changedRatio);
+            }
+            return NativeOperationDispatcher::envelopeOk(data);
+        });
+
+    // input.move：duration_ms > 0 时按确定性 ease-in-out 分步移动（悬停菜单 / dock 需要中间 mousemove）。
+    nativeOps->registerOperation(
+        QStringLiteral("input.move"),
+        [this](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
+            const int x = arguments.value(QStringLiteral("x")).toInt();
+            const int y = arguments.value(QStringLiteral("y")).toInt();
+            const QString screenshotId = arguments.value(QStringLiteral("screenshot_id")).toString();
+            const int durationMs = qBound(0, arguments.value(QStringLiteral("duration_ms")).toInt(), 2000);
+            const int settleMs = qBound(0, arguments.value(QStringLiteral("settle_ms")).toInt(), 2000);
+
+            QString code;
+            QString message;
+            yiuk::vision::VisionService::DeviceLock deviceLock(*vision, cancelled, &code, &message);
+            if (!deviceLock.held())
+                return NativeOperationDispatcher::envelopeError(code, message);
+
+            int screenX = 0;
+            int screenY = 0;
+            if (!vision->toScreenPoint(sessionId, screenshotId, x, y, &screenX, &screenY, &code, &message))
+                return NativeOperationDispatcher::envelopeError(code, message, nativeHintForCode(code));
+
+            const QString foreground = yiuk::input::foregroundTitle();
+            QString error;
+            if (!yiuk::input::move(screenX, screenY, durationMs, cancelled, &error)) {
+                const bool cancelledByCaller = cancelled != nullptr && cancelled->load();
+                return NativeOperationDispatcher::envelopeError(
+                    cancelledByCaller ? QStringLiteral("CANCELLED") : QStringLiteral("INPUT_FAILED"), error,
+                    nativeHintForCode(QStringLiteral("INPUT_FAILED")));
+            }
+            if (settleMs > 0 && !waitCancellable(settleMs, cancelled))
+                return NativeOperationDispatcher::envelopeError(QStringLiteral("CANCELLED"),
+                                                               QStringLiteral("操作已被取消"));
+
+            QJsonObject data{
+                {QStringLiteral("x"), x},
+                {QStringLiteral("y"), y},
+                {QStringLiteral("screen_x"), screenX},
+                {QStringLiteral("screen_y"), screenY},
+                {QStringLiteral("duration_ms"), durationMs},
+                {QStringLiteral("settle_ms"), settleMs},
+                {QStringLiteral("foreground_title"), foreground},
+            };
+            return NativeOperationDispatcher::envelopeOk(data);
+        });
+
+    // screen.release：MCP 下载完截图后让设备删掉临时文件。只删截图目录内的文件；
+    // 快照元数据保留，screenshot_id 仍然可以作为坐标基准。
+    nativeOps->registerOperation(
+        QStringLiteral("screen.release"),
+        [this](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *) {
+            const QString path = arguments.value(QStringLiteral("path")).toString();
+            QString code;
+            QString message;
+            if (!vision->releaseScreenshotFile(sessionId, path, &code, &message))
+                return NativeOperationDispatcher::envelopeError(code, message);
+            return NativeOperationDispatcher::envelopeOk(QJsonObject{{QStringLiteral("released"), true}});
+        });
+
+    connect(nativeOps, &NativeOperationDispatcher::activity, this,
+            [this](const QString &sessionId, const QString &summary) {
+        appendActivity(sessionId, summary, ActivityKind::Execute);
+    });
+    connect(nativeOps, &NativeOperationDispatcher::finished, this,
+            [this](const QString &sessionId, const QString &requestId, const QString &status,
+                   const QJsonObject &envelope) {
+        nativeRequestIds.remove(requestId);
+        if (status == QLatin1String("cancelled") || status == QLatin1String("timed_out")) {
+            // 平台已经把任务当成"未确认"：只回报终态，不再发信封。
+            if (platform && platform->isConnected())
+                platform->sendCommandResult(sessionId, requestId, status, QJsonValue(), true, false);
+            refreshSessionsPage();
+            return;
+        }
+        sendNativeEnvelope(sessionId, requestId, envelope);
+    });
+}
+
+// sendNativeEnvelope 把业务信封写成一条 stdout 输出，再补终态。
+// 任务成功只表示"设备把操作跑完了"，业务失败（NOT_FOUND 等）在信封里。
+void MainWindow::sendNativeEnvelope(const QString &sessionId, const QString &requestId,
+                                    const QJsonObject &envelope) {
+    if (!platform || !platform->isConnected()) return;
+    const QByteArray payload = QJsonDocument(envelope).toJson(QJsonDocument::Compact);
+    const QString text = QString::fromUtf8(payload);
+    const quint64 sequence = nextPlatformOutputSequenceByRequest.value(requestId, 1);
+    nextPlatformOutputSequenceByRequest.insert(requestId, sequence + 1);
+    platform->sendCommandOutput(sessionId, requestId, QStringLiteral("stdout"), text, sequence);
+    platform->sendCommandResult(sessionId, requestId, QStringLiteral("succeeded"), QJsonValue(), true, false);
+    nextPlatformOutputSequenceByRequest.remove(requestId);
+    appendActivity(sessionId, QString("原生操作 %1 完成：%2").arg(requestId.left(8), text.left(400)),
+                   ActivityKind::Output);
+    refreshSessionsPage();
+    refreshActiveSessions();
+}
+
+void MainWindow::onPlatformNativeRequested(const QString &sessionId, const QString &requestId,
+                                           const QString &operation, const QJsonObject &arguments,
+                                           int timeoutSeconds) {
+    if (requestId.isEmpty() || !nativeOps) return;
+    if (nativeRequestIds.contains(requestId)) return;
+    const QString sessionState = sessions.value(sessionId).value("status").toString();
+    if (sessionState != QLatin1String("active") && sessionState != QLatin1String("approved")) {
+        if (platform && platform->isConnected())
+            platform->sendCommandResult(sessionId, requestId, QStringLiteral("cancelled"), QJsonValue(), true, false);
+        return;
+    }
+    if (!nativeOps->supports(operation)) {
+        // 平台侧白名单比客户端新（客户端未升级）：明确回 UNSUPPORTED_OPERATION，
+        // 不静默丢弃，否则 Agent 只能等超时。
+        sendNativeEnvelope(sessionId, requestId,
+                           NativeOperationDispatcher::envelopeError(
+                               QStringLiteral("UNSUPPORTED_OPERATION"),
+                               QStringLiteral("客户端未实现操作 %1").arg(operation),
+                               QStringLiteral("升级 Qt 客户端到与平台相同的发布批次")));
+        return;
+    }
+    nativeRequestIds.insert(requestId);
+    appendActivity(sessionId, QString("Agent 请求原生操作 %1").arg(operation), ActivityKind::Execute);
+    if (!nativeOps->start(sessionId, requestId, operation, arguments, timeoutSeconds)) {
+        nativeRequestIds.remove(requestId);
+        sendNativeEnvelope(sessionId, requestId,
+                           NativeOperationDispatcher::envelopeError(
+                               QStringLiteral("NATIVE_BUSY"), QStringLiteral("同名请求已在执行"),
+                               QStringLiteral("等待上一个请求结束后重试")));
+    }
+}
 
 void MainWindow::onPlatformCommandRequested(const QString &sessionId, const QString &requestId, const QString &command,
                                 const QString &workingDirectory, int timeoutSeconds) {

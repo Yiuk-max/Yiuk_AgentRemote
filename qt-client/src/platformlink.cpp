@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 
 #include "yiukdialog.h"
+#include "nativeops.h"
 
 
 void MainWindow::startLocalBridge() {
@@ -45,6 +46,9 @@ void MainWindow::loadPlatformConfig() {
     platformConfig.ttlSeconds = identity.value("ttl_seconds").toInt(24 * 60 * 60);
     platformConfig.enabled = true;
     platformConfig.allowInsecure = false;
+    // 能力随每次保存配置刷新：客户端升级/降级后平台看到的是当前实现，而不是旧快照。
+    platformConfig.capabilities = nativeOps ? nativeOps->capabilities() : QStringList{};
+    platformConfig.clientVersion = QStringLiteral(YIUK_CLIENT_VERSION);
     platformConfig.temporaryPassword = generateTemporaryPassword(32);
     platformConfig.address = identity.value("address").toString();
     platformConfig.tls = identity.value("tls").toBool(true);
@@ -80,6 +84,9 @@ void MainWindow::savePlatformConfig() {
     if (platformTls) platformConfig.tls = platformTls->isChecked();
     platformConfig.enabled = true;
     platformConfig.allowInsecure = false;
+    // 能力随每次保存配置刷新：客户端升级/降级后平台看到的是当前实现，而不是旧快照。
+    platformConfig.capabilities = nativeOps ? nativeOps->capabilities() : QStringList{};
+    platformConfig.clientVersion = QStringLiteral(YIUK_CLIENT_VERSION);
     platform->setConfig(platformConfig);
     // 设备码、临时密码和 password_version 在同一个文件里一次提交，
     // 服务端重新分配设备码时不会出现“新码配旧密码”。
@@ -152,6 +159,8 @@ void MainWindow::copyMcpSetupPrompt() {
 
 // 创建平台客户端、绑定信号并加载配置，已配置地址时安排首次连接。
 void MainWindow::initializePlatformClient() {
+    // 原生分发器必须先于平台配置加载：注册时要把 capabilities 报给平台。
+    setupNativeOperations();
     platform = new PlatformClient(this);
     connect(platform, &PlatformClient::stateChanged, this, [this](const QString &state) { updatePlatformState(state); });
     connect(platform, &PlatformClient::credentialsRenewed, this,
@@ -202,6 +211,7 @@ void MainWindow::initializePlatformClient() {
             status == "timed_out" || status == "result_unknown" ? status : QStringLiteral("cancelled"));
     });
     connect(platform, &PlatformClient::commandRequested, this, &MainWindow::onPlatformCommandRequested);
+    connect(platform, &PlatformClient::nativeRequested, this, &MainWindow::onPlatformNativeRequested);
     connect(platform, &PlatformClient::fileDownloadRequested, this, &MainWindow::onPlatformFileDownloadRequested);
     connect(platform, &PlatformClient::fileUploadRequested, this, &MainWindow::onPlatformFileUploadRequested);
     connect(platform, &PlatformClient::fileUploadChunkReceived, this, &MainWindow::onPlatformFileUploadChunk);

@@ -9,6 +9,42 @@ set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets Network)
 
+# 视觉/抓屏公共库。设备端、互操作程序与测试程序共用同一份实现，
+# 避免 screenshot_id、坐标基准与临时截图生命周期出现两套互相矛盾的逻辑。
+add_library(yiuk-vision STATIC
+    src/vision/screengrab.cpp
+    src/vision/screengrab.h
+    src/vision/snapshotstore.cpp
+    src/vision/snapshotstore.h
+    src/vision/sessionlimiter.cpp
+    src/vision/sessionlimiter.h
+    src/vision/devicegate.cpp
+    src/vision/devicegate.h
+    src/vision/visionservice.cpp
+    src/vision/visionservice.h
+)
+target_include_directories(yiuk-vision PUBLIC src)
+target_link_libraries(yiuk-vision PUBLIC Qt6::Gui)
+if(WIN32)
+    # 抓屏走 GDI：MinGW 下必须显式链接 gdi32/user32。
+    target_link_libraries(yiuk-vision PUBLIC gdi32 user32)
+endif()
+set_target_properties(yiuk-vision PROPERTIES FOLDER "libs")
+
+# 原生鼠标输入：SendInput 绝对坐标、确定性 ease-in-out 轨迹、按键安全释放、
+# 点击前后的局部变化采样。与 vision 分开成两个库：视觉可以单独测试，
+# 输入可以单独测试，谁都不需要拉起整个客户端。
+add_library(yiuk-input STATIC
+    src/input/inputcontroller.cpp
+    src/input/inputcontroller.h
+)
+target_include_directories(yiuk-input PUBLIC src)
+target_link_libraries(yiuk-input PUBLIC Qt6::Core)
+if(WIN32)
+    target_link_libraries(yiuk-input PUBLIC user32)
+endif()
+set_target_properties(yiuk-input PROPERTIES FOLDER "libs")
+
 qt_add_executable(yiuk-device-assist WIN32
     src/main.cpp
     src/apphelpers.cpp
@@ -36,6 +72,8 @@ qt_add_executable(yiuk-device-assist WIN32
     src/localtools.cpp
     src/powershellrunner.cpp
     src/powershellrunner.h
+    src/nativeops.cpp
+    src/nativeops.h
     src/localbridge.cpp
     src/localbridge.h
     src/platformclient.cpp
@@ -93,7 +131,7 @@ if(MINGW)
 endif()
 add_dependencies(yiuk-device-assist yiuk-activity-panel)
 
-target_link_libraries(yiuk-device-assist PRIVATE Qt6::Widgets Qt6::Network)
+target_link_libraries(yiuk-device-assist PRIVATE Qt6::Widgets Qt6::Network yiuk-vision yiuk-input)
 
 # 将 CMake 项目版本提供给界面，确保支持报告始终注明当前运行的客户端版本
 target_compile_definitions(yiuk-device-assist PRIVATE YIUK_CLIENT_VERSION="${PROJECT_VERSION}")
@@ -134,9 +172,30 @@ if(YIUK_BUILD_TESTS)
     qt_add_executable(yiuk-question-interop tests/userquestion_interop.cpp ${YIUK_UI_SOURCES})
     set_target_properties(yiuk-question-interop PROPERTIES WIN32_EXECUTABLE FALSE)
     target_include_directories(yiuk-question-interop PRIVATE src)
-    target_link_libraries(yiuk-question-interop PRIVATE Qt6::Widgets Qt6::Network crypt32)
+    target_link_libraries(yiuk-question-interop PRIVATE Qt6::Widgets Qt6::Network yiuk-vision yiuk-input crypt32)
     target_compile_definitions(yiuk-question-interop PRIVATE YIUK_CLIENT_VERSION="${PROJECT_VERSION}")
     add_dependencies(yiuk-question-interop yiuk-activity-panel)
+
+    # 原生操作分发器的行为测试：不需要平台，也不需要 GUI 交互
+    qt_add_executable(yiuk-nativeops-test
+        tests/nativeops_test.cpp
+        src/nativeops.cpp
+        src/nativeops.h
+    )
+    set_target_properties(yiuk-nativeops-test PROPERTIES WIN32_EXECUTABLE FALSE)
+    target_include_directories(yiuk-nativeops-test PRIVATE src)
+    target_link_libraries(yiuk-nativeops-test PRIVATE Qt6::Core yiuk-vision)
+
+    # 视觉模块的行为测试：快照、会话节流、缩放与图片落盘（不需要平台，不需要 GUI 交互）。
+    qt_add_executable(yiuk-vision-test tests/vision_test.cpp)
+    set_target_properties(yiuk-vision-test PROPERTIES WIN32_EXECUTABLE FALSE)
+    target_link_libraries(yiuk-vision-test PRIVATE yiuk-vision)
+
+    # 原生输入的行为测试：轨迹端点/单调性/可复现性、灰度变化判据、点击区域采样。
+    # 不注入键鼠：只验证纯逻辑与"采样能拿到数据"，真实点击由真机验收。
+    qt_add_executable(yiuk-input-test tests/input_test.cpp)
+    set_target_properties(yiuk-input-test PROPERTIES WIN32_EXECUTABLE FALSE)
+    target_link_libraries(yiuk-input-test PRIVATE yiuk-input)
 
     qt_add_executable(yiuk-platform-interop
         tests/platform_interop.cpp
@@ -144,11 +203,13 @@ if(YIUK_BUILD_TESTS)
         src/platformclient.h
         src/securestore.cpp
         src/securestore.h
+        src/nativeops.cpp
+        src/nativeops.h
     )
     target_include_directories(yiuk-platform-interop PRIVATE src)
     # 该测试程序是无界面的诊断工具：保留控制台子系统，使 CI 和终端能显示 qInfo/qWarning 输出
     set_target_properties(yiuk-platform-interop PROPERTIES WIN32_EXECUTABLE FALSE)
-    target_link_libraries(yiuk-platform-interop PRIVATE Qt6::Core Qt6::Network)
+    target_link_libraries(yiuk-platform-interop PRIVATE Qt6::Core Qt6::Network yiuk-vision yiuk-input)
     if(WIN32)
         target_link_libraries(yiuk-platform-interop PRIVATE crypt32)
     endif()

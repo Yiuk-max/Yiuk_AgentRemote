@@ -489,6 +489,9 @@ void PlatformClient::dispatchPlatformMessage(const QJsonObject &message) {
             {QStringLiteral("temporary_password"), config_.temporaryPassword},
             {QStringLiteral("password_version"), config_.passwordVersion},
             {QStringLiteral("expires_at"), QDateTime::currentSecsSinceEpoch() + config_.ttlSeconds},
+            // 能力与版本：平台存进设备快照，用于判断是否下发 execute_native。
+            {QStringLiteral("client_version"), config_.clientVersion},
+            {QStringLiteral("capabilities"), QJsonArray::fromStringList(config_.capabilities)},
         });
         return;
     }
@@ -555,6 +558,14 @@ void PlatformClient::dispatchPlatformMessage(const QJsonObject &message) {
                               message.value(QStringLiteral("command")).toString(),
                               message.value(QStringLiteral("working_directory")).toString(),
                               message.value(QStringLiteral("timeout_seconds")).toInt(60));
+        return;
+    }
+    if (type == QLatin1String("execute_native")) {
+        emit nativeRequested(message.value(QStringLiteral("session_id")).toString(),
+                             message.value(QStringLiteral("request_id")).toString(),
+                             message.value(QStringLiteral("operation")).toString(),
+                             message.value(QStringLiteral("arguments")).toObject(),
+                             message.value(QStringLiteral("timeout_seconds")).toInt(10));
         return;
     }
     if (type == QLatin1String("command_output")) {
@@ -803,6 +814,17 @@ void PlatformClient::submitCommand(const QString &sessionId, const QString &requ
                         {QStringLiteral("request_id"), requestId},
                         {QStringLiteral("command"), command}};
     if (!workingDirectory.isEmpty()) message.insert(QStringLiteral("working_directory"), workingDirectory);
+    if (timeoutSeconds > 0) message.insert(QStringLiteral("timeout_seconds"), timeoutSeconds);
+    sendProtocolMessage(message);
+}
+
+void PlatformClient::submitNative(const QString &sessionId, const QString &requestId, const QString &operation,
+                                  const QJsonObject &arguments, int timeoutSeconds) {
+    QJsonObject message{{QStringLiteral("type"), QStringLiteral("execute_native")},
+                        {QStringLiteral("session_id"), sessionId},
+                        {QStringLiteral("request_id"), requestId},
+                        {QStringLiteral("operation"), operation},
+                        {QStringLiteral("arguments"), arguments}};
     if (timeoutSeconds > 0) message.insert(QStringLiteral("timeout_seconds"), timeoutSeconds);
     sendProtocolMessage(message);
 }
