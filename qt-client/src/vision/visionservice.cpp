@@ -6,6 +6,7 @@
 
 #include "input/inputcontroller.h"
 
+#include <QBuffer>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -15,6 +16,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QtMath>
+#include <QSaveFile>
 #include <QStandardPaths>
 
 namespace yiuk::vision {
@@ -232,6 +234,8 @@ bool VisionService::captureLocked(const QString &sessionId, const CaptureOptions
         ref.filePath = path;
     }
 
+    // 像素只留最近一张（约 16 MB 预算），save_template 靠它裁剪；旧快照的图会被放掉。
+    ref.image = image;
     if (!store_.remember(sessionId, ref))
         return fail(QStringLiteral("SCREENSHOT_FAILED"), QStringLiteral("无法登记快照"));
 
@@ -396,8 +400,13 @@ bool VisionService::clickTarget(const QString &sessionId, const ClickTargetOptio
     if (sessionId.isEmpty()) return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("会话 ID 为空"));
     if (!options.useImage && options.text.text.trimmed().isEmpty())
         return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("text 不能为空"));
-    if (options.useImage && options.needle.isNull())
-        return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("模板图像为空"));
+    QImage needle = options.needle;
+    if (options.useImage && needle.isNull()) {
+        if (options.templateId.isEmpty())
+            return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("模板图像为空"));
+        // 引用已保存的模板：像素读在门外面，文件 IO 不该占着设备门。
+        if (!loadTemplate(options.templateId, &needle, code, message)) return false;
+    }
 
     // pick 先校验：参数写错不应该先付一次抓屏的代价。
     const QString pick = options.pick.trimmed().isEmpty() ? QStringLiteral("unique") : options.pick.trimmed();
@@ -453,7 +462,7 @@ bool VisionService::clickTarget(const QString &sessionId, const ClickTargetOptio
         TemplateOptions imageOptions = options.image;
         imageOptions.limit = limit;
         QVector<TemplateHit> hits;
-        if (!matchTemplateImage(shot.image, options.needle, imageOptions, &hits, code, message)) return false;
+        if (!matchTemplateImage(shot.image, needle, imageOptions, &hits, code, message)) return false;
         for (const TemplateHit &hit : hits) {
             TargetCandidate candidate;
             candidate.bbox = hit.rect;
@@ -832,6 +841,202 @@ bool VisionService::screenRectToScreenshot(const QString &sessionId, const QRect
         const int bottom = scaleY(screenRect.top() + screenRect.height());
         *out = QRect(left, top, qMax(1, right - left), qMax(1, bottom - top));
     }
+    return true;
+}
+
+
+namespace {
+
+// 模板目录内的索引：只放元数据，用来做配额统计与尺寸/缩放查询。
+QString templateIndexPath() {
+    return QDir(VisionService::templatesDirectory()).filePath(QStringLiteral("index.json"));
+}
+
+bool validTemplateId(const QString &id) {
+    if (id.size() != 12) return false;
+    for (const QChar ch : id) {
+        const ushort value = ch.unicode();
+        const bool digit = value >= '0' && value <= '9';
+        const bool lower = value >= 'a' && value <= 'f';
+        if (!digit && !lower) return false;
+    }
+    return true;
+}
+
+QJsonObject readTemplateIndex() {
+    QFile file(templateIndexPath());
+    if (!file.open(QIODevice::ReadOnly)) return QJsonObject();
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    return document.isObject() ? document.object() : QJsonObject();
+}
+
+// 原子写：先写临时文件再改名，崩在中间也不会留下半个模板或半个 index。
+bool writeAtomically(const QString &path, const QByteArray &bytes, QString *error) {
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    if (file.write(bytes) != bytes.size()) {
+        if (error) *error = file.errorString();
+        file.cancelWriting();
+        return false;
+    }
+    if (!file.commit()) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+QString VisionService::templatesDirectory() {
+    // 与截图同一个根：程序目录 data\templates（绿色版），不可写时回退用户目录。
+    return programDataPath(QStringLiteral("templates"));
+}
+
+bool VisionService::saveTemplate(const QString &sessionId, const QString &screenshotId, const QRect &region,
+                                 TemplateOutcome *outcome, QString *code, QString *message) {
+    const auto fail = [code, message](const QString &failureCode, const QString &failureMessage) {
+        if (code) *code = failureCode;
+        if (message) *message = failureMessage;
+        return false;
+    };
+    if (outcome == nullptr) return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("outcome 为空"));
+    *outcome = TemplateOutcome{};
+    if (sessionId.isEmpty()) return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("会话 ID 为空"));
+    if (region.width() <= 0 || region.height() <= 0)
+        return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("region 必须有正面积"));
+
+    SnapshotRef ref;
+    if (!store_.latest(sessionId, &ref))
+        return fail(QStringLiteral("SCREENSHOT_REQUIRED"),
+                    QStringLiteral("该会话还没有截图；先 take_screenshot 再裁剪模板"));
+    // 只认"最近一张"：旧截图的像素已经放掉，绝不能拿现在的画面顶替。
+    if (!screenshotId.isEmpty() && screenshotId != ref.id)
+        return fail(QStringLiteral("STALE_SCREENSHOT"),
+                    QStringLiteral("screenshot_id 不是最近一张截图；模板只能从当前这一帧裁剪，请重新截图"));
+    if (ref.image.isNull())
+        return fail(QStringLiteral("STALE_SCREENSHOT"),
+                    QStringLiteral("这一帧的像素已被回收（只在最近一张快照上保留）；请重新 take_screenshot"));
+    if (ref.layoutVersion != currentLayoutVersion())
+        return fail(QStringLiteral("STALE_SCREENSHOT"),
+                    QStringLiteral("桌面布局已变化；请重新 take_screenshot 再裁剪模板"));
+
+    const QRect imageRect(0, 0, ref.image.width(), ref.image.height());
+    const QRect area = region.intersected(imageRect);
+    if (area.width() <= 0 || area.height() <= 0 || area != region)
+        return fail(QStringLiteral("INVALID_ARGUMENT"),
+                    QStringLiteral("region 必须完整落在最近一张截图内（%1x%2）")
+                        .arg(imageRect.width())
+                        .arg(imageRect.height()));
+    if (area.width() > 2048 || area.height() > 2048)
+        return fail(QStringLiteral("INVALID_ARGUMENT"),
+                    QStringLiteral("模板 %1x%2 超过 2048x2048 上限").arg(area.width()).arg(area.height()));
+
+    const QImage crop = ref.image.copy(area);
+    QByteArray png;
+    {
+        QBuffer buffer(&png);
+        if (!buffer.open(QIODevice::WriteOnly) || !crop.save(&buffer, "PNG"))
+            return fail(QStringLiteral("TEMPLATE_SAVE_FAILED"), QStringLiteral("模板编码失败"));
+    }
+    if (png.size() > kMaxTemplateBytes)
+        return fail(QStringLiteral("TEMPLATE_TOO_LARGE"),
+                    QStringLiteral("模板编码后 %1 字节，超过单个上限 %2 字节（缩小 region 或降低分辨率）")
+                        .arg(png.size())
+                        .arg(kMaxTemplateBytes));
+
+    // 配额：数目与总量都要挡，且拒绝要明确（不静默删别人的模板）。
+    QJsonObject index = readTemplateIndex();
+    QJsonObject templates = index.value(QStringLiteral("templates")).toObject();
+    qint64 totalBytes = 0;
+    for (auto it = templates.begin(); it != templates.end(); ++it)
+        totalBytes += static_cast<qint64>(it.value().toObject().value(QStringLiteral("bytes")).toDouble());
+    if (templates.size() >= kMaxTemplateCount)
+        return fail(QStringLiteral("TEMPLATE_QUOTA_EXCEEDED"),
+                    QStringLiteral("模板数量已达上限 %1 个；请清理 %2 后重试")
+                        .arg(kMaxTemplateCount)
+                        .arg(templatesDirectory()));
+    if (totalBytes + png.size() > kMaxTemplatesTotalBytes)
+        return fail(QStringLiteral("TEMPLATE_QUOTA_EXCEEDED"),
+                    QStringLiteral("模板总大小将超过 %1 字节（当前 %2）；请清理 %3 后重试")
+                        .arg(kMaxTemplatesTotalBytes)
+                        .arg(totalBytes)
+                        .arg(templatesDirectory()));
+
+    const QString directory = templatesDirectory();
+    if (!QDir().mkpath(directory))
+        return fail(QStringLiteral("TEMPLATE_SAVE_FAILED"),
+                    QStringLiteral("无法创建模板目录 %1").arg(directory));
+    const QString id = SnapshotStore::newId();
+    QString writeError;
+    if (!writeAtomically(QDir(directory).filePath(id + QStringLiteral(".png")), png, &writeError))
+        return fail(QStringLiteral("TEMPLATE_SAVE_FAILED"),
+                    QStringLiteral("模板写入失败：%1").arg(writeError));
+
+    // 记录来源缩放：模板是在这张截图坐标系里裁的，之后按同一缩放匹配才有意义。
+    const double scale = ref.geometry.screenWidth > 0
+                             ? static_cast<double>(ref.geometry.width) / ref.geometry.screenWidth
+                             : 1.0;
+    templates.insert(id, QJsonObject{
+                             {QStringLiteral("width"), area.width()},
+                             {QStringLiteral("height"), area.height()},
+                             {QStringLiteral("bytes"), static_cast<double>(png.size())},
+                             {QStringLiteral("scale"), scale},
+                             {QStringLiteral("created_ms"),
+                              static_cast<double>(QDateTime::currentMSecsSinceEpoch())},
+                         });
+    index.insert(QStringLiteral("templates"), templates);
+    if (!writeAtomically(templateIndexPath(), QJsonDocument(index).toJson(QJsonDocument::Compact),
+                         &writeError)) {
+        // 索引写不进去就把刚写的 PNG 删掉，别留一个没人登记的孤儿文件。
+        QFile::remove(QDir(directory).filePath(id + QStringLiteral(".png")));
+        return fail(QStringLiteral("TEMPLATE_SAVE_FAILED"),
+                    QStringLiteral("模板索引写入失败：%1").arg(writeError));
+    }
+
+    outcome->templateId = id;
+    outcome->width = area.width();
+    outcome->height = area.height();
+    outcome->sizeBytes = png.size();
+    outcome->region = area;
+    return true;
+}
+
+bool VisionService::loadTemplate(const QString &templateId, QImage *image, QString *code,
+                                 QString *message) const {
+    const auto fail = [code, message](const QString &failureCode, const QString &failureMessage) {
+        if (code) *code = failureCode;
+        if (message) *message = failureMessage;
+        return false;
+    };
+    if (image == nullptr) return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("image 为空"));
+    *image = QImage();
+    // id 只允许 12 位小写 hex：这既是格式校验，也是路径穿越防线。
+    if (!validTemplateId(templateId))
+        return fail(QStringLiteral("INVALID_ARGUMENT"),
+                    QStringLiteral("template_id 必须是 12 位小写十六进制"));
+    const QString path = QDir(templatesDirectory()).filePath(templateId + QStringLiteral(".png"));
+    const QFileInfo info(path);
+    if (!info.exists())
+        return fail(QStringLiteral("TEMPLATE_NOT_FOUND"),
+                    QStringLiteral("没有这个模板（可能已被清理）：%1").arg(templateId));
+    if (info.size() > kMaxTemplateBytes)
+        return fail(QStringLiteral("TEMPLATE_CORRUPTED"),
+                    QStringLiteral("模板 %1 体积异常（%2 字节）").arg(templateId).arg(info.size()));
+    QImage loaded;
+    if (!loaded.load(path))
+        return fail(QStringLiteral("TEMPLATE_CORRUPTED"),
+                    QStringLiteral("模板 %1 无法解码（文件可能已损坏）").arg(templateId));
+    if (loaded.width() > 2048 || loaded.height() > 2048)
+        return fail(QStringLiteral("TEMPLATE_CORRUPTED"),
+                    QStringLiteral("模板 %1 尺寸异常（%2x%3）")
+                        .arg(templateId)
+                        .arg(loaded.width())
+                        .arg(loaded.height()));
+    *image = loaded;
     return true;
 }
 

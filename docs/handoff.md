@@ -18,7 +18,7 @@
 
 ## 2. 能做什么
 
-### 2.1 MCP 工具（25 个）
+### 2.1 MCP 工具（26 个）
 
 | 分类 | 工具 |
 | --- | --- |
@@ -26,7 +26,7 @@
 | 命令 | `run_command`、`execute_command`、`get_command_result`、`cancel_command` |
 | 文件 | `download_file`、`upload_file`、`list_dir`、`stat_path` |
 | 桌面 | `take_screenshot`、`click`、`move_mouse`、`drag`、`press_keys`、`type_text` |
-| 视觉 | `find_on_screen`（UIA 文本 / Windows OCR 兜底 / OpenCV 图像模板，可等目标出现）、`click_target`（定位+选择+点击一笔事务，`source=auto/uia/ocr`，可等目标出现） |
+| 视觉 | `find_on_screen`（UIA 文本 / Windows OCR 兜底 / OpenCV 图像模板或 `template_id`，可等目标出现）、`click_target`（定位+选择+点击一笔事务，`source=auto/uia/ocr`，可等目标出现）、`save_template`（从最近一帧裁模板） |
 | 等待 | `wait`、`wait_for` |
 | 交互 | `ask_user`、`get_user_reply` |
 
@@ -57,11 +57,11 @@
 | `input.drag` | 已实现 | 按下 → 路径 → 抬起，`released:true` 只在确认释放时返回 |
 | `vision.find` | 已实现 | UIA 文本 + OpenCV 灰度模板匹配 |
 | `vision.click_target` | 已实现 | 客户端内 find→pick→click 事务（每轮持设备门，歧义/未命中不按下；可等目标出现） |
-| `vision.save_template` | 未实现 | 从快照裁剪模板 |
+| `vision.save_template` | 已实现 | 从最近一帧保留的像素裁模板（原子写、配额、路径穿越校验） |
 
 ### 2.3 绿色化：所有文件都在程序目录
 
-`<exe 目录>\data\` 下：`platform.json`、`platform-client.json`、`identity.json`、`local-api.json`、`device.json`、`sessions.json`、`activity-panel.state`、`screenshots\`、`tmp\`（PowerShell 脚本）、`work\`（默认工作目录）、`uploads\`。
+`<exe 目录>\data\` 下：`platform.json`、`platform-client.json`、`identity.json`、`local-api.json`、`device.json`、`sessions.json`、`activity-panel.state`、`screenshots\`、`templates\`（`save_template` 的模板 PNG + `index.json`）、`tmp\`（PowerShell 脚本）、`work\`（默认工作目录）、`uploads\`。
 `data\` 不可写时回退 `%LOCALAPPDATA%\Yiuk\DeviceAssist`；首次切换会把旧目录的身份与配置**复制**过来（设备码不变），旧目录此后只读不写。
 
 ## 3. 代码在哪
@@ -76,7 +76,7 @@
 | `src/vision/snapshotstore.{h,cpp}` | 每会话 5 张 `screenshot_id` + 几何 + 布局版本，布局变化即失效，临时文件回收 |
 | `src/vision/sessionlimiter.{h,cpp}` | 会话级互斥 + 500ms 最小间隔，排队可取消 |
 | `src/vision/devicegate.{h,cpp}` | 进程级互斥：抓屏与输入不能并发 |
-| `src/vision/visionservice.{h,cpp}` | 唯一入口：`capture` / `clickWithOptions` / `clickTarget` / `searchText` / `matchImage` / `toScreenPoint` / `screenRectToScreenshot` / `releaseScreenshotFile` / `pruneOrphanScreenshots`；`pickTarget` 与歧义判据是纯函数 |
+| `src/vision/visionservice.{h,cpp}` | 唯一入口：`capture` / `clickWithOptions` / `clickTarget` / `searchText` / `matchImage` / `saveTemplate` / `loadTemplate` / `toScreenPoint` / `screenRectToScreenshot` / `releaseScreenshotFile` / `pruneOrphanScreenshots`；`pickTarget`、`screenshotRectToScreen` 与歧义判据是纯函数 |
 | `src/vision/requestparser.{h,cpp}` | 原生操作参数 → `VisionService` 入参的**唯一**解析处（三选一、`source=auto/uia/ocr`、region、阈值/limit 钳制、click_target 默认值与等待预算）；客户端 handler 与互操作程序共用，纯函数可测 |
 | `src/vision/textlocator.{h,cpp}` | UIA 控制视图查询（节点 5000 / 时间 300ms 上限）、全半角与空白归一化、control_type 与 region 过滤、阅读顺序排序 |
 | `src/vision/ocrlocator.{h,cpp}` | Windows.Media.Ocr 兜底：手写 WinRT ABI（无 winrt 头/C++/WinRT）、按查询文本挑语言、词窗口匹配（去字间空格）、词框并集、按面积去重；**必须 `-fno-devirtualize` 编译** |
@@ -177,6 +177,7 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 | 任务管理器拖动（真实客户端 + 真实平台） | 起点 `(752,337)` → 右 `+592` → 下 `+323` → 左 `−1344` → 上 `−323` → 右 `+752`，最终 `rect = 752,337`，**闭环** |
 | `click_target` 真机（`yiuk-click-target-test`，裸 Win32 按钮 fixture） | 未命中 `NOT_FOUND` 且 0 次 down；两个同标签按钮 `AMBIGUOUS_TARGET` 且 0 次 down；`pick=index:2` 只点到第二个（`clicks[2]==1`，其余 0）；`pick=best` 点到唯一按钮；落点 `(969,348)` 在命中框 `[799,322,1139,374]` 内 |
 | 互操作（真实 Qt ↔ 真实 Go 平台） | `INTEROP EXIT=0`；平台审计 6 条 `native_submitted`：`screen.capture` ×2、`screen.release`、`vision.find`、`vision.click_target` ×2（含等待超时段） |
+| 模板（`yiuk-vision-test`，真实抓屏） | 从最近一帧裁 160×80：`template_id` 12 位 hex、`loadTemplate` 读回同尺寸；旧 `screenshot_id` → `STALE_SCREENSHOT`；越界/超大 region → `INVALID_ARGUMENT`/`TEMPLATE_TOO_LARGE`；`../../windows/win.ini` → `INVALID_ARGUMENT`；损坏文件 → `TEMPLATE_CORRUPTED`；索引写满 100 条 → `TEMPLATE_QUOTA_EXCEEDED` |
 | OCR（`yiuk-vision-test`，GDI 画字，不读桌面） | `zh-Hans-CN`、2 行、**29 ms**；归一化后命中「收 藏」与 `Settings`，词框并集落在画字位置 `(32,49) 78×39` |
 | OCR 端到端（`yiuk-click-target-test`，`source=ocr` + `region`） | 中文按钮「收藏 首页 设置」被 OCR 读到并点中：`source=ocr`、`clicks[5]==1`，其余按钮 0 次 |
 | 发布包 0.1.9 | `Release/YiukDeviceAssist-0.1.9-win64`（82 MB，目录）+ zip（35.7 MB）+ sha256；在**不含 Qt/MinGW 的 PATH** 下启动成功，标题 `Yiuk Device Assist 0.1.9`，`data` 就地创建 |
@@ -217,7 +218,7 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 | --- | --- |
 | 非原生 Win32 目标（Qt/WPF）的 UIA 坐标 | 已验证 Qt 目标上报逻辑像素（见 §6.11），未做修正 |
 | 多显示器 / 混合 DPI / 负原点 | 未验证（P5） |
-| 模板管理（`vision.save_template`）、ROI 缓存 | 未实现（P5） |
+| ROI 缓存（同一目标优先在上次命中位置附近找） | 未实现（P5） |
 | Windows CI | 已加 `windows-qt` job（Qt 6.11.1 + MinGW + OpenCV 4.12 缓存 + ctest），**还没在 GitHub 上跑绿过** |
 | 安装器（ISCC）重打 / 安装卸载回归 | 未做（绿色 zip 已重打，见 §5） |
 | UIA 命中率/耗时三场景实测 | 未做（探针只测了遍历耗时；空文档 0 节点约 320ms） |

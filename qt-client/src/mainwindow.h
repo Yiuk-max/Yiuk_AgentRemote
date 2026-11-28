@@ -211,6 +211,9 @@ private:
     // 原生操作 vision.click_target：客户端内 find -> pick -> click 一笔事务。
     QJsonObject runVisionClickTarget(const QString &sessionId, const QJsonObject &arguments,
                                      const std::atomic_bool *cancelled);
+    // 原生操作 vision.save_template：从最近一帧的保留像素裁剪模板。
+    QJsonObject runVisionSaveTemplate(const QString &sessionId, const QJsonObject &arguments,
+                                      const std::atomic_bool *cancelled);
     void sendNativeEnvelope(const QString &sessionId, const QString &requestId, const QJsonObject &envelope);
     struct FileDownloadState {
         QString sessionId;

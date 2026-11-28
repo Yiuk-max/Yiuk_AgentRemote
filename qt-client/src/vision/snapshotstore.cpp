@@ -22,6 +22,8 @@ bool SnapshotStore::remember(const QString &sessionId, const SnapshotRef &ref) {
         QMutexLocker locker(&mutex_);
         QVector<SnapshotRef> &history = bySession_[sessionId];
         history.prepend(ref);
+        // 像素只留最近一张：save_template 只对"当前这张"有意义，旧图留着只会吃内存。
+        for (int i = 1; i < history.size(); ++i) history[i].image = QImage();
         while (history.size() > kMaxPerSession) {
             const SnapshotRef dropped = history.takeLast();
             // 只删除我们自己写下来的临时文件：调用方没给路径就不动。

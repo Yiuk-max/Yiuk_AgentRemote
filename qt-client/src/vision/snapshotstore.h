@@ -10,14 +10,18 @@
 
 namespace yiuk::vision {
 
-// 一张截图的元数据。始终只保存坐标/几何/文件名，不保存像素本身：
-// 设备是用户正在用的机器，不能为了"以后可能要用"留一张全屏位图在内存里。
+// 一张截图的元数据。
+//
+// 像素只保留**最近一张**（save_template 要从"你刚才看到的那一帧"裁剪），
+// 旧快照的 image 会被清空：内存预算因此固定为一张全屏图（2560×1600 ARGB32 ≈ 16 MB），
+// 而不是每会话 5 张。像素没了就明确回 STALE_SCREENSHOT，不重抓一张冒充旧图。
 struct SnapshotRef {
     QString id;            // 12 位小写 hex，语义与 MCP 侧 screenshot_id 一致
     ScreenGeometry geometry;
     QString layoutVersion;  // 抓屏时的桌面布局摘要；与当前不一致即视为过期
     QString filePath;       // 落盘的临时截图文件（空 = 只回几何、没有图片）
     qint64 takenAtMs = 0;
+    QImage image;          // 仅"最近一张"有值；空表示像素已被回收
 };
 
 // SnapshotStore 按会话保存最近若干张截图的元数据（默认 5 张）。

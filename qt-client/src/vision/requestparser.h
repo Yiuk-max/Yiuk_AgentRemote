@@ -17,6 +17,9 @@ namespace yiuk::vision {
 struct LocateArguments {
     bool useImage = false;
     QImage needle;
+    // 引用设备上已保存的模板（vision.save_template 的产物）。
+    // 解析阶段只带 id，像素由调用方用 VisionService::loadTemplate 读出来。
+    QString templateId;
     QString text;
     QString match;
     QString controlType;
@@ -35,7 +38,7 @@ struct LocateRequest {
     TemplateOptions image;
 };
 
-// 解析 find / click_target 共用的定位参数（text / image_path / image_b64 三选一）。
+// 解析 find / click_target 共用的定位参数（text / image_path / image_b64 / template_id 四选一）。
 // 失败写 code（INVALID_ARGUMENT / UNSUPPORTED_OPERATION）与 message。
 bool buildLocateRequest(const QJsonObject &arguments, LocateRequest *out, QString *code, QString *message);
 

@@ -73,7 +73,8 @@ E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-device-assist.exe
   sessions.json           会话与任务历史（删掉可复位「会话记录」页）
   activity-panel.state    活动面板位置尺寸（删掉面板回到屏幕居中默认大小）
   downloads\              远端文件默认落盘目录
-  screenshots\            原生抓屏的临时截图（每会话最多 5 张，会话结束自动删除）
+  screenshots\            原生抓屏的临时截图（每会话最多 5 张，会话结束自动删除；只有最近一张保留像素）
+  templates\              save_template 的模板 PNG + index.json（上限 100 个 / 32 MiB；删掉即清理）
   tmp\                    PowerShell 脚本（每次任务一个 .ps1，执行完删除）
   work\                   命令的默认工作目录（相对路径落点）
   uploads\                远端上传到本机的文件

@@ -1,6 +1,6 @@
 # MCP 工具
 
-25 个工具。多数组合工具仍可走「`execute_command` + `get_command_result`」脚本路径（`wait` 纯本地）；
+26 个工具。多数组合工具仍可走「`execute_command` + `get_command_result`」脚本路径（`wait` 纯本地）；
 抓屏、鼠标与文本定位在设备上报能力时改走原生通道（`execute_native`），旧客户端自动回退脚本。
 
 | 分类 | 工具 |
@@ -9,7 +9,7 @@
 | 命令 | `run_command`、`execute_command`、`get_command_result`、`cancel_command` |
 | 文件 | `download_file`、`upload_file`、`list_dir`、`stat_path` |
 | 桌面 | `take_screenshot`、`click`、`move_mouse`、`drag`、`press_keys`、`type_text` |
-| 视觉 | `find_on_screen`（UIA 文本定位 + OpenCV 图像模板匹配）、`click_target`（定位+点击一笔事务） |
+| 视觉 | `find_on_screen`（UIA 文本 / OCR / OpenCV 模板或 `template_id`）、`click_target`（定位+点击一笔事务）、`save_template`（从最近一帧裁模板） |
 | 等待 | `wait`、`wait_for` |
 | 交互 | `ask_user`、`get_user_reply` |
 
@@ -59,6 +59,11 @@
   结果带 `attempts` / `waited_ms`。`click_target` 1–20 秒（默认 10）：等待在客户端的一笔事务里，
   每轮取门→抓帧→定位→选择、**轮间放门**，找到的那一轮在同一把门内直接点完；
   超时是 `NOT_FOUND` + `data.timed_out:true`，一次 down 事件都不发。
+- **`save_template` 与 `template_id`**。把最近一帧里的一块像素存成模板（原子写、12 位 hex id），
+  之后 `find_on_screen` / `click_target` 直接给 `template_id`，省掉每次上传 PNG。模板只能从**最近一张**
+  截图保留的像素裁剪：旧 `screenshot_id` 或已换帧时返回 `STALE_SCREENSHOT`，不会悄悄重抓一张冒充旧图。
+  配额 100 个 / 32 MiB / 单个 4 MiB / 2048×2048，超了是 `TEMPLATE_QUOTA_EXCEEDED`；清理 = 删设备上的
+  `data\templates` 目录。
 - **错误自带现场**。失败回复带 `hint`（下一步建议）和 `data.devices`（最多 20 台在线设备）。
 - **schema 是唯一校验来源**。`validateInput` 直接把 `InputSchema` 交给 JSON Schema 校验器，不再手写一遍约束。
 - **分发走注册表**。agenttools 分本地工具（`localTools`）、组合工具（`composedTools`）、后端工具（`BackendTools()`）三层；`TestEveryToolHasExactlyOneHandler` 与 `TestEveryBackendToolHasAHandler` 拦“加了工具忘实现”。

@@ -37,7 +37,7 @@ Agent: get_command_result(session_id, request_id)
 
 ## 能力
 
-MCP 共 25 个工具，完整清单与使用约束见 [MCP 工具](docs/mcp-tools-improvement-plan.md)。
+MCP 共 26 个工具，完整清单与使用约束见 [MCP 工具](docs/mcp-tools-improvement-plan.md)。
 
 **授权与会话**
 
@@ -56,6 +56,7 @@ MCP 共 25 个工具，完整清单与使用约束见 [MCP 工具](docs/mcp-tool
 * `take_screenshot` / `click` / `move_mouse` / `press_keys` / `type_text`：全屏截图缩放、坐标换算、Unicode 输入或剪贴板投递；截图返回 `screenshot_id`，`click` 绑定时效性与变化检测。抓屏与鼠标操作优先走客户端原生通道，旧客户端自动回退脚本
 * `drag`：按住左键沿确定性路径拖动，用于移动窗口、滑块、进度条与拖拽排序；只在确认抬起后才报成功
 * `find_on_screen`：用 UIA 按文本找控件、OpenCV 灰度模板找图标，UIA 没命中时还能用 Windows OCR 兜底（`source=auto|uia|ocr`）；返回截图坐标与 `screenshot_id`，可直接交给 `click` / `drag`；`wait_until_found` 让它等到目标出现（超时是正常结果，带 `timed_out`）
+* `save_template`：把最近一帧截图里的一块像素存成模板（`template_id`），之后 `find_on_screen` / `click_target` 直接引用，不用每次上传图片
 * `click_target`：在设备端一笔事务里完成「定位 → 选择 → 点击」；默认 `pick=unique`，歧义或未命中时**一次鼠标按下都不发**，并带回候选与得分供 Agent 换参数。可等目标出现，等待期间每轮释放设备锁
 * `wait` / `wait_for`：本地等待与设备侧条件等待
 * `ask_user` / `get_user_reply`：在已授权会话中弹窗询问设备用户，提供单选项并始终允许自由输入，明确区分回复、取消、超时和断线

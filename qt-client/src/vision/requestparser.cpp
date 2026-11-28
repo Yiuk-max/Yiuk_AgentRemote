@@ -42,16 +42,34 @@ bool buildLocateRequest(const QJsonObject &arguments, LocateRequest *out, QStrin
 
     const QString imageB64 = arguments.value(QStringLiteral("image_b64")).toString();
     const QString imagePath = arguments.value(QStringLiteral("image_path")).toString();
+    const QString templateId = arguments.value(QStringLiteral("template_id")).toString().trimmed();
     out->locate.text = arguments.value(QStringLiteral("text")).toString();
     out->text.text = out->locate.text;
 
-    if (!imageB64.isEmpty() || !imagePath.isEmpty()) {
+    // 四选一：text / image_path / image_b64 / template_id。
+    const int given = (out->locate.text.trimmed().isEmpty() ? 0 : 1) + (imageB64.isEmpty() ? 0 : 1) +
+                      (imagePath.isEmpty() ? 0 : 1) + (templateId.isEmpty() ? 0 : 1);
+    if (given > 1)
+        return fail(code, message, QStringLiteral("INVALID_ARGUMENT"),
+                    QStringLiteral("text / image_path / image_b64 / template_id 只能给一个"));
+
+    if (!templateId.isEmpty()) {
+        if (!templateMatchingAvailable())
+            return fail(code, message, QStringLiteral("UNSUPPORTED_OPERATION"),
+                        QStringLiteral("当前客户端未编译 OpenCV，图像模板匹配不可用"));
+        // 格式与存在性由 VisionService::loadTemplate 判定（那边是路径穿越防线的唯一入口）。
+        out->locate.templateId = templateId;
+        out->locate.useImage = true;
+        const QJsonValue thresholdValue = arguments.value(QStringLiteral("threshold"));
+        if (thresholdValue.isDouble()) {
+            out->locate.threshold = thresholdValue.toDouble();
+            out->locate.thresholdGiven = true;
+            out->image.threshold = qBound(0.10, out->locate.threshold, 0.999);
+        }
+    } else if (!imageB64.isEmpty() || !imagePath.isEmpty()) {
         if (!imageB64.isEmpty() && !imagePath.isEmpty())
             return fail(code, message, QStringLiteral("INVALID_ARGUMENT"),
                         QStringLiteral("image_b64 与 image_path 只能给一个"));
-        if (!out->locate.text.trimmed().isEmpty())
-            return fail(code, message, QStringLiteral("INVALID_ARGUMENT"),
-                        QStringLiteral("text 与图像只能给一个"));
         if (!templateMatchingAvailable())
             return fail(code, message, QStringLiteral("UNSUPPORTED_OPERATION"),
                         QStringLiteral("当前客户端未编译 OpenCV，图像模板匹配不可用"));
@@ -129,6 +147,7 @@ bool buildClickTargetOptions(const QJsonObject &arguments, ClickTargetOptions *o
 
     out->useImage = request.locate.useImage;
     out->needle = request.locate.needle;
+    out->templateId = request.locate.templateId;
     out->image = request.image;
     out->text = request.text;
 

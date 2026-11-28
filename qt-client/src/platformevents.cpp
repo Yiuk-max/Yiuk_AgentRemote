@@ -743,6 +743,13 @@ void MainWindow::setupNativeOperations() {
             return runVisionClickTarget(sessionId, arguments, cancelled);
         });
 
+    // vision.save_template：从最近一张快照保留的像素裁剪模板（find 可以按 template_id 引用）。
+    nativeOps->registerOperation(
+        QStringLiteral("vision.save_template"),
+        [this](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
+            return runVisionSaveTemplate(sessionId, arguments, cancelled);
+        });
+
     // input.drag：按住左键沿确定性路径拖动（窗口、滑块、拖拽排序）。
     // 起终点都用截图坐标；按键抬起由 input::drag 的 guard 保证。
     nativeOps->registerOperation(

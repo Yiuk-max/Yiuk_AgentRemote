@@ -74,11 +74,22 @@ struct TargetPickOutcome {
 //       first（返回顺序第一个：UIA 是阅读顺序、图像是得分降序）/ index:N（第 N 个，1 起）。
 TargetPickOutcome pickTarget(const QVector<TargetCandidate> &candidates, const QString &pick);
 
+// 一次模板保存的结果：id 与像素尺寸，region 是它在截图坐标系里的来源位置。
+struct TemplateOutcome {
+    QString templateId;
+    int width = 0;
+    int height = 0;
+    qint64 sizeBytes = 0;
+    QRect region;
+};
+
 // 一次「定位 + 点击」的配置：定位来源二选一（text 或 needle），点击参数与 click 同义。
 struct ClickTargetOptions {
     // 定位来源。useImage 为真时用 needle + image，否则用 text（UIA）。
     bool useImage = false;
     QImage needle;
+    // 引用设备上的模板；needle 为空且有 id 时由 clickTarget 自己读出来（含格式/存在性/损坏判定）。
+    QString templateId;
     TemplateOptions image;
     TextQuery text;
     // unique（默认）| best | first | index:N
@@ -148,6 +159,25 @@ public:
     // 只有 text 定位放在这里，图像匹配（OpenCV）等实现后再扩展。
     bool searchText(const QString &sessionId, const TextQuery &query, const std::atomic_bool *cancelled,
                     QJsonObject *data, QString *code, QString *message);
+
+    // 从**最近一张快照保留的像素**裁剪出模板并存盘（vision.save_template）。
+    //
+    // 不会为了这次调用重新抓屏：像素已被回收（旧截图 id / 本次未保存像素）时明确
+    // 返回 STALE_SCREENSHOT，让调用方重新截图——悄悄抓一张新画面冒充"你刚才看到的那一帧"
+    // 会让模板与坐标基准错位。
+    bool saveTemplate(const QString &sessionId, const QString &screenshotId, const QRect &region,
+                      TemplateOutcome *outcome, QString *code, QString *message);
+
+    // 读回模板像素；id 必须是 12 位小写 hex（拒绝路径穿越）。
+    bool loadTemplate(const QString &templateId, QImage *image, QString *code, QString *message) const;
+
+    // 模板目录：<程序目录>data	emplates（绿色版）。
+    static QString templatesDirectory();
+
+    // 配额（P5 冻结）：单个 4 MiB、总数 100、总大小 32 MiB；超了明确报错，不静默驱逐。
+    static constexpr int kMaxTemplateCount = 100;
+    static constexpr qint64 kMaxTemplateBytes = 4 << 20;
+    static constexpr qint64 kMaxTemplatesTotalBytes = 32 << 20;
 
     // 把物理屏幕矩形换算成最近一张截图的坐标（vision.find 的返回坐标）。
     // 没有截图、或几何无效时返回 false，并通过 code 说明原因。

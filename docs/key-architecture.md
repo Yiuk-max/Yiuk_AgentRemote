@@ -68,6 +68,8 @@
 | `unused_device_release_sec` / `offline_device_keep_sec` | 600 / 24h | 设备槽释放 / 离线保留 |
 | `terminal_record_retain_sec` / `terminal_output_retain_bytes` | 900 / 64 MiB | 终态记录与输出保留 |
 | `transfer.MaxChunkBytes` / `MaxChunks` | 96 KiB（解码后）/ 4096 | 单块与块数 |
+| 模板配额（客户端，P5 冻结） | 100 个 / 总 32 MiB / 单个 4 MiB / 2048×2048 | `save_template`；超限回报 `TEMPLATE_QUOTA_EXCEEDED`，不静默驱逐 |
+| 快照像素内存 | 一张全屏帧（ARGB32，2560×1600 ≈ 16 MB） | 只有最近一张快照保留像素，`save_template` 依赖它 |
 
 抓屏节流有两份实现，都不同时构成授权：客户端原生路径用
 `qt-client/src/vision/sessionlimiter.cpp`（会话级互斥 + 500ms 最小间隔，排队可取消），
@@ -105,7 +107,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [标识符与凭据](identifiers.md) | 6 个 ID + 3 个凭据：谁生成、什么生命周期、泄露后果 |
-| [MCP 工具](mcp-tools-improvement-plan.md) | 25 个工具清单、使用约束、待办 |
+| [MCP 工具](mcp-tools-improvement-plan.md) | 26 个工具清单、使用约束、待办 |
 | [Agent 询问设备用户](user-questions.md) | `ask_user` / `get_user_reply` 的状态语义 |
 | [开发与构建](development.md) | 构建、测试、打包、部署 |
 | [本机开发环境](local-dev.md) | 本机路径、快捷命令、已知坑 |

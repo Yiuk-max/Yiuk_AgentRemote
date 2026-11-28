@@ -23,6 +23,7 @@
 #include <QFileInfo>
 #include <QImage>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
 
@@ -671,6 +672,33 @@ void testRequestParsing() {
         std::printf("WARN OpenCV is not compiled in; image parsing is not covered\n");
     }
 
+
+    // 8) template_id：与另外三种来源互斥，且只带 id（像素由 VisionService 读）。
+    LocateRequest templateRequest;
+    check(buildLocateRequest(QJsonObject{{QStringLiteral("template_id"), QStringLiteral("aabbccddeeff")},
+                                         {QStringLiteral("threshold"), 0.95}},
+                             &templateRequest, &code, &message)
+              ? templateRequest.locate.templateId == QStringLiteral("aabbccddeeff")
+              : code == QStringLiteral("UNSUPPORTED_OPERATION"),
+          QStringLiteral("template_id is accepted (or rejected when OpenCV is missing)"));
+    if (!templateRequest.locate.templateId.isEmpty()) {
+        check(templateRequest.locate.useImage && templateRequest.locate.needle.isNull(),
+              QStringLiteral("template_id defers pixel loading to the service"));
+        check(templateRequest.image.threshold > 0.94 && templateRequest.image.threshold < 0.96,
+              QStringLiteral("threshold applies to templates too"));
+    }
+    LocateRequest conflict;
+    check(!buildLocateRequest(QJsonObject{{QStringLiteral("text"), QStringLiteral("收藏")},
+                                          {QStringLiteral("template_id"), QStringLiteral("aabbccddeeff")}},
+                              &conflict, &code, &message) &&
+              code == QStringLiteral("INVALID_ARGUMENT"),
+          QStringLiteral("text + template_id is rejected"));
+    check(!buildLocateRequest(QJsonObject{{QStringLiteral("image_b64"), QStringLiteral("AAAA")},
+                                          {QStringLiteral("template_id"), QStringLiteral("aabbccddeeff")}},
+                              &conflict, &code, &message) &&
+              code == QStringLiteral("INVALID_ARGUMENT"),
+          QStringLiteral("image_b64 + template_id is rejected"));
+
     // 5) click_target 的冻结默认值：unique / left / 不双击 / 检测变化 / settle 250 / 不等待。
     ClickTargetOptions clickOptions;
     check(buildClickTargetOptions(QJsonObject{{QStringLiteral("text"), QStringLiteral("收藏")}}, &clickOptions,
@@ -881,6 +909,139 @@ void testOcrRecognition() {
     check(!matches.isEmpty(), QStringLiteral("OCR finds Latin text too"));
 }
 
+// 模板管理（P5）：从最近一帧保留的像素裁剪、配额、路径穿越与损坏判定。
+void testTemplates() {
+    using namespace yiuk::vision;
+    VisionService service;
+    QString code;
+    QString message;
+
+    // 需要一个真实抓屏：没有桌面会话时降级为警告（与其它真机用例一致）。
+    CaptureOptions captureOptions;
+    CaptureOptions saved = captureOptions;
+    saved.saveToDisk = false;
+    saved.keepImage = false;
+    CaptureOutcome shot;
+    if (!service.capture(QStringLiteral("session-template"), saved, nullptr, &shot, &code, &message)) {
+        std::printf("WARN template tests skipped: capture failed (%s: %s)\n", qPrintable(code),
+                    qPrintable(message));
+        return;
+    }
+    const int width = shot.geometry.width;
+    const int height = shot.geometry.height;
+    check(shot.screenshotId.size() == 12, QStringLiteral("template source frame has a screenshot id"));
+
+    // 1) 正常裁剪：尺寸与来源 region 一致，id 是 12 位 hex。
+    const QRect region(40, 40, 160, 80);
+    TemplateOutcome saved1;
+    check(service.saveTemplate(QStringLiteral("session-template"), shot.screenshotId, region, &saved1, &code,
+                               &message),
+          QStringLiteral("saveTemplate slices the retained frame: %1").arg(message));
+    check(saved1.templateId.size() == 12 && saved1.width == 160 && saved1.height == 80,
+          QStringLiteral("template id and size are reported"));
+    check(QFileInfo(QDir(VisionService::templatesDirectory()).filePath(saved1.templateId + QStringLiteral(".png")))
+              .size() == saved1.sizeBytes,
+          QStringLiteral("template file is written to the templates directory"));
+
+    QImage loaded;
+    check(service.loadTemplate(saved1.templateId, &loaded, &code, &message),
+          QStringLiteral("loadTemplate reads the saved template"));
+    check(loaded.size() == QSize(160, 80), QStringLiteral("template keeps the requested pixel size"));
+    // 存下来的像素必须真的来自那一帧（不是纯色占位）。
+    check(!loaded.isNull() && loaded.pixelColor(0, 0).isValid(),
+          QStringLiteral("template contains real pixels"));
+
+    // 2) 旧 screenshot_id / 越界 region / 超大模板都要明确拒绝。
+    TemplateOutcome rejected;
+    check(!service.saveTemplate(QStringLiteral("session-template"), QStringLiteral("000000000000"), region,
+                                &rejected, &code, &message) &&
+              code == QStringLiteral("STALE_SCREENSHOT"),
+          QStringLiteral("a stale screenshot id is STALE_SCREENSHOT"));
+    check(!service.saveTemplate(QStringLiteral("session-template"), shot.screenshotId,
+                                QRect(width - 10, height - 10, 200, 200), &rejected, &code, &message) &&
+              code == QStringLiteral("INVALID_ARGUMENT"),
+          QStringLiteral("a region outside the frame is rejected"));
+    check(!service.saveTemplate(QStringLiteral("session-template"), shot.screenshotId,
+                                QRect(0, 0, qMin(width, 2100), 40), &rejected, &code, &message) &&
+              (code == QStringLiteral("INVALID_ARGUMENT") || code == QStringLiteral("TEMPLATE_TOO_LARGE")),
+          QStringLiteral("an oversized region is rejected"));
+
+    // 3) 第二次抓屏之后，旧帧的像素被放掉：模板只能从"当前这一帧"裁。
+    CaptureOutcome second;
+    if (service.capture(QStringLiteral("session-template"), saved, nullptr, &second, &code, &message)) {
+        check(!service.saveTemplate(QStringLiteral("session-template"), shot.screenshotId, region, &rejected,
+                                    &code, &message) &&
+                  code == QStringLiteral("STALE_SCREENSHOT"),
+              QStringLiteral("after a newer frame the old screenshot cannot be used for templates"));
+        check(service.saveTemplate(QStringLiteral("session-template"), second.screenshotId, region, &saved1,
+                                   &code, &message),
+              QStringLiteral("the newest frame can still be sliced"));
+    }
+
+    // 4) 路径穿越 / 不存在 / 损坏。
+    QImage ignored;
+    check(!service.loadTemplate(QStringLiteral("../../windows/win.ini"), &ignored, &code, &message) &&
+              code == QStringLiteral("INVALID_ARGUMENT"),
+          QStringLiteral("path traversal in template_id is rejected"));
+    check(!service.loadTemplate(QString(), &ignored, &code, &message) &&
+              code == QStringLiteral("INVALID_ARGUMENT"),
+          QStringLiteral("empty template id is rejected"));
+    check(!service.loadTemplate(QStringLiteral("0123456789ab"), &ignored, &code, &message) &&
+              code == QStringLiteral("TEMPLATE_NOT_FOUND"),
+          QStringLiteral("unknown template id is TEMPLATE_NOT_FOUND"));
+
+    const QString corruptPath =
+        QDir(VisionService::templatesDirectory()).filePath(QStringLiteral("ffffffffffff.png"));
+    {
+        QFile corrupt(corruptPath);
+        if (corrupt.open(QIODevice::WriteOnly)) corrupt.write("not a png at all");
+    }
+    check(!service.loadTemplate(QStringLiteral("ffffffffffff"), &ignored, &code, &message) &&
+              code == QStringLiteral("TEMPLATE_CORRUPTED"),
+          QStringLiteral("a corrupted template file is reported, not silently ignored"));
+    QFile::remove(corruptPath);
+
+    // 5) 配额：写满 100 条索引后必须明确拒绝（先备份现有索引，测完还原）。
+    const QString indexPath = QDir(VisionService::templatesDirectory()).filePath(QStringLiteral("index.json"));
+    QByteArray backup;
+    bool hadIndex = false;
+    {
+        QFile existing(indexPath);
+        if (existing.open(QIODevice::ReadOnly)) {
+            backup = existing.readAll();
+            hadIndex = true;
+        }
+    }
+    QJsonObject fakeTemplates;
+    for (int i = 0; i < VisionService::kMaxTemplateCount; ++i)
+        fakeTemplates.insert(QStringLiteral("%1").arg(i, 12, 10, QLatin1Char('0')),
+                             QJsonObject{{QStringLiteral("width"), 1}, {QStringLiteral("bytes"), 1}});
+    {
+        QFile indexFile(indexPath);
+        if (indexFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            indexFile.write(QJsonDocument(QJsonObject{{QStringLiteral("templates"), fakeTemplates}})
+                                .toJson(QJsonDocument::Compact));
+        }
+    }
+    TemplateOutcome quotaOutcome;
+    check(!service.saveTemplate(QStringLiteral("session-template"), QString(), region, &quotaOutcome, &code,
+                                &message) &&
+              code == QStringLiteral("TEMPLATE_QUOTA_EXCEEDED"),
+          QStringLiteral("the template count quota is enforced"));
+    {
+        QFile indexFile(indexPath);
+        if (hadIndex) {
+            if (indexFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) indexFile.write(backup);
+        } else if (QFile::exists(indexPath)) {
+            QFile::remove(indexPath);
+        }
+    }
+
+    // 清理本次会话与它产生的模板文件，避免污染真实目录。
+    service.forgetSession(QStringLiteral("session-template"));
+    QFile::remove(QDir(VisionService::templatesDirectory()).filePath(saved1.templateId + QStringLiteral(".png")));
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -903,6 +1064,7 @@ int main(int argc, char **argv) {
     testDeviceGate();
     testPrune();
     testVisionServiceCapture();
+    testTemplates();
 
     std::printf(failures == 0 ? "VISION OK\n" : "VISION FAILED (%d)\n", failures);
     return failures == 0 ? 0 : 1;

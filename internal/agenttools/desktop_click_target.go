@@ -50,6 +50,7 @@ func (c *Core) clickTarget(ctx context.Context, raw json.RawMessage) (any, error
 		Text           string  `json:"text"`
 		ImagePath      string  `json:"image_path"`
 		ImageB64       string  `json:"image_b64"`
+		TemplateID     string  `json:"template_id"`
 		Threshold      float64 `json:"threshold"`
 		Match          string  `json:"match"`
 		ControlType    string  `json:"control_type"`
@@ -71,19 +72,22 @@ func (c *Core) clickTarget(ctx context.Context, raw json.RawMessage) (any, error
 	text := strings.TrimSpace(input.Text)
 	imagePath := strings.TrimSpace(input.ImagePath)
 	imageB64 := strings.TrimSpace(input.ImageB64)
+	templateID := strings.TrimSpace(input.TemplateID)
 	given := 0
-	for _, value := range []string{text, imagePath, imageB64} {
+	for _, value := range []string{text, imagePath, imageB64, templateID} {
 		if value != "" {
 			given++
 		}
 	}
 	if given != 1 {
 		return nil, &Error{Code: "INVALID_ARGUMENT",
-			Message: "give exactly one of text, image_path or image_b64"}
+			Message: "give exactly one of text, image_path, image_b64 or template_id"}
 	}
 
 	arguments := map[string]any{}
 	switch {
+	case templateID != "":
+		arguments["template_id"] = templateID
 	case imagePath != "":
 		arguments["image_path"] = imagePath
 	case imageB64 != "":
@@ -97,7 +101,7 @@ func (c *Core) clickTarget(ctx context.Context, raw json.RawMessage) (any, error
 			arguments["control_type"] = input.ControlType
 		}
 	}
-	if imagePath != "" || imageB64 != "" {
+	if imagePath != "" || imageB64 != "" || templateID != "" {
 		if input.Threshold > 0 {
 			arguments["threshold"] = input.Threshold
 		}

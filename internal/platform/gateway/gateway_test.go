@@ -539,7 +539,7 @@ func TestFileUploadRequiresWriteFilePermissionAndForwardsChunks(t *testing.T) {
 	device.recv(protocol.TypeSessionStatus)
 	operator.send(protocol.Message{
 		Type: protocol.TypeUploadFile, SessionID: readSession.SessionID, RequestID: "upload-denied",
-		RemotePath: `C:gent
+		RemotePath: `C:\Agent
 otes.md`, FileName: "notes.md", FileSize: 5,
 	})
 	if errMsg := operator.recv(protocol.TypeError); errMsg.Code != "PERMISSION_DENIED" {
@@ -555,12 +555,12 @@ otes.md`, FileName: "notes.md", FileSize: 5,
 	device.recv(protocol.TypeSessionStatus)
 	operator.send(protocol.Message{
 		Type: protocol.TypeUploadFile, SessionID: writeSession.SessionID, RequestID: "upload-1",
-		RemotePath: `C:gent
+		RemotePath: `C:\Agent
 otes.md`, FileName: "notes.md", FileSize: 5,
 		FileSHA256: "checksum", Overwrite: true,
 	})
 	forwarded := device.recv(protocol.TypeUploadFile)
-	if forwarded.RequestID != "upload-1" || forwarded.RemotePath != `C:gent
+	if forwarded.RequestID != "upload-1" || forwarded.RemotePath != `C:\Agent
 otes.md` ||
 		forwarded.FileName != "notes.md" || forwarded.FileSize != 5 || !forwarded.Overwrite {
 		t.Fatalf("unexpected forwarded upload request: %#v", forwarded)
@@ -585,12 +585,12 @@ otes.md` ||
 	device.send(protocol.Message{
 		Type: protocol.TypeFileUploadResult, SessionID: writeSession.SessionID, RequestID: "upload-1",
 		Status: string(protocol.TaskSucceeded), FileName: "notes.md", FileSize: 5,
-		FileSHA256: "checksum", RemotePath: `C:gent
+		FileSHA256: "checksum", RemotePath: `C:\Agent
 otes.md`, ResultKnown: true,
 	})
 	result := operator.recvWhere(protocol.TypeFileUploadResult, func(m protocol.Message) bool { return m.RequestID == "upload-1" })
 	if result.Status != string(protocol.TaskSucceeded) || result.FileSize != 5 ||
-		result.FileSHA256 != "checksum" || result.RemotePath != `C:gent
+		result.FileSHA256 != "checksum" || result.RemotePath != `C:\Agent
 otes.md` {
 		t.Fatalf("unexpected upload result: %#v", result)
 	}
