@@ -95,11 +95,13 @@ void pumpFor(int milliseconds) {
 }
 
 QString clickTarget(yiuk::vision::VisionService *service, const QString &text, const QString &pick,
-                    bool detectChange, QJsonObject *data) {
+                    bool detectChange, QJsonObject *data, bool waitUntilFound = false, int waitTimeoutMs = 0) {
     yiuk::vision::ClickTargetOptions options;
     options.text.text = text;
     options.pick = pick;
     options.detectChange = detectChange;
+    options.waitUntilFound = waitUntilFound;
+    options.waitTimeoutMs = waitTimeoutMs;
     QString code;
     QString message;
     if (service->clickTarget(QStringLiteral("session-click-target"), options, nullptr, data, &code, &message))
@@ -167,6 +169,34 @@ int main(int argc, char **argv) {
               data.value(QStringLiteral("screenshot_id")).toString().size() == 12,
           QStringLiteral("NOT_FOUND still carries the coordinate base and empty findings"));
 
+    // 1b) 等目标出现：预算用完仍没命中 → NOT_FOUND + timed_out，一次 down 也不发。
+    //     轮间会释放设备门，所以这段不会把设备锁住（另一个会话还能截屏）。
+    QElapsedTimer waitTimer;
+    waitTimer.start();
+    data = QJsonObject();
+    code = clickTarget(&service, QStringLiteral("yiuk-absent-probe-9f3a"), QStringLiteral("unique"), false, &data,
+                       true, 1200);
+    const qint64 waited = waitTimer.elapsed();
+    pumpFor(120);
+    check(code == QLatin1String("NOT_FOUND"), QStringLiteral("waiting for an absent target still ends in NOT_FOUND"));
+    check(data.value(QStringLiteral("timed_out")).toBool(), QStringLiteral("waiting result is marked timed_out"));
+    check(data.value(QStringLiteral("attempts")).toInt() >= 2,
+          QStringLiteral("waiting re-searches the screen more than once"));
+    check(waited >= 1000 && waited < 4000, QStringLiteral("waiting respects the timeout budget"));
+    check(totalClicks() == 0, QStringLiteral("a wait timeout does not send any mouse-down"));
+
+    // 1c) 等待并非“只会等”：目标已经在时，第一轮就命中，attempts=1、timed_out=false。
+    //     （"目标稍后出现"这一段没法在本进程内造：UIA 只查前台窗口的控件树，
+    //       而正在等待的线程就是这个窗口的主线程，不能同时新建控件。）
+    data = QJsonObject();
+    code = clickTarget(&service, QStringLiteral("yiuk-order-probe"), QStringLiteral("first"), false, &data, true,
+                       3000);
+    pumpFor(300);
+    check(code.isEmpty() && data.value(QStringLiteral("attempts")).toInt() == 1 &&
+              data.value(QStringLiteral("timed_out")).toBool() == false,
+          QStringLiteral("waiting finds a present target on the first round"));
+    check(clicks[3] + clicks[4] == 1, QStringLiteral("the first same-label candidate received the click"));
+
     // 2) 两个同标签按钮、位置不同、得分相同：判歧义，同样不点。
     if (!ensureForeground(window)) {
         std::printf("SKIP lost foreground before the ambiguity case\n");
@@ -177,7 +207,8 @@ int main(int argc, char **argv) {
     pumpFor(150);
     check(code == QLatin1String("AMBIGUOUS_TARGET"),
           QStringLiteral("two same-label buttons are AMBIGUOUS_TARGET"));
-    check(totalClicks() == 0, QStringLiteral("AMBIGUOUS_TARGET does not send any mouse-down"));
+    check(clicks[1] == 0 && clicks[2] == 0, QStringLiteral("AMBIGUOUS_TARGET does not send any mouse-down"));
+    check(clicks[1] == 0 && clicks[2] == 0, QStringLiteral("neither same-label button was clicked"));
     check(data.value(QStringLiteral("candidate_count")).toInt() >= 2 &&
               data.value(QStringLiteral("top_score")).toDouble() > 0 &&
               data.value(QStringLiteral("competitor_score")).toDouble() > 0,
@@ -194,7 +225,7 @@ int main(int argc, char **argv) {
     check(code.isEmpty(), QStringLiteral("pick=index:2 clicks the second candidate"));
     check(data.value(QStringLiteral("picked")).toObject().value(QStringLiteral("index")).toInt() == 2,
           QStringLiteral("result says which candidate was clicked"));
-    check(clicks[2] == 1 && clicks[1] == 0 && clicks[0] == 0 && clicks[3] == 0 && clicks[4] == 0,
+    check(clicks[2] == 1 && clicks[1] == 0 && clicks[0] == 0,
           QStringLiteral("the click landed on the second same-label button only"));
     check(data.value(QStringLiteral("screen_x")).toInt() > 0 &&
               data.value(QStringLiteral("changed_ratio")).isDouble(),

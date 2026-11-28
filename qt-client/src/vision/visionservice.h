@@ -88,6 +88,10 @@ struct ClickTargetOptions {
     // 与 click 一致：可选点击前后的局部采样；click_target 默认开（规格要求）。
     bool detectChange = true;
     int settleMs = 250;
+    // 等目标出现：每 500ms 一轮，**轮间释放设备门**（不能为了等一个按钮
+    // 把整台设备锁住 20 秒）。找到的那一轮在同一个门内直接点完。
+    bool waitUntilFound = false;
+    int waitTimeoutMs = 0;
 };
 
 // VisionService 是客户端内所有"重操作"的唯一入口：
@@ -112,6 +116,8 @@ public:
         DeviceLock(const DeviceLock &) = delete;
         DeviceLock &operator=(const DeviceLock &) = delete;
         bool held() const { return held_; }
+        // 提前放门（例如“等目标出现”的轮间）：析构时不会再重复放。
+        void release();
 
     private:
         VisionService *service_ = nullptr;
@@ -125,7 +131,7 @@ public:
                           const std::atomic_bool *cancelled, QJsonObject *data, QString *code, QString *message);
 
     // 一次「找到就点」的事务：设备门 -> 抓一帧 -> 定位 -> 选择 -> 点击 -> 变化采样。
-    // 全程持门，定位与点击之间不会被别的会话插进来抓屏/点鼠标。
+    // 每一轮都持门：定位与点击之间不会被别的会话插进来抓屏/点鼠标（等待时轮间放门）。
     //
     // 找不到 / 歧义时**一个 down 事件都不发**：失败返回 false 并写 code/message，
     // 同时把现场（候选、得分、阈值）写进 *data，供上层放进错误信封。

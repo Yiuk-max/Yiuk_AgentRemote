@@ -3,6 +3,7 @@ package agenttools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 )
@@ -24,24 +25,43 @@ const (
 	// 抓屏 + UIA 300ms / OpenCV 匹配 + 点击 + settle 全在一笔事务里，
 	// 但平台单次原生操作硬上限是 25 秒。
 	nativeClickTargetTimeoutSeconds = 25
+	// 等目标出现时客户端每 500ms 一轮、轮间放设备门；预算比原生任务上限少 5 秒，
+	// 给"找到后再点一下 + 采样"留出余量，不然得等到的瞬间先被平台超时杀掉。
+	maxClickTargetWaitSeconds = 20
 )
+
+// clickTargetWaitTimeoutSeconds 把等待预算换成原生任务超时：
+// 等待本身在客户端的一笔事务里完成（定位到就点，中间不放门），
+// 所以这里只需要把平台的 25 秒上限切好。
+func clickTargetWaitTimeoutSeconds(timeoutSeconds int) int {
+	if timeoutSeconds <= 0 {
+		return nativeClickTargetTimeoutSeconds
+	}
+	timeout := timeoutSeconds + 5
+	if timeout > nativeClickTargetTimeoutSeconds {
+		timeout = nativeClickTargetTimeoutSeconds
+	}
+	return timeout
+}
 
 func (c *Core) clickTarget(ctx context.Context, raw json.RawMessage) (any, error) {
 	var input struct {
-		SessionID    string  `json:"session_id"`
-		Text         string  `json:"text"`
-		ImagePath    string  `json:"image_path"`
-		ImageB64     string  `json:"image_b64"`
-		Threshold    float64 `json:"threshold"`
-		Match        string  `json:"match"`
-		ControlType  string  `json:"control_type"`
-		Region       []int   `json:"region"`
-		Limit        int     `json:"limit"`
-		Pick         string  `json:"pick"`
-		Button       string  `json:"button"`
-		Double       bool    `json:"double"`
-		DetectChange *bool   `json:"detect_change"`
-		SettleMS     *int    `json:"settle_ms"`
+		SessionID      string  `json:"session_id"`
+		Text           string  `json:"text"`
+		ImagePath      string  `json:"image_path"`
+		ImageB64       string  `json:"image_b64"`
+		Threshold      float64 `json:"threshold"`
+		Match          string  `json:"match"`
+		ControlType    string  `json:"control_type"`
+		Region         []int   `json:"region"`
+		Limit          int     `json:"limit"`
+		Pick           string  `json:"pick"`
+		Button         string  `json:"button"`
+		Double         bool    `json:"double"`
+		DetectChange   *bool   `json:"detect_change"`
+		SettleMS       *int    `json:"settle_ms"`
+		WaitUntilFound bool    `json:"wait_until_found"`
+		TimeoutSeconds int     `json:"timeout_seconds"`
 	}
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return nil, &Error{Code: "INVALID_ARGUMENT", Message: "invalid arguments"}
@@ -108,9 +128,24 @@ func (c *Core) clickTarget(ctx context.Context, raw json.RawMessage) (any, error
 	if input.SettleMS != nil {
 		arguments["settle_ms"] = *input.SettleMS
 	}
+	// 等目标出现：默认不等（click_target 的默认行为是"现在就叫点"）。
+	if input.WaitUntilFound {
+		seconds := input.TimeoutSeconds
+		if seconds == 0 {
+			seconds = 10
+		}
+		if seconds < 1 || seconds > maxClickTargetWaitSeconds {
+			return nil, &Error{Code: "INVALID_ARGUMENT",
+				Message: fmt.Sprintf("timeout_seconds must be between 1 and %d when wait_until_found is set",
+					maxClickTargetWaitSeconds)}
+		}
+		arguments["wait_until_found"] = true
+		arguments["timeout_seconds"] = seconds
+		input.TimeoutSeconds = seconds
+	}
 
 	rawResult, err := c.invokeNative(ctx, input.SessionID, nativeClickTargetOperation, arguments,
-		nativeClickTargetTimeoutSeconds)
+		clickTargetWaitTimeoutSeconds(input.TimeoutSeconds))
 	if err != nil {
 		if isUnsupportedNative(err) {
 			return nil, &Error{
@@ -158,6 +193,8 @@ func (c *Core) clickTarget(ctx context.Context, raw json.RawMessage) (any, error
 		DiffRatio      float64 `json:"diff_ratio"`
 		ChangedRatio   float64 `json:"changed_ratio"`
 		DetectChange   bool    `json:"detect_change"`
+		Attempts       int     `json:"attempts"`
+		WaitedMS       int     `json:"waited_ms"`
 		ElapsedMS      int     `json:"elapsed_ms"`
 		Source         string  `json:"source"`
 	}
@@ -210,20 +247,24 @@ func (c *Core) clickTarget(ctx context.Context, raw json.RawMessage) (any, error
 	// 坐标用设备回显的截图坐标（x/y）与物理坐标（screen_x/y）成对返回：
 	// 前者用于继续跟 screenshot_id 配合，后者用于核对真实落点。
 	data := map[string]any{
-		"session_id":       input.SessionID,
-		"screenshot_id":    result.ScreenshotID,
-		"clicked":          true,
-		"x":                result.X,
-		"y":                result.Y,
-		"screen_x":         result.ScreenX,
-		"screen_y":         result.ScreenY,
-		"button":           input.Button,
-		"double":           result.Double,
-		"picked":           pickedJSON(result.Picked.Index, result.Picked.BBox, result.Picked.Center, result.Picked.Score, result.Picked.Source, result.Picked.Text, result.Picked.ControlType),
-		"matches":          matches,
-		"candidate_count":  result.CandidateCount,
-		"source":           firstNonEmpty(result.Source, "uia"),
-		"elapsed_ms":       result.ElapsedMS,
+		"session_id":      input.SessionID,
+		"screenshot_id":   result.ScreenshotID,
+		"clicked":         true,
+		"x":               result.X,
+		"y":               result.Y,
+		"screen_x":        result.ScreenX,
+		"screen_y":        result.ScreenY,
+		"button":          input.Button,
+		"double":          result.Double,
+		"picked":          pickedJSON(result.Picked.Index, result.Picked.BBox, result.Picked.Center, result.Picked.Score, result.Picked.Source, result.Picked.Text, result.Picked.ControlType),
+		"matches":         matches,
+		"candidate_count": result.CandidateCount,
+		"source":          firstNonEmpty(result.Source, "uia"),
+		"elapsed_ms":      result.ElapsedMS,
+		// 等待语义的现场：默认不等时 attempts=1，timed_out 恒 false（超时是失败）。
+		"attempts":         result.Attempts,
+		"waited_ms":        result.WaitedMS,
+		"timed_out":        false,
 		"foreground_title": result.Foreground,
 		"width":            result.Width,
 		"height":           result.Height,

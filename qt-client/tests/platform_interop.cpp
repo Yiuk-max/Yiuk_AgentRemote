@@ -115,6 +115,11 @@ int main(int argc, char *argv[]) {
             options.detectChange = arguments.value(QStringLiteral("detect_change")).toBool(true);
             if (arguments.contains(QStringLiteral("settle_ms")))
                 options.settleMs = qBound(0, arguments.value(QStringLiteral("settle_ms")).toInt(), 2000);
+            // 与真实客户端一致：等目标出现时每 500ms 一轮、轮间放设备门。
+            options.waitUntilFound = arguments.value(QStringLiteral("wait_until_found")).toBool();
+            if (options.waitUntilFound)
+                options.waitTimeoutMs =
+                    qBound(1, arguments.value(QStringLiteral("timeout_seconds")).toInt(10), 20) * 1000;
             QJsonObject data;
             QString code;
             QString message;
@@ -276,6 +281,7 @@ int main(int argc, char *argv[]) {
     bool releasedResultOk = false;
     bool findResultOk = false;
     bool clickTargetOk = false;
+    bool clickTargetWaitOk = false;
     bool inputMoveOk = false;
     bool inputClickOk = false;
     bool changeDetectedOk = false;
@@ -401,6 +407,22 @@ int main(int argc, char *argv[]) {
             clickTargetOk = true;
             qInfo() << "operator saw click_target refuse" << envelope.value(QStringLiteral("code")).toString()
                     << findings.value(QStringLiteral("candidate_count")).toInt() << "candidates";
+            return;
+        }
+        if (requestId == QLatin1String("interop-native-click-target-wait")) {
+            // 等目标出现到超时：仍然是 NOT_FOUND，但必须带 timed_out 与轮次（不是错误、没点击）。
+            const QJsonObject findings = envelope.value(QStringLiteral("data")).toObject();
+            if (envelope.value(QStringLiteral("ok")).toBool() ||
+                envelope.value(QStringLiteral("code")).toString() != QLatin1String("NOT_FOUND") ||
+                !findings.value(QStringLiteral("timed_out")).toBool() ||
+                findings.value(QStringLiteral("attempts")).toInt() < 2) {
+                qWarning() << "click_target wait should have timed out with findings" << data;
+                ++failures;
+                return;
+            }
+            clickTargetWaitOk = true;
+            qInfo() << "operator saw click_target wait timeout" << findings.value(QStringLiteral("attempts")).toInt()
+                    << "attempts";
             return;
         }
         if (!envelope.value(QStringLiteral("ok")).toBool()) {
@@ -756,6 +778,19 @@ int main(int argc, char *argv[]) {
         }
         if (requestId == QLatin1String("interop-native-click-target")) {
             if (!clickTargetOk) ++failures;
+            // 最后一段：等目标出现到超时（预算 1 秒，本地看不出卡多久）。
+            qInfo() << "submitting native operation vision.click_target (wait)";
+            operatorClient->submitNative(sessionId, QStringLiteral("interop-native-click-target-wait"),
+                                         QStringLiteral("vision.click_target"),
+                                         QJsonObject{{QStringLiteral("text"),
+                                                      QStringLiteral("yiuk-interop-absent-9f3a")},
+                                                     {QStringLiteral("wait_until_found"), true},
+                                                     {QStringLiteral("timeout_seconds"), 1}},
+                                         10);
+            return;
+        }
+        if (requestId == QLatin1String("interop-native-click-target-wait")) {
+            if (!clickTargetWaitOk) ++failures;
             if (inputEnabled) {
                 submitInputAcceptance(sessionId);
             } else if (!windowDragClass.isEmpty()) {
@@ -910,11 +945,12 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     if (nativeEnabled && (!nativeSent || !nativeSeen || !nativeResultOk || !savedResultOk || !releasedResultOk ||
-                          !findResultOk || !clickTargetOk)) {
+                          !findResultOk || !clickTargetOk || !clickTargetWaitOk)) {
         qWarning() << "native round trip did not complete"
                    << "sent:" << nativeSent << "seen:" << nativeSeen << "ok:" << nativeResultOk
                    << "saved:" << savedResultOk << "released:" << releasedResultOk
-                   << "find:" << findResultOk << "click_target:" << clickTargetOk;
+                   << "find:" << findResultOk << "click_target:" << clickTargetOk
+                   << "click_target_wait:" << clickTargetWaitOk;
         return 1;
     }
     if (inputEnabled && (!inputMoveOk || !inputClickOk)) {

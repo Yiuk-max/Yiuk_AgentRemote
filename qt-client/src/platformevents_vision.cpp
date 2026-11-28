@@ -194,6 +194,12 @@ QJsonObject MainWindow::runVisionClickTarget(const QString &sessionId, const QJs
     options.detectChange = arguments.value(QStringLiteral("detect_change")).toBool(true);
     if (arguments.contains(QStringLiteral("settle_ms")))
         options.settleMs = qBound(0, arguments.value(QStringLiteral("settle_ms")).toInt(), 2000);
+    // 等目标出现：每 500ms 一轮、轮间释设备门；预算由调用方给，这里只做边界。
+    options.waitUntilFound = arguments.value(QStringLiteral("wait_until_found")).toBool();
+    if (options.waitUntilFound) {
+        const int seconds = qBound(1, arguments.value(QStringLiteral("timeout_seconds")).toInt(10), 20);
+        options.waitTimeoutMs = seconds * 1000;
+    }
 
     QJsonObject data;
     if (!vision->clickTarget(sessionId, options, cancelled, &data, &code, &message)) {

@@ -26,11 +26,20 @@
 | 命令 | `run_command`、`execute_command`、`get_command_result`、`cancel_command` |
 | 文件 | `download_file`、`upload_file`、`list_dir`、`stat_path` |
 | 桌面 | `take_screenshot`、`click`、`move_mouse`、`drag`、`press_keys`、`type_text` |
-| 视觉 | `find_on_screen`（UIA 文本 / OpenCV 图像模板）、`click_target`（定位+选择+点击一笔事务） |
+| 视觉 | `find_on_screen`（UIA 文本 / OpenCV 图像模板，可等目标出现）、`click_target`（定位+选择+点击一笔事务，可等目标出现） |
 | 等待 | `wait`、`wait_for` |
 | 交互 | `ask_user`、`get_user_reply` |
 
 结果里的 `capture_source`（`native`/`script`）与 `input_source`（`native`/`script`）说明这次走了哪条实现路径。
+
+**等目标出现（两个工具都支持）**：`wait_until_found: true` + `timeout_seconds`。
+- `find_on_screen`：1–25 秒（默认 10），轮询在 MCP 侧，每 500ms 一个独立原生调用（每轮自己取/放设备门）；
+  到时仍没命中就 **`ok:true` + `timed_out:true` + 空 matches**，不是错误——“没出现”是正常结果。
+  返回里带 `attempts`（查了几轮）与 `waited_ms`。
+- `click_target`：1–20 秒（默认 10，上限小 5 秒是给“找到后再点+采样”留余量）。
+  等待在客户端的一笔事务里：每轮取门 → 抓帧 → 定位 → 选择，**轮间放门**；
+  找到的那一轮在同一把门内直接点完（不存在“找到与点击之间被别人改了画面”）。
+  超时是 **`NOT_FOUND` + `data.timed_out:true`**，且一次 down 事件都不发。
 
 ### 2.2 原生操作（平台白名单，8 项）
 
@@ -42,7 +51,7 @@
 | `input.move` | 已实现 | `duration_ms` 确定性 ease-in-out |
 | `input.drag` | 已实现 | 按下 → 路径 → 抬起，`released:true` 只在确认释放时返回 |
 | `vision.find` | 已实现 | UIA 文本 + OpenCV 灰度模板匹配 |
-| `vision.click_target` | 已实现 | 客户端内 find→pick→click 事务（全程持设备门，歧义/未命中不按下） |
+| `vision.click_target` | 已实现 | 客户端内 find→pick→click 事务（每轮持设备门，歧义/未命中不按下；可等目标出现） |
 | `vision.save_template` | 未实现 | 从快照裁剪模板 |
 
 ### 2.3 绿色化：所有文件都在程序目录
@@ -124,7 +133,8 @@ $env:YIUK_INTEROP_NATIVE    = "1"
 ```
 
 依次应出现：`screen.capture` → `screen.capture(save)` → `screen.release` → `vision.find` →
-`vision.click_target`（故意用一个不会出现的文本，期望设备返回 `NOT_FOUND` 并带回候选现场；这一段不碰鼠标）。
+`vision.click_target` ×2（故意用不会出现的文本：第一次期望 `NOT_FOUND` + 候选现场；
+第二次带 `wait_until_found` + 1 秒预算，期望 `NOT_FOUND` + `timed_out:true` + `attempts>=2`。两段都不碰鼠标。）
 
 可选段（都会真的动鼠标/窗口，默认关闭）：
 
@@ -155,7 +165,7 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 | OpenCV 定位 | 任务管理器标题栏 `160x30 @758,341` 在全屏 2560×1600 中匹配回同一点，`score 1.0000` |
 | 任务管理器拖动（真实客户端 + 真实平台） | 起点 `(752,337)` → 右 `+592` → 下 `+323` → 左 `−1344` → 上 `−323` → 右 `+752`，最终 `rect = 752,337`，**闭环** |
 | `click_target` 真机（`yiuk-click-target-test`，裸 Win32 按钮 fixture） | 未命中 `NOT_FOUND` 且 0 次 down；两个同标签按钮 `AMBIGUOUS_TARGET` 且 0 次 down；`pick=index:2` 只点到第二个（`clicks[2]==1`，其余 0）；`pick=best` 点到唯一按钮；落点 `(969,348)` 在命中框 `[799,322,1139,374]` 内 |
-| 互操作（真实 Qt ↔ 真实 Go 平台） | `INTEROP EXIT=0`；平台审计里 5 条 `native_submitted`：`screen.capture` ×2、`screen.release`、`vision.find`、`vision.click_target` |
+| 互操作（真实 Qt ↔ 真实 Go 平台） | `INTEROP EXIT=0`；平台审计 6 条 `native_submitted`：`screen.capture` ×2、`screen.release`、`vision.find`、`vision.click_target` ×2（含等待超时段） |
 | 绿色化 | `data\` 内出现配置/身份/`screenshots\`/`tmp\`；`data\tmp` 可见正在执行的 `.ps1`；C 盘旧目录不再写入 |
 
 ## 6. 踩过的坑（改输入/视觉前必读）
@@ -192,7 +202,6 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 | 项 | 状态 |
 | --- | --- |
 | OCR 兜底 | 未实现（UIA 已可用；`OCR_UNAVAILABLE` 语义待补） |
-| `find_on_screen` / `click_target` 的等待语义 | 未实现（`timeout_seconds` + `wait_until_found`） |
 | 非原生 Win32 目标（Qt/WPF）的 UIA 坐标 | 已验证 Qt 目标上报逻辑像素（见 §6.11），未做修正 |
 | 多显示器 / 混合 DPI / 负原点 | 未验证（P5） |
 | 模板管理（`vision.save_template`）、ROI 缓存 | 未实现（P5） |
@@ -203,10 +212,10 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 
 ## 8. 下一步（按顺序）
 
-1. **`find_on_screen` 的等待语义**：`timeout_seconds` + `wait_until_found`（每 500ms 一轮、轮间释放设备门、可取消）；同一个等待器可以给 `click_target` 复用（等按钮出现再点）。
-2. **OCR 兜底**：`Windows.Media.Ocr`（P0 已验 C++ 直连可用），缺语言包返回 `OCR_UNAVAILABLE` + hint。
-3. **P5**：`vision.save_template`（从快照裁剪，配额与路径校验）、多显示器/混合 DPI、ROI 缓存。
-4. **P6**：Windows CI（Qt + OpenCV 固定版本缓存）、绿色包/安装器体积与启动验证、`Release\` 重新打包。
+1. **OCR 兜底**：`Windows.Media.Ocr`（P0 已验 C++ 直连可用），缺语言包返回 `OCR_UNAVAILABLE` + hint；
+   UIA 命中不到时自动回退到 OCR（并标注 `source=ocr`）。
+2. **P5**：`vision.save_template`（从快照裁剪，配额与路径校验）、多显示器/混合 DPI、ROI 缓存。
+3. **P6**：Windows CI（Qt + OpenCV 固定版本缓存）、绿色包/安装器体积与启动验证、`Release\` 重新打包。
 
 ## 9. 交接检查清单
 

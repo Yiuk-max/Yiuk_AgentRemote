@@ -226,7 +226,8 @@ MCP 工具 → agenttools 原生桌面调度 → platformclient
 - [ ] OCR：系统语言检查、lang 校验、图像尺寸上限、行/词匹配框与去重；缺语言包返回 `OCR_UNAVAILABLE` + hint，不影响图像/UIA。
 - [x] `find_on_screen`（文本路径）：`limit` 1–20、`region`、`control_type`、`match`，返回截图坐标 bbox/center
       与 `screenshot_id`，不返回图片；没有截图时先抓一张不落盘的建立基准。
-      未做：`timeout_seconds` / `wait_until_found`（每 500ms 可取消等待）、图像分支。
+      等待语义：`wait_until_found` + `timeout_seconds`（1–25，默认 10），MCP 侧每 500ms 一个独立原生调用，
+      轮间不占设备门；超时返回 `timed_out:true` + 已有候选（不当作错误）。
 - [x] `agenttools` schema/注册表/注解（ReadOnly、Idempotent）、原生 backend 接线、平台链路互操作
       （`yiuk-platform-interop` 已跑通 `vision.find`）。本地 bridge 仍返回 `UNSUPPORTED_CLIENT`。
 - [ ] 固定素材入库：约 30 类控件在三 DPI/两主题下的截图与至少 15 个负样本，使用自建界面或许可清楚的素材，不含用户真实桌面隐私。
@@ -242,8 +243,13 @@ MCP 工具 → agenttools 原生桌面调度 → platformclient
       `ButtonGuard` 保证任何可处理路径抬起按键，结果用 `released:true` 表示已确认释放，
       没确认就返回 `DRAG_NOT_RELEASED` 而不是报成功。
 - [x] 取消/超时/关闭会话都会走到 guard；但进程被强杀时 RAII 不会运行，不宣称绝对保证（已在文档写明）。
+- [x] `find_on_screen` 的 `timeout_seconds` / `wait_until_found`：MCP 侧每 500ms 一个独立原生调用
+      （每轮自己取/放设备门），超时返回 `ok:true` + `timed_out:true` + 已有候选/空结果。
+- [x] `click_target` 的等待在客户端一笔事务里：每轮取门→抓帧→定位→选择，轮间放门，
+      找到的那一轮在同一把门内点完；超时 `NOT_FOUND` + `timed_out:true` 且不发 down。
 - [x] `click_target`：客户端内事务完成 find/pick/click；默认 unique 与 detect_change，歧义/不命中/过期/取消时没有任何 down 事件。
-      实现：`VisionService::clickTarget`（全程持设备门：抓一帧 → 定位 → `pickTarget` → `clickPointLocked`），
+      实现：`VisionService::clickTarget`（每轮持门：抓一帧 → 定位 → `pickTarget` → `clickPointLocked`；
+      等目标出现时轮间放门，找到的那一轮在同一把门内点完），
       歧义判据写在纯函数 `pickTarget` 里（第一名 vs **另一个视觉目标**的最强对手，差 < 0.03；
       中心重合或一個框有 ≥60% 面积被另一个盖住的 UIA 父子节点 / NMS 残留不算竞争）。
       失败信封带候选现场（需要 `envelopeError(..., data)` + Go 侧 `decodeNativeResult` 透传）。

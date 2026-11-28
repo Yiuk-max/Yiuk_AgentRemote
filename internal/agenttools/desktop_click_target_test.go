@@ -170,3 +170,53 @@ func TestClickTargetValidatesArguments(t *testing.T) {
 		}
 	}
 }
+
+// 等目标出现：等待在客户端的一笔事务里做（定位到就点，中间不放门），
+// MCP 侧只负责把参数与预算送下去，并挡住超出平台 25 秒上限的组合。
+func TestClickTargetForwardsWaitUntilFound(t *testing.T) {
+	backend := nativeBackendWithImage(t)
+	var forwarded map[string]any
+	backend.nativeImpl = func(_ string, _ string, arguments json.RawMessage) (json.RawMessage, error) {
+		_ = json.Unmarshal(arguments, &forwarded)
+		return clickTargetEnvelope(), nil
+	}
+	core := NewCore(backend)
+
+	response := core.Call(context.Background(), ClickTarget, json.RawMessage(
+		`{"session_id":"s1","text":"保存","wait_until_found":true,"timeout_seconds":7}`))
+	if !response.OK {
+		t.Fatalf("click_target with wait failed: %#v", response)
+	}
+	if forwarded["wait_until_found"] != true || forwarded["timeout_seconds"] != float64(7) {
+		t.Fatalf("wait parameters were not forwarded: %#v", forwarded)
+	}
+
+	// 只给 wait_until_found 时用 10 秒默认值，不把 0 当成"无限等"。
+	forwarded = nil
+	response = core.Call(context.Background(), ClickTarget, json.RawMessage(
+		`{"session_id":"s1","text":"保存","wait_until_found":true}`))
+	if !response.OK {
+		t.Fatalf("click_target with default wait failed: %#v", response)
+	}
+	if forwarded["timeout_seconds"] != float64(10) {
+		t.Fatalf("default wait budget should be 10s: %#v", forwarded)
+	}
+
+	// 不等待时不要凭空塞参数：客户端默认就是"只查一次"。
+	forwarded = nil
+	response = core.Call(context.Background(), ClickTarget, json.RawMessage(
+		`{"session_id":"s1","text":"保存"}`))
+	if !response.OK {
+		t.Fatalf("click_target failed: %#v", response)
+	}
+	if _, sent := forwarded["wait_until_found"]; sent {
+		t.Fatalf("wait_until_found must not be invented: %#v", forwarded)
+	}
+
+	// 21 秒超过平台单次原生操作的 25 秒上限余量：schema 的 maximum=20 挡住。
+	tooLong := core.Call(context.Background(), ClickTarget, json.RawMessage(
+		`{"session_id":"s1","text":"保存","wait_until_found":true,"timeout_seconds":21}`))
+	if tooLong.OK || tooLong.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("timeout_seconds=21 must be rejected: %#v", tooLong)
+	}
+}

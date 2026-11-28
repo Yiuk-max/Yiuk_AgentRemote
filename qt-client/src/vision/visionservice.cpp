@@ -144,7 +144,14 @@ VisionService::DeviceLock::DeviceLock(VisionService &service, const std::atomic_
 }
 
 VisionService::DeviceLock::~DeviceLock() {
-    if (held_ && service_ != nullptr) service_->deviceGate_.leave();
+    release();
+}
+
+void VisionService::DeviceLock::release() {
+    if (held_ && service_ != nullptr) {
+        service_->deviceGate_.leave();
+        held_ = false;
+    }
 }
 
 QString VisionService::screenshotsDirectory() {
@@ -404,9 +411,16 @@ bool VisionService::clickTarget(const QString &sessionId, const ClickTargetOptio
                     QStringLiteral("pick 只能是 unique / best / first / index:N"));
     }
 
+    // 等待的时候一轮一轮重新取门：不能为了等一个按钮把整台设备锁住 20 秒。
     const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    const qint64 deadlineMs =
+        options.waitUntilFound ? startedAtMs + qMax<qint64>(0, options.waitTimeoutMs) : startedAtMs;
+    int attempts = 0;
 
-    // 全程持门：抓屏 -> 定位 -> 点击之间不能让别的会话插进来改画面或抢鼠标。
+    for (;;) {
+    ++attempts;
+
+    // 本轮全程持门：抓屏 -> 定位 -> 点击之间不能让别的会话插进来改画面或抢鼠标。
     DeviceLock lock(*this, cancelled, code, message);
     if (!lock.held()) return false;
 
@@ -485,8 +499,27 @@ bool VisionService::clickTarget(const QString &sessionId, const ClickTargetOptio
             detail.insert(QStringLiteral("competitor_score"), candidates.at(choice.competitor).score);
         *data = detail;
         switch (choice.status) {
-            case TargetPickStatus::NotFound:
-                return fail(QStringLiteral("NOT_FOUND"), choice.message);
+            case TargetPickStatus::NotFound: {
+                // 等目标出现：没到截止时间就放门、等一轮再试；到了就带着现场报 NOT_FOUND。
+                const bool expired = QDateTime::currentMSecsSinceEpoch() >= deadlineMs;
+                if (options.waitUntilFound && !expired) {
+                    lock.release();  // 轮间不霸占设备：另一个会话要截屏/点鼠标得能进来
+                    if (!waitCancellable(500, cancelled))
+                        return fail(QStringLiteral("CANCELLED"), QStringLiteral("操作已被取消"));
+                    continue;
+                }
+                detail.insert(QStringLiteral("timed_out"), options.waitUntilFound && expired);
+                detail.insert(QStringLiteral("attempts"), attempts);
+                detail.insert(QStringLiteral("waited_ms"),
+                              QDateTime::currentMSecsSinceEpoch() - startedAtMs);
+                *data = detail;
+                const QString why = options.waitUntilFound && expired
+                                        ? QStringLiteral("等待 %1 ms 仍未命中任何候选（共 %2 轮）")
+                                              .arg(options.waitTimeoutMs)
+                                              .arg(attempts)
+                                        : choice.message;
+                return fail(QStringLiteral("NOT_FOUND"), why);
+            }
             case TargetPickStatus::Ambiguous:
                 return fail(QStringLiteral("AMBIGUOUS_TARGET"), choice.message);
             default:
@@ -520,9 +553,13 @@ bool VisionService::clickTarget(const QString &sessionId, const ClickTargetOptio
                        {QStringLiteral("control_type"), chosen.controlType},
                    });
     payload.insert(QStringLiteral("detect_change"), options.detectChange);
+    payload.insert(QStringLiteral("attempts"), attempts);
+    payload.insert(QStringLiteral("waited_ms"), QDateTime::currentMSecsSinceEpoch() - startedAtMs);
+    payload.insert(QStringLiteral("timed_out"), false);
     payload.insert(QStringLiteral("elapsed_ms"), QDateTime::currentMSecsSinceEpoch() - startedAtMs);
     *data = payload;
     return true;
+    }  // for (;;)
 }
 
 bool VisionService::matchImage(const QString &sessionId, const QImage &needle, const TemplateOptions &options,

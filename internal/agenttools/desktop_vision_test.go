@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // find_on_screen：设备端 UIA 文本定位的 MCP 侧行为。
@@ -154,4 +155,117 @@ func TestFindOnScreenValidatesArguments(t *testing.T) {
 	if backend.nativeCalls != 0 {
 		t.Fatalf("validation must not reach the device: %d native calls", backend.nativeCalls)
 	}
+}
+
+// 等待目标出现：每 500ms 一轮的循环在 Go 侧，轮间不占设备（每轮是一个独立原生调用）。
+// 测试把间隔调小，只验证轮次、总预算与 timed_out 语义。
+func TestFindOnScreenWaitsUntilFound(t *testing.T) {
+	old := findPollInterval
+	findPollInterval = 2 * time.Millisecond
+	defer func() { findPollInterval = old }()
+
+	backend := nativeBackendWithImage(t)
+	calls := 0
+	backend.nativeImpl = func(_ string, operation string, _ json.RawMessage) (json.RawMessage, error) {
+		if operation != nativeFindOperation {
+			t.Fatalf("unexpected native operation %q", operation)
+		}
+		calls++
+		if calls < 3 {
+			return emptyFindEnvelope(), nil
+		}
+		return findResultEnvelope(), nil
+	}
+	core := NewCore(backend)
+
+	response := core.Call(context.Background(), FindOnScreen, json.RawMessage(
+		`{"session_id":"s1","text":"收藏","wait_until_found":true,"timeout_seconds":5}`))
+	if !response.OK {
+		t.Fatalf("waiting find failed: %#v", response)
+	}
+	if calls != 3 {
+		t.Fatalf("device was queried %d times, want 3", calls)
+	}
+	data, _ := response.Data.(map[string]any)
+	if data["attempts"] != 3 || data["timed_out"] != false || data["count"] != 2 {
+		t.Fatalf("unexpected waiting result: %#v", data)
+	}
+	if waited, _ := data["waited_ms"].(int); waited < 4 {
+		t.Fatalf("waited_ms should cover the two poll intervals, got %#v", data["waited_ms"])
+	}
+}
+
+func TestFindOnScreenTimesOutWithExistingCandidates(t *testing.T) {
+	old := findPollInterval
+	findPollInterval = 2 * time.Millisecond
+	defer func() { findPollInterval = old }()
+
+	backend := nativeBackendWithImage(t)
+	calls := 0
+	backend.nativeImpl = func(_ string, _ string, _ json.RawMessage) (json.RawMessage, error) {
+		calls++
+		return emptyFindEnvelope(), nil
+	}
+	core := NewCore(backend)
+
+	// 1 秒预算 + 2ms 间隔：会查很多轮，但必须在预算内返回，不能拖成宿主超时。
+	started := time.Now()
+	response := core.Call(context.Background(), FindOnScreen, json.RawMessage(
+		`{"session_id":"s1","text":"永远不存在的按钮","wait_until_found":true,"timeout_seconds":1}`))
+	elapsed := time.Since(started)
+	if !response.OK {
+		t.Fatalf("a wait timeout is a normal result, not an error: %#v", response)
+	}
+	data, _ := response.Data.(map[string]any)
+	if data["timed_out"] != true {
+		t.Fatalf("timed_out should be true: %#v", data)
+	}
+	if data["count"] != 0 {
+		t.Fatalf("no match expected: %#v", data)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("wait budget was not respected: %v", elapsed)
+	}
+	if calls < 2 {
+		t.Fatalf("expected repeated searches, got %d", calls)
+	}
+}
+
+// 没有 wait_until_found 时 timeout_seconds 不生效：一次查完就返回，不睡。
+func TestFindOnScreenWithoutWaitDoesNotSleep(t *testing.T) {
+	old := findPollInterval
+	findPollInterval = 200 * time.Millisecond
+	defer func() { findPollInterval = old }()
+
+	backend := nativeBackendWithImage(t)
+	calls := 0
+	backend.nativeImpl = func(_ string, _ string, _ json.RawMessage) (json.RawMessage, error) {
+		calls++
+		return emptyFindEnvelope(), nil
+	}
+	core := NewCore(backend)
+
+	started := time.Now()
+	response := core.Call(context.Background(), FindOnScreen, json.RawMessage(
+		`{"session_id":"s1","text":"不存在","timeout_seconds":5}`))
+	if !response.OK {
+		t.Fatalf("find failed: %#v", response)
+	}
+	if calls != 1 {
+		t.Fatalf("without wait_until_found the device must be queried once, got %d", calls)
+	}
+	if elapsed := time.Since(started); elapsed > 150*time.Millisecond {
+		t.Fatalf("without wait_until_found there must be no sleep, took %v", elapsed)
+	}
+	data, _ := response.Data.(map[string]any)
+	if data["timed_out"] != false || data["attempts"] != 1 {
+		t.Fatalf("unexpected result: %#v", data)
+	}
+}
+
+// 空结果的信封：与设备真实返回同形，只是 matches 为空。
+func emptyFindEnvelope() json.RawMessage {
+	return json.RawMessage(`{"captured":true,"screenshot_id":"aabbccddee11","layout_version":"0123456789abcdef",` +
+		`"width":2560,"height":1600,"screen_left":0,"screen_top":0,"screen_width":2560,"screen_height":1600,` +
+		`"matches":[],"truncated":false,"visited_nodes":12,"elapsed_ms":9,"source":"uia"}`)
 }

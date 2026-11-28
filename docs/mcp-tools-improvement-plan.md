@@ -43,12 +43,18 @@
   实现是灰度 `TM_CCOEFF_NORMED` + IoU 0.3 去重，`threshold` 默认 0.88；`matches[].source` 为
   `opencv`。客户端未编译 OpenCV 时返回 `UNSUPPORTED_OPERATION`，不伪装成"找不到"。
 - **`click_target` 只在客户端内完成，且默认不乱点**。`text` / `image_path` / `image_b64`
-  三选一（与 `find_on_screen` 同语义），定位用的那一帧就是点击的坐标基准，全程持设备门，
+  三选一（与 `find_on_screen` 同语义），定位用的那一帧就是点击的坐标基准，每轮持设备门，
   中间不会插进别的会话抓屏或抢鼠标。`pick`：`unique`（默认）/ `best` / `first` / `index:N`。
   歧义判据是"第一名与**另一个视觉目标**的最强对手得分差 < 0.03"（同框的 UIA 父子节点、
   NMS 残留不算竞争）：命中多个则返回 `AMBIGUOUS_TARGET`，没命中返回 `NOT_FOUND`，
   **两种情况都不发 down 事件**，错误 `data` 里带 `matches` / `top_score` / `threshold`。
   它没有脚本回退：旧客户端返回 `UNSUPPORTED_CLIENT`，需要升级客户端。
+- **`find_on_screen` 与 `click_target` 都支持等目标出现**。`wait_until_found: true` 加
+  `timeout_seconds`：`find_on_screen` 1–25 秒（默认 10），轮询在 MCP 侧，每 500ms 一个独立原生调用
+  （每轮自己取/放设备门）；超时是 `ok:true` + `timed_out:true` + 空 matches（“没出现”是正常结果，不是错误），
+  结果带 `attempts` / `waited_ms`。`click_target` 1–20 秒（默认 10）：等待在客户端的一笔事务里，
+  每轮取门→抓帧→定位→选择、**轮间放门**，找到的那一轮在同一把门内直接点完；
+  超时是 `NOT_FOUND` + `data.timed_out:true`，一次 down 事件都不发。
 - **错误自带现场**。失败回复带 `hint`（下一步建议）和 `data.devices`（最多 20 台在线设备）。
 - **schema 是唯一校验来源**。`validateInput` 直接把 `InputSchema` 交给 JSON Schema 校验器，不再手写一遍约束。
 - **分发走注册表**。agenttools 分本地工具（`localTools`）、组合工具（`composedTools`）、后端工具（`BackendTools()`）三层；`TestEveryToolHasExactlyOneHandler` 与 `TestEveryBackendToolHasAHandler` 拦“加了工具忘实现”。
