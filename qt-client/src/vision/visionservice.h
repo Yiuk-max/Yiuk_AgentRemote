@@ -59,6 +59,12 @@ public:
         bool held_ = false;
     };
 
+    // 一次完整的点击：设备门 -> 坐标换算 -> (可选)点击前后局部采样 -> 结果。
+    // 真实客户端与互操作程序都用这一份，避免"设备端一边采样、测试替身不采样"。
+    bool clickWithOptions(const QString &sessionId, const QString &screenshotId, int x, int y,
+                          const QString &button, bool doubleClick, bool detectChange, int settleMs,
+                          const std::atomic_bool *cancelled, QJsonObject *data, QString *code, QString *message);
+
     // 一次完整的文本查找：确保坐标基准 -> UIA 查找 -> 换算成截图坐标 -> 组装 data。
     // data 里包含截图几何、screenshot_id 与 matches，可直接作为原生操作的业务数据；
     // 只有 text 定位放在这里，图像匹配（OpenCV）等实现后再扩展。

@@ -1,10 +1,13 @@
 #include "visionservice.h"
 
+#include "input/inputcontroller.h"
+
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QThread>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QtMath>
@@ -168,6 +171,75 @@ bool VisionService::validateScreenshotId(const QString &sessionId, const QString
 
 bool VisionService::latestScreenshot(const QString &sessionId, SnapshotRef *out) const {
     return store_.latest(sessionId, out);
+}
+
+namespace {
+
+// 可取消的等待：点击后的 settle 期间取消也要立刻生效。
+bool waitCancellable(int milliseconds, const std::atomic_bool *cancelled) {
+    int remaining = milliseconds;
+    while (remaining > 0) {
+        if (cancelled != nullptr && cancelled->load()) return false;
+        const int slice = qMin(remaining, 10);
+        QThread::msleep(static_cast<unsigned long>(slice));
+        remaining -= slice;
+    }
+    return cancelled == nullptr || !cancelled->load();
+}
+
+}  // namespace
+
+bool VisionService::clickWithOptions(const QString &sessionId, const QString &screenshotId, int x, int y,
+                                     const QString &button, bool doubleClick, bool detectChange, int settleMs,
+                                     const std::atomic_bool *cancelled, QJsonObject *data, QString *code,
+                                     QString *message) {
+    auto fail = [code, message](const QString &failureCode, const QString &failureMessage) {
+        if (code) *code = failureCode;
+        if (message) *message = failureMessage;
+        return false;
+    };
+    if (data == nullptr) return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("data 为空"));
+
+    DeviceLock lock(*this, cancelled, code, message);
+    if (!lock.held()) return false;
+
+    int screenX = 0;
+    int screenY = 0;
+    if (!toScreenPoint(sessionId, screenshotId, x, y, &screenX, &screenY, code, message)) return false;
+
+    // 前台标题必须在点击之前取：点击本身可能切换前台窗口。
+    const QString foreground = yiuk::input::foregroundTitle();
+    QVector<uchar> before;
+    if (detectChange && !yiuk::input::sampleRegion(screenX, screenY, &before, message))
+        return fail(QStringLiteral("INPUT_FAILED"), *message);
+
+    QString error;
+    if (!yiuk::input::click(screenX, screenY, button, doubleClick ? 2 : 1, cancelled, &error)) {
+        const bool cancelledByCaller = cancelled != nullptr && cancelled->load();
+        return fail(cancelledByCaller ? QStringLiteral("CANCELLED") : QStringLiteral("INPUT_FAILED"), error);
+    }
+
+    QJsonObject payload{
+        {QStringLiteral("x"), x},
+        {QStringLiteral("y"), y},
+        {QStringLiteral("screen_x"), screenX},
+        {QStringLiteral("screen_y"), screenY},
+        {QStringLiteral("button"), button},
+        {QStringLiteral("double"), doubleClick},
+        {QStringLiteral("foreground_title"), foreground},
+    };
+    if (detectChange) {
+        if (!waitCancellable(settleMs, cancelled))
+            return fail(QStringLiteral("CANCELLED"), QStringLiteral("操作已被取消"));
+        QVector<uchar> after;
+        if (!yiuk::input::sampleRegion(screenX, screenY, &after, message))
+            return fail(QStringLiteral("INPUT_FAILED"), *message);
+        const yiuk::input::ChangeMetrics metrics = yiuk::input::compareSamples(before, after);
+        payload.insert(QStringLiteral("diff_ratio"), metrics.diffRatio);
+        payload.insert(QStringLiteral("changed_ratio"), metrics.changedRatio);
+    }
+    *data = payload;
+    return true;
 }
 
 bool VisionService::searchText(const QString &sessionId, const TextQuery &query,

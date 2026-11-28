@@ -4,6 +4,8 @@
 
 #include <windows.h>
 
+#include <dwmapi.h>
+
 #include <cmath>
 
 namespace yiuk::input {
@@ -138,6 +140,42 @@ QVector<QPoint> buildPath(int fromX, int fromY, int toX, int toY, int durationMs
     return points;
 }
 
+bool drag(int fromX, int fromY, int toX, int toY, int durationMs, int holdMs, const std::atomic_bool *cancelled,
+          QString *error) {
+    if (!moveTo(fromX, fromY)) {
+        if (error) *error = QStringLiteral("无法移动鼠标到拖动起点：桌面可能已锁定或处于安全桌面");
+        return false;
+    }
+    if (!sleepCancellable(50, cancelled)) {
+        if (error) *error = QStringLiteral("操作已被取消");
+        return false;
+    }
+    ButtonGuard guard(QStringLiteral("left"));
+    if (!sendMouse(MOUSEEVENTF_LEFTDOWN, fromX, fromY)) {
+        if (error) *error = QStringLiteral("鼠标按下被系统拒绝：桌面可能已锁定或处于安全桌面");
+        return false;
+    }
+    if (holdMs > 0 && !sleepCancellable(holdMs, cancelled)) {
+        if (error) *error = QStringLiteral("操作已被取消");
+        return false;  // guard 在这里抬起按键
+    }
+    const QVector<QPoint> path = buildPath(fromX, fromY, toX, toY, durationMs);
+    for (int i = 1; i < path.size(); ++i) {
+        if (isCancelled(cancelled)) {
+            if (error) *error = QStringLiteral("操作已被取消");
+            return false;  // guard 抬起按键，不会把窗口/滑块留在拖动状态
+        }
+        const QPoint &point = path.at(i);
+        if (!moveTo(point.x(), point.y())) {
+            if (error) *error = QStringLiteral("拖动过程中无法移动鼠标");
+            return false;
+        }
+        QThread::msleep(kStepMs);
+    }
+    guard.release();
+    return true;
+}
+
 bool move(int screenX, int screenY, int durationMs, const std::atomic_bool *cancelled, QString *error) {
     if (durationMs <= 0) {
         if (!moveTo(screenX, screenY)) {
@@ -166,6 +204,9 @@ bool move(int screenX, int screenY, int durationMs, const std::atomic_bool *canc
 
 bool sampleRegion(int centerX, int centerY, QVector<uchar> *gray, QString *error) {
     if (gray == nullptr) return false;
+    // 等 DWM 把最近的绘制合成到桌面：点击后立刻 BitBlt 可能拿到上一帧，
+    // 那样"该变的地方"会被误判成没变。锁屏/无合成时 DwmFlush 会失败，忽略即可。
+    DwmFlush();
     const int left = GetSystemMetrics(SM_XVIRTUALSCREEN);
     const int top = GetSystemMetrics(SM_YVIRTUALSCREEN);
     const int width = GetSystemMetrics(SM_CXVIRTUALSCREEN);

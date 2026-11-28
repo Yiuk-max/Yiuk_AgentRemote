@@ -660,68 +660,23 @@ void MainWindow::setupNativeOperations() {
         });
 
     // input.click：截图坐标 -> 物理坐标 -> 原生点击，可选点击前后的局部变化采样。
-    // 坐标一律以 VisionService 的快照为准，不给"客户端另算一遍坐标"的口子。
+    // 具体流程在 VisionService::clickWithOptions，互操作程序也调同一份。
     nativeOps->registerOperation(
         QStringLiteral("input.click"),
         [this](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
-            const int x = arguments.value(QStringLiteral("x")).toInt();
-            const int y = arguments.value(QStringLiteral("y")).toInt();
-            const QString screenshotId = arguments.value(QStringLiteral("screenshot_id")).toString();
             QString button = arguments.value(QStringLiteral("button")).toString();
             if (button.isEmpty()) button = QStringLiteral("left");
-            const int count = arguments.value(QStringLiteral("double")).toBool() ? 2 : 1;
-            const bool detectChange = arguments.value(QStringLiteral("detect_change")).toBool();
             const int settleMs = qMax(0, arguments.value(QStringLiteral("settle_ms")).toInt());
-
-            // 输入动作与抓屏共用设备级串行门：多会话同时点击会把坐标和前台窗口打乱。
+            QJsonObject data;
             QString code;
             QString message;
-            yiuk::vision::VisionService::DeviceLock deviceLock(*vision, cancelled, &code, &message);
-            if (!deviceLock.held())
-                return NativeOperationDispatcher::envelopeError(code, message);
-
-            int screenX = 0;
-            int screenY = 0;
-            if (!vision->toScreenPoint(sessionId, screenshotId, x, y, &screenX, &screenY, &code, &message))
+            if (!vision->clickWithOptions(sessionId, arguments.value(QStringLiteral("screenshot_id")).toString(),
+                                          arguments.value(QStringLiteral("x")).toInt(),
+                                          arguments.value(QStringLiteral("y")).toInt(), button,
+                                          arguments.value(QStringLiteral("double")).toBool(),
+                                          arguments.value(QStringLiteral("detect_change")).toBool(), settleMs,
+                                          cancelled, &data, &code, &message))
                 return NativeOperationDispatcher::envelopeError(code, message, nativeHintForCode(code));
-
-            // 前台标题必须在点击**之前**取：点击本身可能切换前台窗口。
-            const QString foreground = yiuk::input::foregroundTitle();
-            QVector<uchar> before;
-            if (detectChange && !yiuk::input::sampleRegion(screenX, screenY, &before, &message))
-                return NativeOperationDispatcher::envelopeError(QStringLiteral("INPUT_FAILED"), message,
-                                                               nativeHintForCode(QStringLiteral("INPUT_FAILED")));
-
-            QString error;
-            if (!yiuk::input::click(screenX, screenY, button, count, cancelled, &error)) {
-                const bool cancelledByCaller = cancelled != nullptr && cancelled->load();
-                return NativeOperationDispatcher::envelopeError(
-                    cancelledByCaller ? QStringLiteral("CANCELLED") : QStringLiteral("INPUT_FAILED"), error,
-                    nativeHintForCode(QStringLiteral("INPUT_FAILED")));
-            }
-
-            QJsonObject data{
-                {QStringLiteral("x"), x},
-                {QStringLiteral("y"), y},
-                {QStringLiteral("screen_x"), screenX},
-                {QStringLiteral("screen_y"), screenY},
-                {QStringLiteral("button"), button},
-                {QStringLiteral("double"), count > 1},
-                {QStringLiteral("foreground_title"), foreground},
-            };
-            if (detectChange) {
-                if (!waitCancellable(settleMs, cancelled))
-                    return NativeOperationDispatcher::envelopeError(QStringLiteral("CANCELLED"),
-                                                                   QStringLiteral("操作已被取消"));
-                QVector<uchar> after;
-                QString sampleError;
-                if (!yiuk::input::sampleRegion(screenX, screenY, &after, &sampleError))
-                    return NativeOperationDispatcher::envelopeError(QStringLiteral("INPUT_FAILED"), sampleError,
-                                                                   nativeHintForCode(QStringLiteral("INPUT_FAILED")));
-                const yiuk::input::ChangeMetrics metrics = yiuk::input::compareSamples(before, after);
-                data.insert(QStringLiteral("diff_ratio"), metrics.diffRatio);
-                data.insert(QStringLiteral("changed_ratio"), metrics.changedRatio);
-            }
             return NativeOperationDispatcher::envelopeOk(data);
         });
 
@@ -776,6 +731,56 @@ void MainWindow::setupNativeOperations() {
         QStringLiteral("vision.find"),
         [this](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
             return runVisionFind(sessionId, arguments, cancelled);
+        });
+
+    // input.drag：按住左键沿确定性路径拖动（窗口、滑块、拖拽排序）。
+    // 起终点都用截图坐标；按键抬起由 input::drag 的 guard 保证。
+    nativeOps->registerOperation(
+        QStringLiteral("input.drag"),
+        [this](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
+            const QString screenshotId = arguments.value(QStringLiteral("screenshot_id")).toString();
+            const QJsonArray from = arguments.value(QStringLiteral("from")).toArray();
+            const QJsonArray to = arguments.value(QStringLiteral("to")).toArray();
+            if (from.size() != 2 || to.size() != 2)
+                return NativeOperationDispatcher::envelopeError(QStringLiteral("INVALID_ARGUMENT"),
+                                                               QStringLiteral("from 与 to 必须是 [x,y] 两个整数"));
+            const int durationMs = qBound(50, arguments.value(QStringLiteral("duration_ms")).toInt(400), 5000);
+            const int holdMs = qBound(0, arguments.value(QStringLiteral("hold_ms")).toInt(50), 1000);
+
+            QString code;
+            QString message;
+            // 拖动会在中途持续占用鼠标，必须与抓屏/点击共用设备门。
+            yiuk::vision::VisionService::DeviceLock deviceLock(*vision, cancelled, &code, &message);
+            if (!deviceLock.held()) return NativeOperationDispatcher::envelopeError(code, message);
+
+            int screenFromX = 0;
+            int screenFromY = 0;
+            int screenToX = 0;
+            int screenToY = 0;
+            if (!vision->toScreenPoint(sessionId, screenshotId, from.at(0).toInt(), from.at(1).toInt(),
+                                       &screenFromX, &screenFromY, &code, &message))
+                return NativeOperationDispatcher::envelopeError(code, message, nativeHintForCode(code));
+            if (!vision->toScreenPoint(sessionId, screenshotId, to.at(0).toInt(), to.at(1).toInt(), &screenToX,
+                                       &screenToY, &code, &message))
+                return NativeOperationDispatcher::envelopeError(code, message, nativeHintForCode(code));
+
+            QString error;
+            if (!yiuk::input::drag(screenFromX, screenFromY, screenToX, screenToY, durationMs, holdMs, cancelled,
+                                   &error)) {
+                const bool cancelledByCaller = cancelled != nullptr && cancelled->load();
+                return NativeOperationDispatcher::envelopeError(
+                    cancelledByCaller ? QStringLiteral("CANCELLED") : QStringLiteral("INPUT_FAILED"), error,
+                    nativeHintForCode(QStringLiteral("INPUT_FAILED")));
+            }
+            return NativeOperationDispatcher::envelopeOk(QJsonObject{
+                {QStringLiteral("from"), QJsonArray{from.at(0).toInt(), from.at(1).toInt()}},
+                {QStringLiteral("to"), QJsonArray{to.at(0).toInt(), to.at(1).toInt()}},
+                {QStringLiteral("screen_from"), QJsonArray{screenFromX, screenFromY}},
+                {QStringLiteral("screen_to"), QJsonArray{screenToX, screenToY}},
+                {QStringLiteral("duration_ms"), durationMs},
+                {QStringLiteral("hold_ms"), holdMs},
+                {QStringLiteral("released"), true},
+            });
         });
 
     // screen.release：MCP 下载完截图后让设备删掉临时文件。只删截图目录内的文件；

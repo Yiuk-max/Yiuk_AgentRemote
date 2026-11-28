@@ -148,7 +148,8 @@ qt-client/build-qt/yiuk-input-fixture.exe       # 真机验收目标窗口（左
 ```
 
 真机输入验收（会真的动鼠标）：fixture 窗口 + 平台 + `YIUK_INTEROP_INPUT=1` 的互操作程序，
-fixture 打印 `FIXTURE OK click=1 hover=1 hover_in_left=1 click_in_right=0` 才算通过。
+fixture 打印 `FIXTURE OK clicks=1 hover=1 ...` 才算通过。加 `YIUK_INTEROP_DETECT_CHANGE=1`
+（fixture 用 `--expect-clicks 4`）再验证 `detect_change` 的真机判定。
 完整命令见[本机开发环境](local-dev.md) §5.4。
 
 `take_screenshot` 有两条实现路径：设备客户端上报 `screen.capture` 能力时走原生

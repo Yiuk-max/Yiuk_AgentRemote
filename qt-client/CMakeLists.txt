@@ -26,7 +26,8 @@ add_library(yiuk-vision STATIC
     src/vision/visionservice.h
 )
 target_include_directories(yiuk-vision PUBLIC src)
-target_link_libraries(yiuk-vision PUBLIC Qt6::Gui)
+# 点击（含变化检测）需要输入内核：vision 依赖 input，反向不依赖。
+target_link_libraries(yiuk-vision PUBLIC Qt6::Gui yiuk-input)
 if(WIN32)
     # 抓屏走 GDI，文本定位走 UIA（COM）：MinGW 下必须显式链接这些系统库。
     target_link_libraries(yiuk-vision PUBLIC gdi32 user32 ole32 oleaut32 uuid)
@@ -46,7 +47,8 @@ add_library(yiuk-input STATIC
 target_include_directories(yiuk-input PUBLIC src)
 target_link_libraries(yiuk-input PUBLIC Qt6::Core)
 if(WIN32)
-    target_link_libraries(yiuk-input PUBLIC user32)
+    # sampleRegion 用 DwmFlush 等合成，避免点击后采样到上一帧。
+    target_link_libraries(yiuk-input PUBLIC user32 dwmapi)
 endif()
 set_target_properties(yiuk-input PROPERTIES FOLDER "libs")
 

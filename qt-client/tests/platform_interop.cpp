@@ -99,31 +99,25 @@ int main(int argc, char *argv[]) {
                 return NativeOperationDispatcher::envelopeError(code, message);
             return NativeOperationDispatcher::envelopeOk(data);
         });
-    // 原生输入：坐标换算走 VisionService，投递走 yiuk::input（与真实客户端一致）。
+    // 原生输入：点击（含变化检测）委托给 VisionService::clickWithOptions，
+    // 与真实客户端完全同一份实现，避免测试替身"漏掉采样"却看不出问题。
     dispatcher.registerOperation(
         QStringLiteral("input.click"),
         [vision](const QString &sessionId, const QJsonObject &arguments, const std::atomic_bool *cancelled) {
-            int screenX = 0;
-            int screenY = 0;
+            QString button = arguments.value(QStringLiteral("button")).toString();
+            if (button.isEmpty()) button = QStringLiteral("left");
+            QJsonObject data;
             QString code;
             QString message;
-            if (!vision->toScreenPoint(sessionId, arguments.value(QStringLiteral("screenshot_id")).toString(),
-                                       arguments.value(QStringLiteral("x")).toInt(),
-                                       arguments.value(QStringLiteral("y")).toInt(), &screenX, &screenY, &code,
-                                       &message))
+            if (!vision->clickWithOptions(sessionId, arguments.value(QStringLiteral("screenshot_id")).toString(),
+                                          arguments.value(QStringLiteral("x")).toInt(),
+                                          arguments.value(QStringLiteral("y")).toInt(), button,
+                                          arguments.value(QStringLiteral("double")).toBool(),
+                                          arguments.value(QStringLiteral("detect_change")).toBool(),
+                                          arguments.value(QStringLiteral("settle_ms")).toInt(), cancelled, &data,
+                                          &code, &message))
                 return NativeOperationDispatcher::envelopeError(code, message);
-            QString inputError;
-            if (!yiuk::input::click(screenX, screenY, arguments.value(QStringLiteral("button")).toString(
-                                                       QStringLiteral("left")),
-                                    arguments.value(QStringLiteral("double")).toBool() ? 2 : 1, cancelled,
-                                    &inputError))
-                return NativeOperationDispatcher::envelopeError(QStringLiteral("INPUT_FAILED"), inputError);
-            return NativeOperationDispatcher::envelopeOk(
-                QJsonObject{{QStringLiteral("x"), arguments.value(QStringLiteral("x")).toInt()},
-                            {QStringLiteral("y"), arguments.value(QStringLiteral("y")).toInt()},
-                            {QStringLiteral("screen_x"), screenX},
-                            {QStringLiteral("screen_y"), screenY},
-                            {QStringLiteral("foreground_title"), yiuk::input::foregroundTitle()}});
+            return NativeOperationDispatcher::envelopeOk(data);
         });
     dispatcher.registerOperation(
         QStringLiteral("input.move"),
@@ -204,6 +198,9 @@ int main(int argc, char *argv[]) {
     const bool nativeEnabled = qEnvironmentVariable("YIUK_INTEROP_NATIVE") == QLatin1String("1");
     // 输入验收会真的动鼠标，默认关闭；需要配合 yiuk-input-fixture 显式开启。
     const bool inputEnabled = qEnvironmentVariable("YIUK_INTEROP_INPUT") == QLatin1String("1");
+    // 变化检测验收：左半区点击会换色（changed=true），右半区点击不变（changed=false）。
+    const bool detectChangeEnabled =
+        qEnvironmentVariable("YIUK_INTEROP_DETECT_CHANGE") == QLatin1String("1");
     bool commandSent = false;
     bool commandSeen = false;
     bool nativeSent = false;
@@ -214,8 +211,12 @@ int main(int argc, char *argv[]) {
     bool findResultOk = false;
     bool inputMoveOk = false;
     bool inputClickOk = false;
+    bool changeDetectedOk = false;
+    bool noChangeDetectedOk = false;
     int pendingClickX = 0;
     int pendingClickY = 0;
+    int pendingHoverX = 0;
+    int pendingHoverY = 0;
     QString pendingScreenshotId;
     QString savedScreenshotPath;
     bool sessionClosed = false;
@@ -366,6 +367,27 @@ int main(int argc, char *argv[]) {
             qInfo() << "operator saw native click" << payload;
             return;
         }
+        if (requestId == QLatin1String("interop-native-change") ||
+            requestId == QLatin1String("interop-native-static")) {
+            // 判据与 Go 侧一致：强变化像素占比 >= 0.002 或平均差 >= 0.02。
+            const double changedRatio = payload.value(QStringLiteral("changed_ratio")).toDouble();
+            const double diffRatio = payload.value(QStringLiteral("diff_ratio")).toDouble();
+            const bool changed = changedRatio >= 0.002 || diffRatio >= 0.02;
+            const bool expectChange = requestId == QLatin1String("interop-native-change");
+            qInfo() << requestId << "changed_ratio" << changedRatio << "diff_ratio" << diffRatio
+                    << "changed" << changed << "expect" << expectChange;
+            if (changed != expectChange) {
+                qWarning() << "detect_change mismatch" << requestId << payload;
+                ++failures;
+                return;
+            }
+            if (expectChange) {
+                changeDetectedOk = true;
+            } else {
+                noChangeDetectedOk = true;
+            }
+            return;
+        }
         if (requestId == QLatin1String("interop-native-find")) {
             // 只要求链路通：前台窗口里本来就不该有这串测试文本，空结果也算成功。
             const QString screenshotId = payload.value(QStringLiteral("screenshot_id")).toString();
@@ -409,6 +431,8 @@ int main(int argc, char *argv[]) {
         const int height = rect.bottom - rect.top;
         const int hoverX = toShotX(rect.left + width * 3 / 4);
         const int hoverY = toShotY(rect.top + height / 2);
+        pendingHoverX = hoverX;
+        pendingHoverY = hoverY;
         pendingClickX = toShotX(rect.left + width / 4);
         pendingClickY = toShotY(rect.top + height / 2);
         pendingScreenshotId = ref.id;
@@ -485,6 +509,49 @@ int main(int argc, char *argv[]) {
         }
         if (requestId == QLatin1String("interop-native-input-click")) {
             if (!inputClickOk) ++failures;
+            if (!detectChangeEnabled) {
+                operatorClient->requestSessionClose(sessionId);
+                return;
+            }
+            // 左半区点击会换色：changed 必须为 true。
+            qInfo() << "submitting native click with detect_change (left, expect changed)";
+            operatorClient->submitNative(sessionId, QStringLiteral("interop-native-change"),
+                                         QStringLiteral("input.click"),
+                                         QJsonObject{{QStringLiteral("x"), pendingClickX},
+                                                     {QStringLiteral("y"), pendingClickY},
+                                                     {QStringLiteral("screenshot_id"), pendingScreenshotId},
+                                                     {QStringLiteral("detect_change"), true},
+                                                     {QStringLiteral("settle_ms"), 400}},
+                                         10);
+            return;
+        }
+        if (requestId == QLatin1String("interop-native-change")) {
+            if (!changeDetectedOk) ++failures;
+            // 右半区点击不改像素：changed 必须为 false，否则就是误报。
+            qInfo() << "submitting native click with detect_change (right, expect unchanged)";
+            operatorClient->submitNative(sessionId, QStringLiteral("interop-native-static"),
+                                         QStringLiteral("input.click"),
+                                         QJsonObject{{QStringLiteral("x"), pendingHoverX},
+                                                     {QStringLiteral("y"), pendingHoverY},
+                                                     {QStringLiteral("screenshot_id"), pendingScreenshotId},
+                                                     {QStringLiteral("detect_change"), true},
+                                                     {QStringLiteral("settle_ms"), 400}},
+                                         10);
+            return;
+        }
+        if (requestId == QLatin1String("interop-native-static")) {
+            if (!noChangeDetectedOk) ++failures;
+            // 最后补一次点击：fixture 在采样完成之后才允许退出，
+            // 否则"点完就销毁窗口"会被当成一次巨大变化。
+            operatorClient->submitNative(sessionId, QStringLiteral("interop-native-finish"),
+                                         QStringLiteral("input.click"),
+                                         QJsonObject{{QStringLiteral("x"), pendingHoverX},
+                                                     {QStringLiteral("y"), pendingHoverY},
+                                                     {QStringLiteral("screenshot_id"), pendingScreenshotId}},
+                                         10);
+            return;
+        }
+        if (requestId == QLatin1String("interop-native-finish")) {
             operatorClient->requestSessionClose(sessionId);
             return;
         }
@@ -560,6 +627,11 @@ int main(int argc, char *argv[]) {
     if (inputEnabled && (!inputMoveOk || !inputClickOk)) {
         qWarning() << "native input round trip did not complete"
                    << "move:" << inputMoveOk << "click:" << inputClickOk;
+        return 1;
+    }
+    if (detectChangeEnabled && (!changeDetectedOk || !noChangeDetectedOk)) {
+        qWarning() << "detect_change round trip did not complete"
+                   << "changed:" << changeDetectedOk << "unchanged:" << noChangeDetectedOk;
         return 1;
     }
     return result == 0 && sessionClosed ? 0 : 1;

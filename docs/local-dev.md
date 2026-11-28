@@ -178,8 +178,12 @@ $env:YIUK_INTEROP_INPUT     = "1"
 E:\Yiuk_AgentRemote\qt-client\build-qt\yiuk-platform-interop.exe
 ```
 
-通过判据：fixture 打印 `FIXTURE OK click=1 hover=1 hover_in_left=1 click_in_right=0`，
-互操作程序退出码 0。fixture 15 秒内没等到事件会打印 `FIXTURE FAIL` 并退出 1。
+通过判据：fixture 打印 `FIXTURE OK clicks=1 hover=1 ...`，互操作程序退出码 0。
+fixture 30 秒内没等到事件会打印 `FIXTURE FAIL` 并退出 1。
+
+变化检测（`detect_change`）再加一个开关：fixture 用 `--expect-clicks 4` 启动，
+并设置 `$env:YIUK_INTEROP_DETECT_CHANGE = "1"`。左半区会深/浅换色（应 `changed=true`），
+右半区点击不改像素（应 `changed=false`）。
 
 ## 6. 本机已知坑
 

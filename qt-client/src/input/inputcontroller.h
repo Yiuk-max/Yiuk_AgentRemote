@@ -35,6 +35,11 @@ private:
 bool click(int screenX, int screenY, const QString &button, int count, const std::atomic_bool *cancelled,
            QString *error);
 
+// 按住左键从起点拖到终点：移动 -> 按下 -> 等 holdMs -> 沿确定性路径移动 -> 抬起。
+// 任何可处理路径（成功/取消/系统拒绝）都必须抬起按键，由 ButtonGuard 保证。
+bool drag(int fromX, int fromY, int toX, int toY, int durationMs, int holdMs, const std::atomic_bool *cancelled,
+          QString *error);
+
 // 移动到目标点。durationMs <= 0 时瞬移；否则按确定性 ease-in-out 分步移动，
 // 用于触发依赖中间 mousemove 的悬停菜单 / dock / tooltip。
 bool move(int screenX, int screenY, int durationMs, const std::atomic_bool *cancelled, QString *error);

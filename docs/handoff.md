@@ -197,9 +197,41 @@ $env:YIUK_INTEROP_INPUT = "1"
 .\qt-client\build-qt\yiuk-platform-interop.exe
 ```
 
-通过判据：fixture 输出 `FIXTURE OK click=1 hover=1 hover_in_left=1 click_in_right=0`，
-互操作程序退出码 0。`click_in_right=0` 说明没有点错半区。测试结束后 fixture 自己退出；
-如果它打印 `FIXTURE FAIL`，说明输入没落到窗口上（锁屏、窗口被遮挡、坐标换算错误）。
+通过判据：fixture 输出 `FIXTURE OK clicks=1 hover=1 ...`，互操作程序退出码 0。
+测试结束后 fixture 自己退出；如果它打印 `FIXTURE FAIL`，说明输入没落到窗口上
+（锁屏、窗口被遮挡、坐标换算错误）。
+
+### 5.6 `detect_change` 真机验收（会真的点两下）
+
+`yiuk-input-fixture` 的左半区**每次点击都换亮度**（深/浅两组灰度），右半区点击**不改任何像素**。
+互操作程序在 `YIUK_INTEROP_DETECT_CHANGE=1` 时各点一次，并按与 Go 侧相同的判据
+（强变化像素占比 ≥ 0.002 或平均差 ≥ 0.02）检查结果：
+
+```powershell
+.\qt-client\build-qt\yiuk-input-fixture.exe --expect-clicks 4
+# 平台照 §5.3 启动后：
+$env:YIUK_INTEROP_DETECT_CHANGE = "1"
+.\qt-client\build-qt\yiuk-platform-interop.exe
+```
+
+实测（连续两次）：
+
+```text
+"interop-native-change" changed_ratio 1 diff_ratio 0.8039 changed true  expect true
+"interop-native-static" changed_ratio 0 diff_ratio 0     changed false expect false
+INTEROP EXIT=0
+FIXTURE OK clicks=4 hover=1 hover_in_left=1 click_in_right=1
+```
+
+两个坑值得记住：
+
+1. **颜色必须换亮度**。采样是灰度（`(R+G+B)/3`），`255,158,96` 与 `96,158,255` 的灰度都是 169，
+   fixture 早期版本就是这样"换了色却测不出变化"。
+2. **判定前不能让目标窗口消失**。fixture 原来在第 3 次点击后立即退出，右半区的"点击后"采样
+   拍到的是它消失后的桌面，`diff_ratio` 高达 0.88 —— 看起来像误报，其实是目标没了。
+   现在多补一次点击（`--expect-clicks 4`），保证最后两次采样时窗口还在。
+
+`sampleRegion` 在采样前会 `DwmFlush()`，避免点击后立刻 BitBlt 拿到上一帧。
 
 ### 5.4 P0 基线（视觉相关，重跑约 5–15 分钟）
 
@@ -269,6 +301,7 @@ OpenCV 静态构建的完整命令在 `spike/vision/README.md` §1。
 | Qt 原生通道在真机 GUI 里的人工验收 | 只用互操作程序验证过协议往返，未在真实 GUI 会话里手动点过 |
 | MCP `take_screenshot` 原生全链路 | 未验：互操作里已跑通 `screen.capture`，但"原生抓屏 → `download_file` 取图 → Agent 收到图片"只在单元测试里验证过 |
 | `find_on_screen` 命中率 | 未测：UIA 链路已跑通（0 节点时约 320ms），但记事本/Edge/资源管理器三场景的命中率与 300ms 预算未实测 |
+| `detect_change` 真机行为 | 已验证：换亮度的区域 `changed=true`（changed_ratio 1 / diff_ratio 0.80），静态区域 `changed=false`（0 / 0），连续两次一致 |
 | 原生截图临时文件的长期增长 | 机制已齐（release + 5 张上限 + 定时清理），但未长跑确认 |
 | 原生 `click` / `move_mouse` 真机行为 | 已验证：`yiuk-input-fixture` 收到左半区左键与右半区移入（2 次运行均 OK）；仍未覆盖多显示器/混合 DPI |
 
