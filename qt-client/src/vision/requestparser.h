@@ -50,4 +50,10 @@ bool buildLocateRequest(const QJsonObject &arguments, LocateRequest *out, QStrin
 bool buildClickTargetOptions(const QJsonObject &arguments, ClickTargetOptions *out, QString *code,
                              QString *message);
 
+// 失败时给 Agent 的下一步建议：按现场生成，不搞“一律降低阈值”。
+//
+// data 是失败信封里的现场（matches / max_score / threshold / uniform_area / ocr_language …）。
+// 纯函数，便于把每种现场的说法钉在测试里。
+QString failureHint(const QString &code, const QJsonObject &data);
+
 }  // namespace yiuk::vision

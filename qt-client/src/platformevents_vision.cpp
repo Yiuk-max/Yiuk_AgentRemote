@@ -9,23 +9,6 @@
 
 namespace {
 
-// 视觉类错误的下一步建议：不要只说"失败了"。
-QString visionHintForCode(const QString &code) {
-    if (code == QLatin1String("UNSUPPORTED_OPERATION"))
-        return QStringLiteral("改用 text 查找，或升级到带 OpenCV 的客户端");
-    if (code == QLatin1String("NOT_FOUND"))
-        return QStringLiteral("用 find_on_screen 看现场；必要时降低 threshold、缩小 region，或等界面加载完再试");
-    if (code == QLatin1String("AMBIGUOUS_TARGET"))
-        return QStringLiteral("歧义时不点击：用 pick=best 或 pick=index:N 指定，或用 region/control_type 缩小范围");
-    if (code == QLatin1String("STALE_SCREENSHOT"))
-        return QStringLiteral("重新 take_screenshot，并用新截图的坐标重试");
-    if (code == QLatin1String("UIA_UNAVAILABLE"))
-        return QStringLiteral("确认设备未锁屏、目标窗口在前台；必要时用 take_screenshot 人工判断");
-    if (code == QLatin1String("INPUT_FAILED") || code == QLatin1String("SCREENSHOT_FAILED"))
-        return QStringLiteral("确认设备未锁屏、没有停留在 UAC 安全桌面");
-    return QString();
-}
-
 // template_id 在解析阶段只带 id；这里用 VisionService 把像素读出来。
 // 格式校验、路径穿越、缺失与损坏的判定都在 VisionService::loadTemplate 里（唯一入口）。
 bool resolveTemplate(yiuk::vision::VisionService *vision, yiuk::vision::LocateRequest *request, QString *code,
@@ -37,7 +20,6 @@ bool resolveTemplate(yiuk::vision::VisionService *vision, yiuk::vision::LocateRe
     request->locate.useImage = true;
     return true;
 }
-
 }  // namespace
 
 // 原生操作 vision.find：UIA 文本定位 / OpenCV 图像模板匹配（P3）。
@@ -51,7 +33,7 @@ QJsonObject MainWindow::runVisionFind(const QString &sessionId, const QJsonObjec
     QString message;
     if (!yiuk::vision::buildLocateRequest(arguments, &request, &code, &message) ||
         !resolveTemplate(vision, &request, &code, &message))
-        return NativeOperationDispatcher::envelopeError(code, message, visionHintForCode(code));
+        return NativeOperationDispatcher::envelopeError(code, message, yiuk::vision::failureHint(code, QJsonObject()));
 
     QJsonObject data;
     const bool ok = request.locate.useImage
@@ -61,7 +43,7 @@ QJsonObject MainWindow::runVisionFind(const QString &sessionId, const QJsonObjec
     if (!ok) {
         const QString hint = code == QLatin1String("INVALID_ARGUMENT")
                                  ? QStringLiteral("减小模板尺寸，或把搜索范围限制在 region 内")
-                                 : visionHintForCode(code);
+                                 : yiuk::vision::failureHint(code, data);
         return NativeOperationDispatcher::envelopeError(code, message, hint);
     }
     return NativeOperationDispatcher::envelopeOk(data);
@@ -77,12 +59,12 @@ QJsonObject MainWindow::runVisionClickTarget(const QString &sessionId, const QJs
     QString code;
     QString message;
     if (!yiuk::vision::buildClickTargetOptions(arguments, &options, &code, &message))
-        return NativeOperationDispatcher::envelopeError(code, message, visionHintForCode(code));
+        return NativeOperationDispatcher::envelopeError(code, message, yiuk::vision::failureHint(code, QJsonObject()));
 
     QJsonObject data;
     if (!vision->clickTarget(sessionId, options, cancelled, &data, &code, &message)) {
         // data 里带着现场（候选、得分、阈值）：失败也是信息，不是"什么都没发生"。
-        return NativeOperationDispatcher::envelopeError(code, message, visionHintForCode(code), data);
+        return NativeOperationDispatcher::envelopeError(code, message, yiuk::vision::failureHint(code, data), data);
     }
     return NativeOperationDispatcher::envelopeOk(data);
 }

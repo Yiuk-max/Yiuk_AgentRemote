@@ -181,6 +181,7 @@ Start-Process cmd.exe -Verb RunAs -ArgumentList '/c','set "PATH=D:\QT\6.11.1\min
 | OCR（`yiuk-vision-test`，GDI 画字，不读桌面） | `zh-Hans-CN`、2 行、**29 ms**；归一化后命中「收 藏」与 `Settings`，词框并集落在画字位置 `(32,49) 78×39` |
 | OCR 端到端（`yiuk-click-target-test`，`source=ocr` + `region`） | 中文按钮「收藏 首页 设置」被 OCR 读到并点中：`source=ocr`、`clicks[5]==1`，其余按钮 0 次 |
 | 发布包 0.1.9 | `Release/YiukDeviceAssist-0.1.9-win64`（82 MB，目录）+ zip（35.7 MB）+ sha256；在**不含 Qt/MinGW 的 PATH** 下启动成功，标题 `Yiuk Device Assist 0.1.9`，`data` 就地创建 |
+| 失败 hint（`yiuk-vision-test`） | 纯色区域说"没有可用纹理"（不提阈值）、普通未命中带"最高分 0.71 < 阈值 0.88"、歧义带候选数与 `pick` 用法、缺语言包/模板配额/模板不存在各指向具体动作、未知错误码不编造 |
 | 绿色化 | `data\` 内出现配置/身份/`screenshots\`/`tmp\`；`data\tmp` 可见正在执行的 `.ps1`；C 盘旧目录不再写入 |
 
 ## 6. 踩过的坑（改输入/视觉前必读）

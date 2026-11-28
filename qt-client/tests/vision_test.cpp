@@ -350,7 +350,7 @@ void testTemplateMatching() {
     QVector<TemplateHit> hits;
     QString code;
     QString message;
-    check(matchTemplateImage(haystack, needle, options, &hits, &code, &message),
+    check(matchTemplateImage(haystack, needle, options, &hits, nullptr, &code, &message),
           QStringLiteral("template matching runs"));
     check(hits.size() == 1, QStringLiteral("exactly one template match"));
     if (!hits.isEmpty()) {
@@ -362,7 +362,7 @@ void testTemplateMatching() {
     TemplateOptions elsewhere = options;
     elsewhere.region = QRect(0, 220, 200, 80);
     hits.clear();
-    check(matchTemplateImage(haystack, needle, elsewhere, &hits, &code, &message) && hits.isEmpty(),
+    check(matchTemplateImage(haystack, needle, elsewhere, &hits, nullptr, &code, &message) && hits.isEmpty(),
           QStringLiteral("region limits the search area"));
 
     // 不存在的模板不能命中（负样本）。
@@ -371,7 +371,7 @@ void testTemplateMatching() {
         for (int x = 0; x < absent.width(); ++x)
             absent.setPixel(x, y, static_cast<uchar>(10 + (x * 11 + y * 3) % 240));
     hits.clear();
-    check(matchTemplateImage(haystack, absent, options, &hits, &code, &message),
+    check(matchTemplateImage(haystack, absent, options, &hits, nullptr, &code, &message),
           QStringLiteral("matching an absent template does not fail"));
     check(hits.isEmpty(), QStringLiteral("absent template yields no match"));
 
@@ -379,7 +379,7 @@ void testTemplateMatching() {
     TemplateOptions tooSmall = options;
     tooSmall.region = QRect(0, 0, 20, 20);
     hits.clear();
-    check(!matchTemplateImage(haystack, needle, tooSmall, &hits, &code, &message) &&
+    check(!matchTemplateImage(haystack, needle, tooSmall, &hits, nullptr, &code, &message) &&
               code == QLatin1String("INVALID_ARGUMENT"),
           QStringLiteral("template larger than the region is rejected"));
 }
@@ -405,7 +405,7 @@ void testTemplateMatchingOnFiles() {
     QVector<yiuk::vision::TemplateHit> hits;
     QString code;
     QString message;
-    const bool ok = yiuk::vision::matchTemplateImage(haystack, needle, options, &hits, &code, &message);
+    const bool ok = yiuk::vision::matchTemplateImage(haystack, needle, options, &hits, nullptr, &code, &message);
     check(ok, QStringLiteral("real-pixel template matching runs"));
     if (ok && !hits.isEmpty()) {
         std::printf("     real match: rect=(%d,%d %dx%d) score=%.4f\n", hits.first().rect.left(),
@@ -1042,6 +1042,51 @@ void testTemplates() {
     QFile::remove(QDir(VisionService::templatesDirectory()).filePath(saved1.templateId + QStringLiteral(".png")));
 }
 
+
+// 失败 hint 必须按现场说话：纯色、阈值、歧义、OCR 语言包各说各的。
+void testFailureHints() {
+    using namespace yiuk::vision;
+
+    // 纯色区域：不要说“降低阈值”，因为那没有意义。
+    const QString uniform = failureHint(QStringLiteral("NOT_FOUND"),
+                                        QJsonObject{{QStringLiteral("uniform_area"), true},
+                                                    {QStringLiteral("area_stddev"), 0.4}});
+    check(uniform.contains(QStringLiteral("纯色")) && !uniform.contains(QStringLiteral("threshold")),
+          QStringLiteral("a uniform search area is described as textureless"));
+
+    // 有最高分：把“最高分 vs 阈值”说清楚，而不是空泛建议。
+    const QString scored = failureHint(QStringLiteral("NOT_FOUND"),
+                                       QJsonObject{{QStringLiteral("max_score"), 0.71},
+                                                   {QStringLiteral("threshold"), 0.88},
+                                                   {QStringLiteral("uniform_area"), false}});
+    check(scored.contains(QStringLiteral("0.71")) && scored.contains(QStringLiteral("0.88")),
+          QStringLiteral("the hint quotes the best score and the threshold"));
+    check(scored.contains(QStringLiteral("take_screenshot")),
+          QStringLiteral("the hint sends the agent back to the live screen first"));
+
+    // OCR 也没命中：把 OCR 的原因带上。
+    const QString ocrNote = failureHint(QStringLiteral("NOT_FOUND"),
+                                        QJsonObject{{QStringLiteral("ocr_note"), QStringLiteral("没有可用的 OCR 引擎")}});
+    check(ocrNote.contains(QStringLiteral("OCR")) && ocrNote.contains(QStringLiteral("没有可用的 OCR 引擎")),
+          QStringLiteral("the hint carries the OCR reason when both locators missed"));
+
+    // 歧义：给候选数与操作方式，且不包含“已点击”这种谎话。
+    const QString ambiguous = failureHint(QStringLiteral("AMBIGUOUS_TARGET"),
+                                          QJsonObject{{QStringLiteral("candidate_count"), 3}});
+    check(ambiguous.contains(QStringLiteral("3")) && ambiguous.contains(QStringLiteral("pick=best")),
+          QStringLiteral("the ambiguity hint names the candidate count and the pick options"));
+
+    // 缺语言包 / 模板配额 / 模板不存在：各自指向具体动作。
+    check(failureHint(QStringLiteral("OCR_UNAVAILABLE"), QJsonObject()).contains(QStringLiteral("语言")),
+          QStringLiteral("OCR_UNAVAILABLE points at the language pack"));
+    check(failureHint(QStringLiteral("TEMPLATE_QUOTA_EXCEEDED"), QJsonObject()).contains(QStringLiteral("templates")),
+          QStringLiteral("the quota hint points at the templates directory"));
+    check(failureHint(QStringLiteral("TEMPLATE_NOT_FOUND"), QJsonObject()).contains(QStringLiteral("save_template")),
+          QStringLiteral("a missing template points back at save_template"));
+    check(failureHint(QStringLiteral("UNKNOWN_CODE"), QJsonObject()).isEmpty(),
+          QStringLiteral("unknown codes get no invented hint"));
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -1065,6 +1110,7 @@ int main(int argc, char **argv) {
     testPrune();
     testVisionServiceCapture();
     testTemplates();
+    testFailureHints();
 
     std::printf(failures == 0 ? "VISION OK\n" : "VISION FAILED (%d)\n", failures);
     return failures == 0 ? 0 : 1;

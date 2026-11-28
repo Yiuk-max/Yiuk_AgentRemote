@@ -13,6 +13,15 @@ struct TemplateHit {
     double score = 0;
 };
 
+// 一次匹配的现场（即使零命中也有）：给失败 hint 用，避免一律建议“降低阈值”。
+struct TemplateStats {
+    // 搜索区域内的最高归一化得分（可能低于阈值）。
+    double bestScore = 0;
+    // 搜索区域几乎是纯色（灰度标准差很小）：模板匹配没有可用纹理。
+    bool uniformArea = false;
+    double areaStdDev = 0;
+};
+
 struct TemplateOptions {
     // TM_CCOEFF_NORMED 的阈值：P0 冻结 0.88。
     double threshold = 0.88;
@@ -29,6 +38,6 @@ bool templateMatchingAvailable();
 // 失败写 code：INVALID_ARGUMENT（图片为空/模板大于搜索区域）/
 // UNSUPPORTED_OPERATION（未编译 OpenCV）。
 bool matchTemplateImage(const QImage &haystack, const QImage &needle, const TemplateOptions &options,
-                        QVector<TemplateHit> *hits, QString *code, QString *message);
+                        QVector<TemplateHit> *hits, TemplateStats *stats, QString *code, QString *message);
 
 }  // namespace yiuk::vision

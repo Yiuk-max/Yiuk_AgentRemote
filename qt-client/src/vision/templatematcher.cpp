@@ -28,7 +28,7 @@ bool templateMatchingAvailable() {
 }
 
 bool matchTemplateImage(const QImage &haystack, const QImage &needle, const TemplateOptions &options,
-                        QVector<TemplateHit> *hits, QString *code, QString *message) {
+                        QVector<TemplateHit> *hits, TemplateStats *stats, QString *code, QString *message) {
     auto fail = [code, message](const QString &failureCode, const QString &failureMessage) {
         if (code) *code = failureCode;
         if (message) *message = failureMessage;
@@ -36,6 +36,7 @@ bool matchTemplateImage(const QImage &haystack, const QImage &needle, const Temp
     };
     if (hits == nullptr) return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("hits 为空"));
     hits->clear();
+    if (stats) *stats = TemplateStats{};
     if (haystack.isNull() || needle.isNull())
         return fail(QStringLiteral("INVALID_ARGUMENT"), QStringLiteral("屏幕或模板图像为空"));
     if (needle.width() <= 0 || needle.height() <= 0)
@@ -67,8 +68,24 @@ bool matchTemplateImage(const QImage &haystack, const QImage &needle, const Temp
                    hay.bytesPerLine());
     cv::Mat tplMat(tpl.height(), tpl.width(), CV_8UC1, const_cast<uchar *>(tpl.constBits()), tpl.bytesPerLine());
 
+    // 现场统计：纯色区域与"最高分"都要能说清楚，hint 才不会一律建议降阈值。
+    if (stats) {
+        cv::Scalar mean;
+        cv::Scalar stddev;
+        cv::meanStdDev(hayMat, mean, stddev);
+        stats->areaStdDev = stddev[0];
+        stats->uniformArea = stddev[0] < 2.0;  // 灰度标准差 < 2 基本就是一片纯色
+    }
+
     cv::Mat result;
     cv::matchTemplate(hayMat, tplMat, result, cv::TM_CCOEFF_NORMED);
+    if (stats) {
+        double minimum = 0;
+        double maximum = 0;
+        cv::minMaxLoc(result, &minimum, &maximum);
+        // TM_CCOEFF_NORMED 的取值是 [-1, 1]；对外的"最高得分"只报非负部分。
+        stats->bestScore = maximum > 0 ? maximum : 0.0;
+    }
 
     struct Candidate {
         double score;

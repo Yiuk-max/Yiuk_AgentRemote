@@ -458,11 +458,12 @@ bool VisionService::clickTarget(const QString &sessionId, const ClickTargetOptio
     int locateMs = 0;
     QString ocrLanguage;
     QString ocrNote;
+    TemplateStats stats;  // 图像分支的现场（零命中也要带回去给 hint 用）
     if (options.useImage) {
         TemplateOptions imageOptions = options.image;
         imageOptions.limit = limit;
         QVector<TemplateHit> hits;
-        if (!matchTemplateImage(shot.image, needle, imageOptions, &hits, code, message)) return false;
+        if (!matchTemplateImage(shot.image, needle, imageOptions, &hits, &stats, code, message)) return false;
         for (const TemplateHit &hit : hits) {
             TargetCandidate candidate;
             candidate.bbox = hit.rect;
@@ -546,7 +547,12 @@ bool VisionService::clickTarget(const QString &sessionId, const ClickTargetOptio
     detail.insert(QStringLiteral("truncated"), truncated);
     detail.insert(QStringLiteral("visited_nodes"), visitedNodes);
     detail.insert(QStringLiteral("locate_ms"), locateMs);
-    if (options.useImage) detail.insert(QStringLiteral("threshold"), options.image.threshold);
+    if (options.useImage) {
+        detail.insert(QStringLiteral("threshold"), options.image.threshold);
+        detail.insert(QStringLiteral("max_score"), stats.bestScore);
+        detail.insert(QStringLiteral("uniform_area"), stats.uniformArea);
+        detail.insert(QStringLiteral("area_stddev"), stats.areaStdDev);
+    }
     if (!ocrLanguage.isEmpty()) detail.insert(QStringLiteral("ocr_language"), ocrLanguage);
     if (!ocrNote.isEmpty()) detail.insert(QStringLiteral("ocr_note"), ocrNote);
 
@@ -641,7 +647,8 @@ bool VisionService::matchImage(const QString &sessionId, const QImage &needle, c
     if (shot.image.isNull()) return fail(QStringLiteral("SCREENSHOT_FAILED"), QStringLiteral("抓屏结果为空"));
 
     QVector<TemplateHit> hits;
-    if (!matchTemplateImage(shot.image, needle, options, &hits, code, message)) return false;
+    TemplateStats stats;
+    if (!matchTemplateImage(shot.image, needle, options, &hits, &stats, code, message)) return false;
 
     QJsonArray matches;
     for (const TemplateHit &hit : hits) {
@@ -666,6 +673,11 @@ bool VisionService::matchImage(const QString &sessionId, const QImage &needle, c
     payload.insert(QStringLiteral("visited_nodes"), 0);
     payload.insert(QStringLiteral("elapsed_ms"), 0);
     payload.insert(QStringLiteral("source"), QStringLiteral("opencv"));
+    // 零命中也要把现场带回去：最高分与"区域是不是纯色"决定 hint 该说什么。
+    payload.insert(QStringLiteral("threshold"), options.threshold);
+    payload.insert(QStringLiteral("max_score"), stats.bestScore);
+    payload.insert(QStringLiteral("uniform_area"), stats.uniformArea);
+    payload.insert(QStringLiteral("area_stddev"), stats.areaStdDev);
     *data = payload;
     return true;
 }

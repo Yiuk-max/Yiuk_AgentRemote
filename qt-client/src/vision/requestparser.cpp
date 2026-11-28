@@ -2,6 +2,7 @@
 
 #include <QJsonArray>
 #include <QJsonValue>
+#include <cmath>
 
 namespace yiuk::vision {
 
@@ -169,6 +170,56 @@ bool buildClickTargetOptions(const QJsonObject &arguments, ClickTargetOptions *o
         out->waitTimeoutMs = seconds * 1000;
     }
     return true;
+}
+
+QString failureHint(const QString &code, const QJsonObject &data) {
+    const QString thresholdText = data.contains(QStringLiteral("threshold"))
+                                      ? QString::number(data.value(QStringLiteral("threshold")).toDouble(), 'g', 2)
+                                      : QString();
+    if (code == QLatin1String("NOT_FOUND")) {
+        if (data.value(QStringLiteral("uniform_area")).toBool())
+            return QStringLiteral("搜索区域几乎是纯色（灰度标准差 %1），模板匹配没有可用纹理："
+                                  "换一个 region，或改用 text 定位")
+                .arg(QString::number(data.value(QStringLiteral("area_stddev")).toDouble(), 'g', 2));
+        if (data.contains(QStringLiteral("max_score"))) {
+            const double best = data.value(QStringLiteral("max_score")).toDouble();
+            if (!thresholdText.isEmpty() && best > 0.0)
+                return QStringLiteral("最高得分 %1 低于阈值 %2：先 take_screenshot 确认目标还在、"
+                                      "并且模板与目标同缩放/同主题，再决定是否调整 threshold")
+                    .arg(QString::number(best, 'g', 2), thresholdText);
+            return QStringLiteral("目标可能不在画面上或被遮挡：先 take_screenshot 看一下，"
+                                  "必要时缩小 region 或换 text 定位");
+        }
+        if (!data.value(QStringLiteral("ocr_note")).toString().isEmpty())
+            return QStringLiteral("UIA 与 OCR 都没有命中：确认目标窗口在前台、没有被弹窗遮挡；"
+                                  "OCR：%1")
+                .arg(data.value(QStringLiteral("ocr_note")).toString());
+        return QStringLiteral("没有命中：先 take_screenshot 看现场，或缩小 region、换 control_type");
+    }
+    if (code == QLatin1String("AMBIGUOUS_TARGET")) {
+        const int count = data.value(QStringLiteral("candidate_count")).toInt();
+        return QStringLiteral("命中 %1 个候选且得分接近，不点击：用 pick=best / pick=index:N 指定，"
+                              "或用 region / control_type 缩小范围")
+            .arg(count > 0 ? QString::number(count) : QStringLiteral("多"));
+    }
+    if (code == QLatin1String("OCR_UNAVAILABLE"))
+        return QStringLiteral("设备上没有可用的 OCR 语言包：设置 → 时间和语言 → 语言里安装 OCR 组件，"
+                              "或改用 image_path / template_id");
+    if (code == QLatin1String("TEMPLATE_NOT_FOUND"))
+        return QStringLiteral("模板不存在或已被清理：重新 save_template，或改用 image_path");
+    if (code == QLatin1String("TEMPLATE_QUOTA_EXCEEDED"))
+        return QStringLiteral("模板配额已满：删掉设备上 data 目录里的 templates 后重试");
+    if (code == QLatin1String("STALE_SCREENSHOT"))
+        return QStringLiteral("坐标基准已过期：重新 take_screenshot 后再操作");
+    if (code == QLatin1String("SCREENSHOT_REQUIRED"))
+        return QStringLiteral("先调用 take_screenshot 建立坐标基准");
+    if (code == QLatin1String("INPUT_FAILED") || code == QLatin1String("SCREENSHOT_FAILED"))
+        return QStringLiteral("确认设备未锁屏、没有停留在 UAC 安全桌面");
+    if (code == QLatin1String("UIA_UNAVAILABLE"))
+        return QStringLiteral("确认设备未锁屏、目标窗口在前台；必要时用 take_screenshot 人工判断");
+    if (code == QLatin1String("UNSUPPORTED_OPERATION"))
+        return QStringLiteral("改用 text 查找，或升级到带 OpenCV 的客户端");
+    return QString();
 }
 
 }  // namespace yiuk::vision
